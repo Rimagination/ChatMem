@@ -1,0 +1,17 @@
+node_modules/
+dist/
+dist-portable/
+src-tauri/target/
+__pycache__/
+*.log
+npm-debug.log*
+.env
+.env.local
+.env.*.local
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+*.rs.bk

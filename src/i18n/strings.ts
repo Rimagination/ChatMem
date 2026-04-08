@@ -1,0 +1,38 @@
+import type { Locale, TranslationKey } from "./types";
+
+export const strings: Record<Locale, Record<TranslationKey, string>> = {
+  "zh-CN": {
+    "brand.subtitle": "本地对话记录，一处查看，随时续接",
+    "search.placeholder": "搜索对话...",
+    "settings.open": "打开设置",
+    "settings.short": "设置",
+    "settings.title": "设置",
+    "settings.language": "语言 Language",
+    "settings.checkUpdates": "检查更新",
+    "settings.autoCheck": "启动时自动检查更新",
+    "settings.checking": "正在检查更新...",
+    "settings.upToDate": "当前已是最新版本",
+    "settings.updateAvailablePrefix": "发现新版本",
+    "settings.updateNow": "立即更新",
+    "settings.installing": "正在安装更新...",
+    "settings.updateError": "无法连接更新服务，请稍后重试",
+    "common.close": "关闭",
+  },
+  en: {
+    "brand.subtitle": "Your local AI conversations, ready to resume",
+    "search.placeholder": "Search conversations...",
+    "settings.open": "Open settings",
+    "settings.short": "Settings",
+    "settings.title": "Settings",
+    "settings.language": "Language",
+    "settings.checkUpdates": "Check for updates",
+    "settings.autoCheck": "Check for updates on launch",
+    "settings.checking": "Checking for updates...",
+    "settings.upToDate": "You're already on the latest version",
+    "settings.updateAvailablePrefix": "New version available",
+    "settings.updateNow": "Install update",
+    "settings.installing": "Installing update...",
+    "settings.updateError": "Unable to reach the update service. Please try again later.",
+    "common.close": "Close",
+  },
+};
