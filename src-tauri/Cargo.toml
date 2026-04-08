@@ -20,11 +20,11 @@ walkdir = "2"
 dirs = "5"
 rusqlite = { version = "0.31", features = ["bundled"] }
 
-# AgentSwap core dependencies
-agentswap-core = { path = "../../agentswap/crates/agentswap-core" }
-agentswap-claude = { path = "../../agentswap/crates/agentswap-claude" }
-agentswap-codex = { path = "../../agentswap/crates/agentswap-codex" }
-agentswap-gemini = { path = "../../agentswap/crates/agentswap-gemini" }
+# Vendored AgentSwap parser crates for standalone CI builds
+agentswap-core = { path = "../crates/agentswap-core" }
+agentswap-claude = { path = "../crates/agentswap-claude" }
+agentswap-codex = { path = "../crates/agentswap-codex" }
+agentswap-gemini = { path = "../crates/agentswap-gemini" }
 
 [features]
 default = ["custom-protocol"]
