@@ -10,7 +10,7 @@ describe("release workflow", () => {
     expect(workflow).toContain("runs-on: windows-latest");
     expect(workflow).toContain("release-macos:");
     expect(workflow).toContain("runs-on: macos-latest");
-    expect(workflow).toContain("args: --bundles dmg,app");
+    expect(workflow).toContain("args: --bundles dmg,app,updater");
   });
 
   it("signs updater artifacts in both platform jobs", () => {

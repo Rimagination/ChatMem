@@ -17,6 +17,7 @@ Add a GitHub-hosted macOS build for ChatMem while keeping the existing Windows r
 - The workflow builds macOS bundles on `macos-latest` using Tauri's macOS toolchain.
 - The expected user-facing asset is a `.dmg`.
 - The updater artifact is the signed `.app.tar.gz` plus its `.sig` file.
+- The macOS Tauri build explicitly includes the `updater` bundle target; otherwise Tauri will create the app and dmg but skip updater signatures.
 - Users may need to bypass Gatekeeper on first launch because there is no Apple Developer ID signing or notarization in this phase.
 
 ## Updater
@@ -29,4 +30,3 @@ Tauri v1 supports updater artifacts for the macOS app bundle. The existing updat
 - Run the frontend test suite and Rust tests locally.
 - Push the workflow and force-update `v0.1.0` to regenerate the GitHub Release.
 - Verify the GitHub Actions run succeeds and the Release contains macOS assets.
-

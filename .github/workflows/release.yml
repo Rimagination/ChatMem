@@ -87,4 +87,4 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
-          args: --bundles dmg,app
+          args: --bundles dmg,app,updater

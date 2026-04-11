@@ -31,7 +31,7 @@ describe("release workflow", () => {
     expect(workflow).toContain("runs-on: windows-latest");
     expect(workflow).toContain("release-macos:");
     expect(workflow).toContain("runs-on: macos-latest");
-    expect(workflow).toContain("args: --bundles dmg,app");
+    expect(workflow).toContain("args: --bundles dmg,app,updater");
   });
 
   it("signs updater artifacts in both platform jobs", () => {
@@ -56,7 +56,7 @@ Expected: FAIL because `release-macos` is not in the workflow yet.
 
 - [ ] **Step 1: Add a macOS job**
 
-Add a `release-macos` job that checks out the tag, sets up Node.js and Rust, runs `npm ci`, and runs `tauri-apps/tauri-action@v0.6.2` with `args: --bundles dmg,app`.
+Add a `release-macos` job that checks out the tag, sets up Node.js and Rust, runs `npm ci`, and runs `tauri-apps/tauri-action@v0.6.2` with `args: --bundles dmg,app,updater`.
 
 - [ ] **Step 2: Run the workflow test**
 
@@ -105,4 +105,3 @@ Expected: GitHub Actions starts a new release run.
 - [ ] **Step 4: Verify GitHub Release assets**
 
 Confirm the Release contains Windows assets and macOS assets, including `.dmg`, `.app.tar.gz`, and `.app.tar.gz.sig`.
-
