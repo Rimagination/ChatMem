@@ -58,7 +58,7 @@ npm run tauri build
 
 ## 发布
 
-发布由 GitHub Actions 处理。推送形如 `v0.1.0` 的 tag 后，工作流会自动：
+发布由 GitHub Actions 处理。推送形如 `v0.1.1` 的 tag 后，工作流会自动：
 
 - 构建 Windows NSIS 安装包
 - 构建 Windows MSI 安装包
