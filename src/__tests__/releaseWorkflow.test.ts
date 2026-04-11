@@ -10,7 +10,7 @@ describe("release workflow", () => {
     expect(workflow).toContain("runs-on: windows-latest");
     expect(workflow).toContain("release-macos:");
     expect(workflow).toContain("runs-on: ${{ matrix.platform }}");
-    expect(workflow).toContain("macos-13");
+    expect(workflow).toContain("macos-15-intel");
     expect(workflow).toContain("macos-latest");
     expect(workflow).toContain("x86_64-apple-darwin");
     expect(workflow).toContain("aarch64-apple-darwin");
