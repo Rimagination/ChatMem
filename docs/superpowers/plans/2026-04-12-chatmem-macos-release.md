@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Publish ChatMem macOS assets to GitHub Releases alongside the existing Windows packages.
+**Goal:** Publish ChatMem Apple Silicon and Intel macOS assets to GitHub Releases alongside the existing Windows packages.
 
-**Architecture:** Keep the existing tag-triggered release workflow and add a macOS runner job that uses the same Tauri action and updater signing secrets. Add a small workflow test so CI release structure is checked by the normal Vitest suite.
+**Architecture:** Keep the existing tag-triggered release workflow and add a macOS matrix job that uses the same Tauri action and updater signing secrets. Add a small workflow test so CI release structure is checked by the normal Vitest suite.
 
 **Tech Stack:** GitHub Actions, Tauri v1, Rust, TypeScript, Vitest.
 
@@ -30,13 +30,18 @@ describe("release workflow", () => {
     expect(workflow).toContain("release-windows:");
     expect(workflow).toContain("runs-on: windows-latest");
     expect(workflow).toContain("release-macos:");
-    expect(workflow).toContain("runs-on: macos-latest");
+    expect(workflow).toContain("runs-on: ${{ matrix.platform }}");
+    expect(workflow).toContain("macos-13");
+    expect(workflow).toContain("macos-latest");
+    expect(workflow).toContain("x86_64-apple-darwin");
+    expect(workflow).toContain("aarch64-apple-darwin");
     expect(workflow).toContain("args: --bundles dmg,app,updater");
   });
 
   it("signs updater artifacts in both platform jobs", () => {
     const secretReferences = workflow.match(/TAURI_PRIVATE_KEY: \\$\\{\\{ secrets\\.TAURI_PRIVATE_KEY \\}\\}/g) ?? [];
     expect(secretReferences).toHaveLength(2);
+    expect(workflow).toContain("targets: ${{ matrix.target }}");
     expect(workflow).toContain("includeUpdaterJson: true");
   });
 });
@@ -56,7 +61,7 @@ Expected: FAIL because `release-macos` is not in the workflow yet.
 
 - [ ] **Step 1: Add a macOS job**
 
-Add a `release-macos` job that checks out the tag, sets up Node.js and Rust, runs `npm ci`, and runs `tauri-apps/tauri-action@v0.6.2` with `args: --bundles dmg,app,updater`.
+Add a `release-macos` matrix job that checks out the tag, sets up Node.js and Rust with the matrix target, runs `npm ci`, and runs `tauri-apps/tauri-action@v0.6.2` with `args: --bundles dmg,app,updater`.
 
 - [ ] **Step 2: Run the workflow test**
 
@@ -104,4 +109,4 @@ Expected: GitHub Actions starts a new release run.
 
 - [ ] **Step 4: Verify GitHub Release assets**
 
-Confirm the Release contains Windows assets and macOS assets, including `.dmg`, `.app.tar.gz`, and `.app.tar.gz.sig`.
+Confirm the Release contains Windows assets and macOS assets, including Apple Silicon and Intel `.dmg`, `.app.tar.gz`, and `.app.tar.gz.sig` files.

@@ -9,7 +9,11 @@ describe("release workflow", () => {
     expect(workflow).toContain("release-windows:");
     expect(workflow).toContain("runs-on: windows-latest");
     expect(workflow).toContain("release-macos:");
-    expect(workflow).toContain("runs-on: macos-latest");
+    expect(workflow).toContain("runs-on: ${{ matrix.platform }}");
+    expect(workflow).toContain("macos-13");
+    expect(workflow).toContain("macos-latest");
+    expect(workflow).toContain("x86_64-apple-darwin");
+    expect(workflow).toContain("aarch64-apple-darwin");
     expect(workflow).toContain("args: --bundles dmg,app,updater");
   });
 
@@ -19,6 +23,7 @@ describe("release workflow", () => {
     ) ?? [];
 
     expect(secretReferences).toHaveLength(2);
+    expect(workflow).toContain("targets: ${{ matrix.target }}");
     expect(workflow).toContain("includeUpdaterJson: true");
   });
 });

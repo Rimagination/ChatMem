@@ -17,9 +17,11 @@ Windows：
 
 macOS：
 
-- `ChatMem_<version>_x64.dmg` 或同版本 `.dmg`
-  推荐给普通 macOS 用户的安装包。
-- `ChatMem.app.tar.gz`
+- `ChatMem_<version>_aarch64.dmg`
+  适合 Apple Silicon Mac。
+- `ChatMem_<version>_x64.dmg`
+  适合 Intel Mac。
+- `ChatMem_<arch>.app.tar.gz`
   供应用内更新使用的 macOS updater 包。
 
 当前 macOS 包暂未做 Apple Developer ID 签名和 notarization。首次打开时，系统可能需要你在“系统设置”中允许打开，或者通过右键菜单打开。

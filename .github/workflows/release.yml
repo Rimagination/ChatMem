@@ -54,9 +54,18 @@ jobs:
           files: dist-portable/ChatMem-v*.zip
 
   release-macos:
-    runs-on: macos-latest
+    name: release-macos (${{ matrix.target }})
+    runs-on: ${{ matrix.platform }}
     permissions:
       contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-13
+            target: x86_64-apple-darwin
+          - platform: macos-latest
+            target: aarch64-apple-darwin
 
     steps:
       - name: Checkout
@@ -70,6 +79,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Install frontend dependencies
         run: npm ci
@@ -87,4 +98,4 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
-          args: --bundles dmg,app,updater
+          args: --bundles dmg,app,updater --target ${{ matrix.target }}
