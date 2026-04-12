@@ -17,10 +17,12 @@ Windows：
 
 macOS：
 
-- `ChatMem_<version>_aarch64.dmg`
-  适合 Apple Silicon Mac。
-- `ChatMem_<version>_x64.dmg`
-  适合 Intel Mac。
+- `ChatMem-v<version>-macOS-Apple-Silicon.dmg`
+  推荐给 M1 / M2 / M3 / M4 等 Apple Silicon Mac 用户。
+- `ChatMem-v<version>-macOS-Intel.dmg`
+  推荐给 Intel Mac 用户。
+- `ChatMem_<version>_<arch>.dmg`
+  Tauri 自动生成的原始 dmg，内容与上面对应的用户版 dmg 相同。
 - `ChatMem_<arch>.app.tar.gz`
   供应用内更新使用的 macOS updater 包。
 
@@ -65,6 +67,7 @@ npm run tauri build
 - 生成 updater 所需的 `latest.json` 和签名文件
 - 生成 Windows 便携版 zip
 - 构建 macOS dmg 和 app updater 包
+- 额外上传面向用户下载的 macOS Apple Silicon / Intel dmg 文件名
 - 上传所有发布资产到 GitHub Release
 
 ## 更新机制

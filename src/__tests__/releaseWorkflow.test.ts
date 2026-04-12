@@ -15,6 +15,9 @@ describe("release workflow", () => {
     expect(workflow).toContain("x86_64-apple-darwin");
     expect(workflow).toContain("aarch64-apple-darwin");
     expect(workflow).toContain("args: --bundles dmg,app,updater");
+    expect(workflow).toContain("Prepare user-facing macOS DMG");
+    expect(workflow).toContain("ChatMem-${{ github.ref_name }}-macOS-Apple-Silicon.dmg");
+    expect(workflow).toContain("ChatMem-v${version}-macOS-${arch_label}.dmg");
   });
 
   it("signs updater artifacts in both platform jobs", () => {
