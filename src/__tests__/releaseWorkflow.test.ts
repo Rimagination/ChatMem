@@ -18,6 +18,7 @@ describe("release workflow", () => {
     expect(workflow).toContain("Prepare user-facing macOS DMG");
     expect(workflow).toContain("ChatMem-${{ github.ref_name }}-macOS-Apple-Silicon.dmg");
     expect(workflow).toContain("ChatMem-v${version}-macOS-${arch_label}.dmg");
+    expect(workflow).toContain("How to choose on macOS");
   });
 
   it("signs updater artifacts in both platform jobs", () => {

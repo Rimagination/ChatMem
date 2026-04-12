@@ -26,6 +26,8 @@ macOS：
 - `ChatMem_<arch>.app.tar.gz`
   供应用内更新使用的 macOS updater 包。
 
+不知道自己的 Mac 属于哪一种时，点屏幕左上角苹果菜单，选择“关于本机”。如果显示“芯片 Apple M1/M2/M3/M4”，下载 Apple Silicon 版；如果显示“处理器 Intel”，下载 Intel 版。Apple Silicon 电脑也可能通过 Rosetta 运行 Intel 版，但不推荐，优先下载 Apple Silicon 版。
+
 当前 macOS 包暂未做 Apple Developer ID 签名和 notarization。首次打开时，系统可能需要你在“系统设置”中允许打开，或者通过右键菜单打开。
 
 正式下载入口：
