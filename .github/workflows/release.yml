@@ -38,14 +38,23 @@ jobs:
           releaseName: ChatMem ${{ github.ref_name }}
           releaseBody: |
             推荐下载 / Recommended downloads:
-            - Windows 安装版 / Windows installer: use the `.exe` installer.
-            - Windows 免安装版 / Windows portable: use `ChatMem-${{ github.ref_name }}-portable.zip`.
-            - macOS Apple Silicon (M1/M2/M3/M4): use `ChatMem-${{ github.ref_name }}-macOS-Apple-Silicon.dmg`.
-            - macOS Intel: use `ChatMem-${{ github.ref_name }}-macOS-Intel.dmg`.
+            - Windows installer: download the `.exe` installer if you want the normal install flow.
+            - Windows portable: download `ChatMem-${{ github.ref_name }}-portable.zip` if you want a no-install portable build.
+            - macOS Apple Silicon (M1/M2/M3/M4): download `ChatMem-${{ github.ref_name }}-macOS-Apple-Silicon.dmg`.
+            - macOS Intel: download `ChatMem-${{ github.ref_name }}-macOS-Intel.dmg`.
 
-            How to choose on macOS: open Apple menu > About This Mac. If it shows "Chip Apple M1/M2/M3/M4", download Apple Silicon. If it shows "Processor Intel", download Intel. Apple Silicon Macs may run the Intel build through Rosetta, but the Apple Silicon build is recommended.
+            What users should download:
+            - Regular users should download the release package above, not the GitHub source code zip/tar.gz.
+            - Source code archives are for developers, not for installing the app.
 
-            Note: macOS builds are currently unsigned and not notarized, so first launch may require allowing the app in macOS Security settings.
+            How to choose on macOS:
+            - Open Apple menu > About This Mac.
+            - If it shows "Chip Apple M1/M2/M3/M4", download Apple Silicon.
+            - If it shows "Processor Intel", download Intel.
+            - Apple Silicon Macs can run the Intel build through Rosetta, but the Apple Silicon build is recommended.
+
+            Note:
+            - macOS builds are currently unsigned and not notarized, so first launch may require allowing the app in macOS Security settings.
           releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true
@@ -105,14 +114,23 @@ jobs:
           releaseName: ChatMem ${{ github.ref_name }}
           releaseBody: |
             推荐下载 / Recommended downloads:
-            - Windows 安装版 / Windows installer: use the `.exe` installer.
-            - Windows 免安装版 / Windows portable: use `ChatMem-${{ github.ref_name }}-portable.zip`.
-            - macOS Apple Silicon (M1/M2/M3/M4): use `ChatMem-${{ github.ref_name }}-macOS-Apple-Silicon.dmg`.
-            - macOS Intel: use `ChatMem-${{ github.ref_name }}-macOS-Intel.dmg`.
+            - Windows installer: download the `.exe` installer if you want the normal install flow.
+            - Windows portable: download `ChatMem-${{ github.ref_name }}-portable.zip` if you want a no-install portable build.
+            - macOS Apple Silicon (M1/M2/M3/M4): download `ChatMem-${{ github.ref_name }}-macOS-Apple-Silicon.dmg`.
+            - macOS Intel: download `ChatMem-${{ github.ref_name }}-macOS-Intel.dmg`.
 
-            How to choose on macOS: open Apple menu > About This Mac. If it shows "Chip Apple M1/M2/M3/M4", download Apple Silicon. If it shows "Processor Intel", download Intel. Apple Silicon Macs may run the Intel build through Rosetta, but the Apple Silicon build is recommended.
+            What users should download:
+            - Regular users should download the release package above, not the GitHub source code zip/tar.gz.
+            - Source code archives are for developers, not for installing the app.
 
-            Note: macOS builds are currently unsigned and not notarized, so first launch may require allowing the app in macOS Security settings.
+            How to choose on macOS:
+            - Open Apple menu > About This Mac.
+            - If it shows "Chip Apple M1/M2/M3/M4", download Apple Silicon.
+            - If it shows "Processor Intel", download Intel.
+            - Apple Silicon Macs can run the Intel build through Rosetta, but the Apple Silicon build is recommended.
+
+            Note:
+            - macOS builds are currently unsigned and not notarized, so first launch may require allowing the app in macOS Security settings.
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
