@@ -687,15 +687,49 @@ impl MemoryStore {
     pub fn mark_handoff_consumed(&self, handoff_id: &str, consumed_by: &str) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         let conn = self.conn()?;
+        let handoff = conn
+            .query_row(
+                "SELECT to_agent, status, consumed_at, consumed_by
+                 FROM handoff_packets
+                 WHERE handoff_id = ?1",
+                [handoff_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        let Some((to_agent, status, consumed_at, existing_consumed_by)) = handoff else {
+            return Err(anyhow::anyhow!("handoff {handoff_id} not found"));
+        };
+
+        if consumed_at.is_some() || status == "consumed" {
+            return Err(anyhow::anyhow!(
+                "handoff {handoff_id} is already consumed by {}",
+                existing_consumed_by.unwrap_or_else(|| "unknown".to_string())
+            ));
+        }
+
+        if to_agent != consumed_by {
+            return Err(anyhow::anyhow!(
+                "handoff {handoff_id} cannot be consumed by {consumed_by}; target agent is {to_agent}"
+            ));
+        }
+
         let updated = conn.execute(
             "UPDATE handoff_packets
              SET status = 'consumed', consumed_at = ?2, consumed_by = ?3
-             WHERE handoff_id = ?1",
+             WHERE handoff_id = ?1 AND consumed_at IS NULL AND status != 'consumed'",
             params![handoff_id, now, consumed_by],
         )?;
 
         if updated == 0 {
-            return Err(anyhow::anyhow!("handoff {handoff_id} not found"));
+            return Err(anyhow::anyhow!("handoff {handoff_id} cannot be consumed"));
         }
 
         Ok(())
@@ -919,6 +953,7 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
 mod tests {
     use super::{MemoryStore, ReviewAction};
     use crate::chatmem_memory::models::CreateMemoryCandidateInput;
+    use std::{thread, time::Duration};
 
     fn new_store() -> MemoryStore {
         let path = std::env::temp_dir().join(format!("chatmem-store-test-{}.sqlite", uuid::Uuid::new_v4()));
@@ -973,6 +1008,58 @@ mod tests {
         assert_eq!(latest.status, "consumed");
         assert_eq!(latest.consumed_by.as_deref(), Some("claude"));
         assert!(latest.consumed_at.is_some());
+    }
+
+    #[test]
+    fn mark_handoff_consumed_rejects_wrong_agent() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let packet = store
+            .build_and_store_handoff(repo_root, "codex", "claude", Some("Wrap schema changes"))
+            .unwrap();
+
+        let error = store
+            .mark_handoff_consumed(&packet.handoff_id, "gemini")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("cannot be consumed by gemini"));
+
+        let latest = store.latest_handoff(repo_root).unwrap().unwrap();
+        assert_eq!(latest.status, packet.status);
+        assert!(latest.consumed_at.is_none());
+        assert!(latest.consumed_by.is_none());
+    }
+
+    #[test]
+    fn mark_handoff_consumed_does_not_overwrite_existing_audit_metadata() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let packet = store
+            .build_and_store_handoff(repo_root, "codex", "claude", Some("Wrap schema changes"))
+            .unwrap();
+
+        store
+            .mark_handoff_consumed(&packet.handoff_id, "claude")
+            .unwrap();
+
+        let consumed = store.latest_handoff(repo_root).unwrap().unwrap();
+        let original_consumed_at = consumed.consumed_at.clone();
+        let original_consumed_by = consumed.consumed_by.clone();
+
+        thread::sleep(Duration::from_millis(5));
+
+        let error = store
+            .mark_handoff_consumed(&packet.handoff_id, "claude")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("already consumed"));
+
+        let latest = store.latest_handoff(repo_root).unwrap().unwrap();
+        assert_eq!(latest.status, "consumed");
+        assert_eq!(latest.consumed_at, original_consumed_at);
+        assert_eq!(latest.consumed_by, original_consumed_by);
     }
 
     #[test]

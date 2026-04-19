@@ -101,6 +101,26 @@ describe("Handoff lifecycle", () => {
             consumed_by: null,
             created_at: "2026-04-20T10:00:00Z",
           },
+          {
+            handoff_id: "handoff-002",
+            repo_root: "D:/VSP/demo",
+            from_agent: "claude",
+            to_agent: "codex",
+            status: "ready",
+            checkpoint_id: null,
+            target_profile: "codex_execution",
+            compression_strategy: "balanced",
+            current_goal: "Wrong agent should not consume this",
+            done_items: ["Prepared packet"],
+            next_items: ["Hand off to codex"],
+            key_files: [],
+            useful_commands: [],
+            related_memories: [],
+            related_episodes: [],
+            consumed_at: null,
+            consumed_by: null,
+            created_at: "2026-04-20T10:01:00Z",
+          },
         ];
       }
 
@@ -117,7 +137,9 @@ describe("Handoff lifecycle", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Handoffs" }));
 
     expect(await screen.findByText("claude_contextual")).toBeTruthy();
-    expect(screen.getByText("ready")).toBeTruthy();
+    expect(screen.getAllByText("ready")).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Mark as Consumed" })).toHaveLength(1);
+    expect(screen.getByText("Wrong agent should not consume this")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Mark as Consumed" }));
 
@@ -130,6 +152,54 @@ describe("Handoff lifecycle", () => {
 
     expect(await screen.findByText("consumed")).toBeTruthy();
     expect(screen.getByText("Consumed by claude")).toBeTruthy();
+  });
+
+  it("hides the consume action when the selected agent does not match the handoff target", async () => {
+    mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
+      if (command === "list_conversations") {
+        return [buildConversation(payload?.agent as string | undefined)];
+      }
+
+      if (command === "read_conversation") {
+        return buildConversationDetail(payload?.agent as string | undefined);
+      }
+
+      if (command === "list_handoffs") {
+        return [
+          {
+            handoff_id: "handoff-003",
+            repo_root: "D:/VSP/demo",
+            from_agent: "claude",
+            to_agent: "codex",
+            status: "ready",
+            checkpoint_id: null,
+            target_profile: "codex_execution",
+            compression_strategy: "balanced",
+            current_goal: "Wait for codex",
+            done_items: ["Prepared packet"],
+            next_items: ["Hand off to codex"],
+            key_files: [],
+            useful_commands: [],
+            related_memories: [],
+            related_episodes: [],
+            consumed_at: null,
+            consumed_by: null,
+            created_at: "2026-04-20T10:02:00Z",
+          },
+        ];
+      }
+
+      return [];
+    });
+
+    renderApp();
+
+    fireEvent.click(await screen.findByText("Debug session"));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoffs" }));
+
+    expect(await screen.findByText("codex_execution")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Mark as Consumed" })).toBeNull();
+    expect(screen.getByText("Awaiting consumption")).toBeTruthy();
   });
 
   it("creates a handoff with the selected target profile", async () => {

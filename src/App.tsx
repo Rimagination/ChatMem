@@ -670,6 +670,7 @@ function App() {
               <HandoffsPanel
                 handoffs={handoffs}
                 loading={memoryLoading}
+                currentAgent={selectedAgent}
                 availableTargets={["claude", "codex", "gemini"].filter((agent) => agent !== selectedAgent)}
                 onCreate={handleCreateHandoff}
                 onMarkConsumed={handleMarkHandoffConsumed}

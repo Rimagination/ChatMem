@@ -3,6 +3,7 @@ import type { HandoffPacket } from "../chatmem-memory/types";
 type HandoffsPanelProps = {
   handoffs: HandoffPacket[];
   loading: boolean;
+  currentAgent: string;
   availableTargets: string[];
   onCreate: (targetAgent: string) => void;
   onMarkConsumed: (handoffId: string) => void;
@@ -11,6 +12,7 @@ type HandoffsPanelProps = {
 export default function HandoffsPanel({
   handoffs,
   loading,
+  currentAgent,
   availableTargets,
   onCreate,
   onMarkConsumed,
@@ -78,7 +80,7 @@ export default function HandoffsPanel({
                 ) : (
                   <span className="handoff-consumed-meta">Awaiting consumption</span>
                 )}
-                {!handoff.consumed_at && (
+                {!handoff.consumed_at && handoff.to_agent === currentAgent && (
                   <button
                     type="button"
                     className="btn btn-secondary"
