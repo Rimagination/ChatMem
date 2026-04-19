@@ -911,15 +911,15 @@ impl MemoryStore {
     pub fn build_and_store_handoff_from_checkpoint(
         &self,
         checkpoint_id: &str,
-        from_agent: &str,
+        _from_agent: &str,
         to_agent: &str,
-        goal_hint: Option<&str>,
+        _goal_hint: Option<&str>,
         target_profile: Option<&str>,
     ) -> Result<HandoffPacketResponse> {
-        let conn = self.conn()?;
+        let mut conn = self.conn()?;
         let checkpoint = conn
             .query_row(
-                "SELECT repo_id, conversation_id, source_agent, status, summary, resume_command
+                "SELECT repo_id, conversation_id, source_agent, status, summary, resume_command, handoff_id
                  FROM checkpoints
                  WHERE checkpoint_id = ?1",
                 [checkpoint_id],
@@ -931,22 +931,27 @@ impl MemoryStore {
                         row.get::<_, String>(3)?,
                         row.get::<_, String>(4)?,
                         row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
                     ))
                 },
             )
             .optional()?;
 
-        let Some((repo_id, conversation_id, source_agent, status, summary, resume_command)) = checkpoint else {
+        let Some((repo_id, conversation_id, source_agent, status, summary, resume_command, handoff_id)) = checkpoint else {
             return Err(anyhow::anyhow!("checkpoint {checkpoint_id} not found"));
         };
 
-        if status != "active" {
+        if status != "active" || handoff_id.is_some() {
             return Err(anyhow::anyhow!(
-                "checkpoint {checkpoint_id} is not active and cannot be promoted"
+                "checkpoint {checkpoint_id} was already promoted and cannot be promoted again"
             ));
         }
 
-        let repo_root = self.repo_root_for_id(&repo_id)?;
+        let repo_root = conn.query_row(
+            "SELECT repo_root FROM repos WHERE repo_id = ?1",
+            [repo_id.clone()],
+            |row| row.get::<_, String>(0),
+        )?;
         let key_files = {
             let mut stmt = conn.prepare(
                 "SELECT DISTINCT path
@@ -981,7 +986,7 @@ impl MemoryStore {
             .into_iter()
             .take(2)
             .collect::<Vec<_>>();
-        let current_goal = handoff::derive_goal(goal_hint, Some(&summary));
+        let current_goal = handoff::derive_goal(None, Some(&summary));
         let done_items = vec![format!("Checkpoint frozen from {source_agent}: {summary}")];
         let mut next_items = vec![current_goal.clone()];
         if let Some(command) = &resume_command {
@@ -990,7 +995,7 @@ impl MemoryStore {
 
         let mut packet = handoff::build_handoff_packet(
             &repo_root,
-            from_agent,
+            &source_agent,
             to_agent,
             current_goal,
             done_items,
@@ -1003,7 +1008,9 @@ impl MemoryStore {
         );
         packet.checkpoint_id = Some(checkpoint_id.to_string());
 
-        conn.execute(
+        let tx = conn.transaction()?;
+
+        tx.execute(
             "INSERT INTO handoff_packets (
                 handoff_id, repo_id, from_agent, to_agent, status, target_profile, checkpoint_id,
                 compression_strategy, current_goal,
@@ -1030,15 +1037,37 @@ impl MemoryStore {
                 packet.consumed_by,
                 packet.created_at,
             ],
-        )?;
+        )
+        .map_err(|error| {
+            if matches!(
+                error.sqlite_error_code(),
+                Some(rusqlite::ErrorCode::ConstraintViolation)
+            ) {
+                anyhow::anyhow!(
+                    "checkpoint {checkpoint_id} was already promoted and cannot be promoted again"
+                )
+            } else {
+                error.into()
+            }
+        })?;
 
-        conn.execute(
+        let updated = tx.execute(
             "UPDATE checkpoints
              SET status = 'promoted',
                  handoff_id = ?2
-             WHERE checkpoint_id = ?1",
+             WHERE checkpoint_id = ?1
+               AND status = 'active'
+               AND handoff_id IS NULL",
             params![checkpoint_id, packet.handoff_id],
         )?;
+
+        if updated != 1 {
+            return Err(anyhow::anyhow!(
+                "checkpoint {checkpoint_id} was already promoted and cannot be promoted again"
+            ));
+        }
+
+        tx.commit()?;
 
         Ok(packet)
     }
@@ -1762,5 +1791,107 @@ mod tests {
         let checkpoints = store.list_checkpoints(repo_root).unwrap();
         assert_eq!(checkpoints[0].status, "promoted");
         assert_eq!(checkpoints[0].handoff_id.as_deref(), Some(packet.handoff_id.as_str()));
+    }
+
+    #[test]
+    fn promoting_a_checkpoint_uses_checkpoint_provenance_and_goal() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+
+        let checkpoint = store
+            .create_checkpoint(&CreateCheckpointInput {
+                repo_root: repo_root.to_string(),
+                conversation_id: "codex:conv-777".to_string(),
+                source_agent: "codex".to_string(),
+                summary: "Checkpoint-owned goal".to_string(),
+                resume_command: Some("codex resume conv-777".to_string()),
+                metadata_json: None,
+            })
+            .unwrap();
+
+        let packet = store
+            .build_and_store_handoff_from_checkpoint(
+                &checkpoint.checkpoint_id,
+                "claude",
+                "gemini",
+                Some("Wrong UI goal"),
+                Some("gemini_research"),
+            )
+            .unwrap();
+
+        assert_eq!(packet.from_agent, "codex");
+        assert_eq!(packet.to_agent, "gemini");
+        assert_eq!(packet.current_goal, "Checkpoint-owned goal");
+        assert!(packet
+            .done_items
+            .iter()
+            .any(|item| item.contains("Checkpoint frozen from codex")));
+        assert!(packet
+            .useful_commands
+            .iter()
+            .any(|command| command == "codex resume conv-777"));
+    }
+
+    #[test]
+    fn promoting_the_same_checkpoint_twice_is_rejected_without_creating_a_duplicate_handoff() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+
+        let checkpoint = store
+            .create_checkpoint(&CreateCheckpointInput {
+                repo_root: repo_root.to_string(),
+                conversation_id: "claude:conv-001".to_string(),
+                source_agent: "claude".to_string(),
+                summary: "Freeze the current debugging state".to_string(),
+                resume_command: Some("claude --resume conv-001".to_string()),
+                metadata_json: None,
+            })
+            .unwrap();
+
+        let repo_id = store.ensure_repo(repo_root).unwrap();
+        let existing_handoff_id = "handoff-existing".to_string();
+        let conn = store.conn().unwrap();
+        conn.execute(
+            "INSERT INTO handoff_packets (
+                handoff_id, repo_id, from_agent, to_agent, status, target_profile, checkpoint_id,
+                compression_strategy, current_goal,
+                done_json, next_json, key_files_json, commands_json,
+                related_memories_json, related_episodes_json, consumed_at, consumed_by, created_at
+             ) VALUES (?1, ?2, ?3, ?4, 'draft', NULL, ?5, NULL, ?6, '[]', '[]', '[]', '[]', '[]', '[]', NULL, NULL, ?7)",
+            params![
+                existing_handoff_id,
+                repo_id,
+                "claude",
+                "codex",
+                checkpoint.checkpoint_id,
+                "Freeze the current debugging state",
+                "2026-04-20T10:40:00Z",
+            ],
+        )
+        .unwrap();
+
+        let error = store
+            .build_and_store_handoff_from_checkpoint(
+                &checkpoint.checkpoint_id,
+                "gemini",
+                "claude",
+                Some("Wrong second goal"),
+                Some("claude_contextual"),
+            )
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            error.contains("already") || error.contains("duplicate") || error.contains("checkpoint"),
+            "unexpected error: {error}"
+        );
+
+        let handoffs = store.list_handoffs(repo_root).unwrap();
+        assert_eq!(handoffs.len(), 1);
+        assert_eq!(handoffs[0].handoff_id, existing_handoff_id);
+
+        let checkpoints = store.list_checkpoints(repo_root).unwrap();
+        assert_eq!(checkpoints[0].status, "active");
+        assert!(checkpoints[0].handoff_id.is_none());
     }
 }

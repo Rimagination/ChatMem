@@ -109,7 +109,12 @@ type WorkspaceView =
 type HandoffComposerState = {
   targetAgent: string;
   profileOptions: HandoffTargetProfileOption[];
-  checkpointId?: string;
+  checkpoint?: {
+    checkpointId: string;
+    repoRoot: string;
+    sourceAgent: string;
+    summary: string;
+  };
 } | null;
 
 const COPY_RESET_DELAY_MS = 1800;
@@ -189,6 +194,7 @@ function App() {
   const [handoffs, setHandoffs] = useState<HandoffPacket[]>([]);
   const [handoffComposer, setHandoffComposer] = useState<HandoffComposerState>(null);
   const activeRepoRoot = selectedConversation?.project_dir ?? null;
+  const allAgents = ["claude", "codex", "gemini"];
   const availableHandoffTargets = ["claude", "codex", "gemini"].filter(
     (agent) => agent !== selectedAgent,
   );
@@ -470,17 +476,22 @@ function App() {
     }
   };
 
-  const handlePromoteCheckpoint = (checkpointId: string, targetAgent: string) => {
+  const handlePromoteCheckpoint = (checkpoint: CheckpointRecord, targetAgent: string) => {
     const profileOptions = TARGET_PROFILE_OPTIONS[targetAgent] ?? [];
     setHandoffComposer({
       targetAgent,
       profileOptions,
-      checkpointId,
+      checkpoint: {
+        checkpointId: checkpoint.checkpoint_id,
+        repoRoot: checkpoint.repo_root,
+        sourceAgent: checkpoint.source_agent,
+        summary: checkpoint.summary,
+      },
     });
   };
 
   const handleConfirmCreateHandoff = async (targetProfile: string) => {
-    if (!activeRepoRoot) {
+    if (!activeRepoRoot && !handoffComposer?.checkpoint) {
       return;
     }
     if (!handoffComposer) {
@@ -490,18 +501,18 @@ function App() {
     setMemoryLoading(true);
     try {
       const packet = await createHandoffPacket({
-        repoRoot: activeRepoRoot,
-        fromAgent: selectedAgent,
+        repoRoot: handoffComposer.checkpoint?.repoRoot ?? activeRepoRoot ?? "",
+        fromAgent: handoffComposer.checkpoint?.sourceAgent ?? selectedAgent,
         toAgent: handoffComposer.targetAgent,
-        goalHint: selectedConversation?.summary ?? undefined,
+        goalHint: handoffComposer.checkpoint?.summary ?? selectedConversation?.summary ?? undefined,
         targetProfile,
-        checkpointId: handoffComposer.checkpointId,
+        checkpointId: handoffComposer.checkpoint?.checkpointId,
       });
       setHandoffs((current) => [packet, ...current]);
-      if (handoffComposer.checkpointId) {
+      if (handoffComposer.checkpoint) {
         setCheckpoints((current) =>
           current.map((checkpoint) =>
-            checkpoint.checkpoint_id === handoffComposer.checkpointId
+            checkpoint.checkpoint_id === handoffComposer.checkpoint?.checkpointId
               ? {
                   ...checkpoint,
                   status: "promoted",
@@ -803,7 +814,7 @@ function App() {
               <CheckpointsPanel
                 checkpoints={checkpoints}
                 loading={memoryLoading}
-                availableTargets={availableHandoffTargets}
+                allAgents={allAgents}
                 onCreate={handleCreateCheckpoint}
                 onPromote={handlePromoteCheckpoint}
               />

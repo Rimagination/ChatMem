@@ -230,6 +230,12 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_column(conn, "handoff_packets", "compression_strategy", "TEXT")?;
     ensure_column(conn, "handoff_packets", "consumed_at", "TEXT")?;
     ensure_column(conn, "handoff_packets", "consumed_by", "TEXT")?;
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_packets_checkpoint_id_unique
+         ON handoff_packets(checkpoint_id)
+         WHERE checkpoint_id IS NOT NULL",
+        [],
+    )?;
 
     Ok(())
 }

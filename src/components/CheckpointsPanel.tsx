@@ -1,22 +1,21 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import type { CheckpointRecord } from "../chatmem-memory/types";
 
 type CheckpointsPanelProps = {
   checkpoints: CheckpointRecord[];
   loading: boolean;
-  availableTargets: string[];
+  allAgents: string[];
   onCreate: () => void;
-  onPromote: (checkpointId: string, targetAgent: string) => void;
+  onPromote: (checkpoint: CheckpointRecord, targetAgent: string) => void;
 };
 
 export default function CheckpointsPanel({
   checkpoints,
   loading,
-  availableTargets,
+  allAgents,
   onCreate,
   onPromote,
 }: CheckpointsPanelProps) {
-  const initialTarget = useMemo(() => availableTargets[0] ?? "", [availableTargets]);
   const [targetByCheckpoint, setTargetByCheckpoint] = useState<Record<string, string>>({});
   const [copiedCheckpointId, setCopiedCheckpointId] = useState<string | null>(null);
 
@@ -69,8 +68,11 @@ export default function CheckpointsPanel({
       ) : (
         <div className="memory-card-list">
           {checkpoints.map((checkpoint) => {
+            const availableTargets = allAgents.filter(
+              (agent) => agent !== checkpoint.source_agent,
+            );
             const selectedTarget =
-              targetByCheckpoint[checkpoint.checkpoint_id] ?? initialTarget;
+              targetByCheckpoint[checkpoint.checkpoint_id] ?? availableTargets[0] ?? "";
             const canPromote = checkpoint.status === "active" && Boolean(selectedTarget);
 
             return (
@@ -120,6 +122,7 @@ export default function CheckpointsPanel({
                     <label className="checkpoint-target-label">
                       <span>Target agent</span>
                       <select
+                        aria-label="Target agent"
                         value={selectedTarget}
                         onChange={(event) =>
                           setTargetByCheckpoint((current) => ({
@@ -144,7 +147,7 @@ export default function CheckpointsPanel({
                     <button
                       type="button"
                       className="btn btn-secondary"
-                      onClick={() => onPromote(checkpoint.checkpoint_id, selectedTarget)}
+                      onClick={() => onPromote(checkpoint, selectedTarget)}
                       disabled={!canPromote}
                     >
                       Promote to Handoff
