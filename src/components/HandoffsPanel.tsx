@@ -5,6 +5,7 @@ type HandoffsPanelProps = {
   loading: boolean;
   availableTargets: string[];
   onCreate: (targetAgent: string) => void;
+  onMarkConsumed: (handoffId: string) => void;
 };
 
 export default function HandoffsPanel({
@@ -12,6 +13,7 @@ export default function HandoffsPanel({
   loading,
   availableTargets,
   onCreate,
+  onMarkConsumed,
 }: HandoffsPanelProps) {
   if (loading) {
     return (
@@ -61,6 +63,30 @@ export default function HandoffsPanel({
                     {handoff.to_agent}
                   </div>
                 </div>
+                <span className={`handoff-status-pill handoff-status-${handoff.status}`}>
+                  {handoff.status}
+                </span>
+              </div>
+              {handoff.target_profile && (
+                <div className="handoff-profile-row">
+                  <strong>Target profile:</strong> {handoff.target_profile}
+                </div>
+              )}
+              <div className="handoff-consumption-row">
+                {handoff.consumed_at && handoff.consumed_by ? (
+                  <span className="handoff-consumed-meta">Consumed by {handoff.consumed_by}</span>
+                ) : (
+                  <span className="handoff-consumed-meta">Awaiting consumption</span>
+                )}
+                {!handoff.consumed_at && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => onMarkConsumed(handoff.handoff_id)}
+                  >
+                    Mark as Consumed
+                  </button>
+                )}
               </div>
               <div className="memory-card-split">
                 <div>

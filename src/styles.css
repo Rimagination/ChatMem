@@ -603,6 +603,43 @@ select {
   color: var(--text-primary);
 }
 
+.handoff-status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: lowercase;
+}
+
+.handoff-status-ready {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.handoff-status-consumed {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.handoff-profile-row,
+.handoff-consumption-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+
+.handoff-profile-row strong,
+.handoff-consumed-meta {
+  color: var(--text-primary);
+}
+
 .conversation-detail {
   display: grid;
   gap: 18px;
@@ -1197,6 +1234,16 @@ select {
   background: rgba(255, 255, 255, 0.9);
   padding: 12px 14px;
   outline: none;
+}
+
+.modal-helper-text {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: rgba(20, 23, 28, 0.04);
+  border: 1px solid rgba(20, 23, 28, 0.06);
+  color: var(--text-secondary);
+  line-height: 1.6;
 }
 
 .radio-group {

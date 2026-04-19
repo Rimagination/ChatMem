@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/tauri";
 import type {
   ApprovedMemory,
   EpisodeRecord,
+  HandoffConsumeInput,
+  HandoffCreateInput,
   HandoffPacket,
   MemoryCandidate,
 } from "./types";
@@ -32,11 +34,10 @@ export function listHandoffs(repoRoot: string) {
   return invoke<HandoffPacket[]>("list_handoffs", { repoRoot });
 }
 
-export function createHandoffPacket(payload: {
-  repoRoot: string;
-  fromAgent: string;
-  toAgent: string;
-  goalHint?: string;
-}) {
+export function createHandoffPacket(payload: HandoffCreateInput) {
   return invoke<HandoffPacket>("create_handoff_packet", payload);
+}
+
+export function markHandoffConsumed(payload: HandoffConsumeInput) {
+  return invoke("mark_handoff_consumed", payload);
 }

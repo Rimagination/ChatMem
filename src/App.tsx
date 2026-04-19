@@ -8,6 +8,7 @@ import RepoMemoryPanel from "./components/RepoMemoryPanel";
 import MemoryInboxPanel from "./components/MemoryInboxPanel";
 import EpisodesPanel from "./components/EpisodesPanel";
 import HandoffsPanel from "./components/HandoffsPanel";
+import HandoffComposerModal from "./components/HandoffComposerModal";
 import { useI18n } from "./i18n/I18nProvider";
 import type { Locale } from "./i18n/types";
 import { loadSettings, updateSettings, type AppSettings } from "./settings/storage";
@@ -17,6 +18,7 @@ import {
   listEpisodes,
   listHandoffs,
   listMemoryCandidates,
+  markHandoffConsumed,
   listRepoMemories,
   reviewMemoryCandidate,
 } from "./chatmem-memory/api";
@@ -24,6 +26,7 @@ import type {
   ApprovedMemory,
   EpisodeRecord,
   HandoffPacket,
+  HandoffTargetProfileOption,
   MemoryCandidate,
 } from "./chatmem-memory/types";
 
@@ -82,8 +85,50 @@ type CopyState = {
   status: "idle" | "success" | "error";
 };
 type WorkspaceView = "conversation" | "repo-memory" | "memory-inbox" | "episodes" | "handoffs";
+type HandoffComposerState = {
+  targetAgent: string;
+  profileOptions: HandoffTargetProfileOption[];
+} | null;
 
 const COPY_RESET_DELAY_MS = 1800;
+const TARGET_PROFILE_OPTIONS: Record<string, HandoffTargetProfileOption[]> = {
+  claude: [
+    {
+      value: "claude_contextual",
+      label: "Claude Contextual",
+      description: "Carry narrative context, open questions, and review-ready notes for Claude.",
+    },
+    {
+      value: "claude_reviewer",
+      label: "Claude Reviewer",
+      description: "Bias the packet toward auditability, edge cases, and validation checkpoints.",
+    },
+  ],
+  codex: [
+    {
+      value: "codex_execution",
+      label: "Codex Execution",
+      description: "Emphasize concrete next steps, commands, and file-level action items.",
+    },
+    {
+      value: "codex_debugger",
+      label: "Codex Debugger",
+      description: "Highlight repro steps, likely fault lines, and verification commands.",
+    },
+  ],
+  gemini: [
+    {
+      value: "gemini_summarizer",
+      label: "Gemini Summarizer",
+      description: "Compress the latest repo context into a compact summary for quick catch-up.",
+    },
+    {
+      value: "gemini_research",
+      label: "Gemini Research",
+      description: "Focus on history, related context, and cross-cutting background information.",
+    },
+  ],
+};
 
 function getAgentHeading(agent: AgentType) {
   switch (agent) {
@@ -117,6 +162,7 @@ function App() {
   const [memoryCandidates, setMemoryCandidates] = useState<MemoryCandidate[]>([]);
   const [episodes, setEpisodes] = useState<EpisodeRecord[]>([]);
   const [handoffs, setHandoffs] = useState<HandoffPacket[]>([]);
+  const [handoffComposer, setHandoffComposer] = useState<HandoffComposerState>(null);
   const activeRepoRoot = selectedConversation?.project_dir ?? null;
 
   useEffect(() => {
@@ -347,7 +393,18 @@ function App() {
   };
 
   const handleCreateHandoff = async (targetAgent: string) => {
+    const profileOptions = TARGET_PROFILE_OPTIONS[targetAgent] ?? [];
+    setHandoffComposer({
+      targetAgent,
+      profileOptions,
+    });
+  };
+
+  const handleConfirmCreateHandoff = async (targetProfile: string) => {
     if (!activeRepoRoot) {
+      return;
+    }
+    if (!handoffComposer) {
       return;
     }
 
@@ -356,13 +413,41 @@ function App() {
       const packet = await createHandoffPacket({
         repoRoot: activeRepoRoot,
         fromAgent: selectedAgent,
-        toAgent: targetAgent,
+        toAgent: handoffComposer.targetAgent,
         goalHint: selectedConversation?.summary ?? undefined,
+        targetProfile,
       });
       setHandoffs((current) => [packet, ...current]);
       setWorkspaceView("handoffs");
+      setHandoffComposer(null);
     } catch (error) {
       console.error("Failed to create handoff packet:", error);
+    } finally {
+      setMemoryLoading(false);
+    }
+  };
+
+  const handleMarkHandoffConsumed = async (handoffId: string) => {
+    setMemoryLoading(true);
+    try {
+      await markHandoffConsumed({
+        handoffId,
+        consumedBy: selectedAgent,
+      });
+      setHandoffs((current) =>
+        current.map((handoff) =>
+          handoff.handoff_id === handoffId
+            ? {
+                ...handoff,
+                status: "consumed",
+                consumed_by: selectedAgent,
+                consumed_at: new Date().toISOString(),
+              }
+            : handoff,
+        ),
+      );
+    } catch (error) {
+      console.error("Failed to mark handoff consumed:", error);
     } finally {
       setMemoryLoading(false);
     }
@@ -587,6 +672,7 @@ function App() {
                 loading={memoryLoading}
                 availableTargets={["claude", "codex", "gemini"].filter((agent) => agent !== selectedAgent)}
                 onCreate={handleCreateHandoff}
+                onMarkConsumed={handleMarkHandoffConsumed}
               />
             )
           ) : (
@@ -629,6 +715,15 @@ function App() {
           sourceAgent={selectedAgent}
           onMigrate={handleMigrate}
           onClose={() => setShowMigrateModal(false)}
+        />
+      )}
+
+      {handoffComposer && (
+        <HandoffComposerModal
+          targetAgent={handoffComposer.targetAgent}
+          profileOptions={handoffComposer.profileOptions}
+          onClose={() => setHandoffComposer(null)}
+          onCreate={handleConfirmCreateHandoff}
         />
       )}
 

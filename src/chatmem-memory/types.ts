@@ -46,6 +46,25 @@ export type EpisodeRecord = {
   evidence_refs: EvidenceRef[];
 };
 
+export type HandoffCreateInput = {
+  repoRoot: string;
+  fromAgent: string;
+  toAgent: string;
+  goalHint?: string;
+  targetProfile?: string;
+};
+
+export type HandoffConsumeInput = {
+  handoffId: string;
+  consumedBy: string;
+};
+
+export type HandoffTargetProfileOption = {
+  value: string;
+  label: string;
+  description: string;
+};
+
 export type HandoffPacket = {
   handoff_id: string;
   repo_root: string;
