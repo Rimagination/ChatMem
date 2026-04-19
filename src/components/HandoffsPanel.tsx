@@ -74,6 +74,11 @@ export default function HandoffsPanel({
                   <strong>Target profile:</strong> {handoff.target_profile}
                 </div>
               )}
+              {handoff.checkpoint_id && (
+                <div className="handoff-profile-row">
+                  <strong>Checkpoint:</strong> {handoff.checkpoint_id}
+                </div>
+              )}
               <div className="handoff-consumption-row">
                 {handoff.consumed_at && handoff.consumed_by ? (
                   <span className="handoff-consumed-meta">Consumed by {handoff.consumed_by}</span>

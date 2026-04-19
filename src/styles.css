@@ -770,6 +770,64 @@ select {
   color: var(--text-primary);
 }
 
+.checkpoint-status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: lowercase;
+}
+
+.checkpoint-status-active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.checkpoint-status-promoted {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.checkpoint-meta-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.checkpoint-actions-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.checkpoint-promote-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.checkpoint-target-label {
+  display: grid;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.checkpoint-target-label select {
+  min-width: 150px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--text-primary);
+  padding: 10px 12px;
+}
+
 .timeline-meta-row {
   display: flex;
   flex-wrap: wrap;

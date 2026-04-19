@@ -1,3 +1,4 @@
+pub mod checkpoints;
 pub mod db;
 pub mod handoff;
 pub mod mcp;

@@ -129,6 +129,19 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS checkpoints (
+            checkpoint_id TEXT PRIMARY KEY,
+            repo_id TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            source_agent TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            summary TEXT NOT NULL,
+            resume_command TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            handoff_id TEXT,
+            created_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS agent_runs (
             run_id TEXT PRIMARY KEY,
             repo_id TEXT NOT NULL,
@@ -303,6 +316,7 @@ mod tests {
                    'episodes',
                    'memory_candidates',
                    'approved_memories',
+                   'checkpoints',
                    'handoff_packets',
                    'evidence_refs',
                    'search_documents'
@@ -321,6 +335,7 @@ mod tests {
             names,
             vec![
                 "approved_memories",
+                "checkpoints",
                 "conversations",
                 "episodes",
                 "evidence_refs",
@@ -348,6 +363,57 @@ mod tests {
         assert!(columns.contains(&"target_profile".to_string()));
         assert!(columns.contains(&"checkpoint_id".to_string()));
         assert!(columns.contains(&"consumed_at".to_string()));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn checkpoint_defaults_to_active_state() {
+        let path = std::env::temp_dir().join(format!("chatmem-db-test-{}.sqlite", uuid::Uuid::new_v4()));
+        let conn = open_connection(&path).unwrap();
+        migrate(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO checkpoints (
+                checkpoint_id,
+                repo_id,
+                conversation_id,
+                source_agent,
+                resume_command,
+                summary,
+                metadata_json,
+                created_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                "checkpoint-001",
+                "repo-001",
+                "claude:conv-001",
+                "claude",
+                "claude --resume conv-001",
+                "Freeze the current debugging state",
+                "{}",
+                "2026-04-20T12:00:00Z",
+            ],
+        )
+        .unwrap();
+
+        let row = conn
+            .query_row(
+                "SELECT status, resume_command
+                 FROM checkpoints
+                 WHERE checkpoint_id = ?1",
+                ["checkpoint-001"],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(row.0, "active");
+        assert_eq!(row.1.as_deref(), Some("claude --resume conv-001"));
 
         let _ = std::fs::remove_file(path);
     }

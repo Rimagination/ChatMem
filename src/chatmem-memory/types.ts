@@ -78,12 +78,35 @@ export type ArtifactRecord = {
   created_at: string;
 };
 
+export type CheckpointRecord = {
+  checkpoint_id: string;
+  repo_root: string;
+  conversation_id: string;
+  source_agent: string;
+  status: string;
+  summary: string;
+  resume_command: string | null;
+  metadata_json: string;
+  handoff_id: string | null;
+  created_at: string;
+};
+
+export type CheckpointCreateInput = {
+  repoRoot: string;
+  conversationId: string;
+  sourceAgent: string;
+  summary: string;
+  resumeCommand?: string;
+  metadataJson?: string;
+};
+
 export type HandoffCreateInput = {
   repoRoot: string;
   fromAgent: string;
   toAgent: string;
   goalHint?: string;
   targetProfile?: string;
+  checkpointId?: string;
 };
 
 export type HandoffConsumeInput = {

@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/tauri";
 import type {
   ApprovedMemory,
   ArtifactRecord,
+  CheckpointCreateInput,
+  CheckpointRecord,
   EpisodeRecord,
   HandoffConsumeInput,
   HandoffCreateInput,
@@ -40,6 +42,10 @@ export function listHandoffs(repoRoot: string) {
   return invoke<HandoffPacket[]>("list_handoffs", { repoRoot });
 }
 
+export function listCheckpoints(repoRoot: string) {
+  return invoke<CheckpointRecord[]>("list_checkpoints", { repoRoot });
+}
+
 export function listRuns(repoRoot: string) {
   return invoke<RunRecord[]>("list_runs", { repoRoot });
 }
@@ -50,6 +56,10 @@ export function listArtifacts(repoRoot: string) {
 
 export function createHandoffPacket(payload: HandoffCreateInput) {
   return invoke<HandoffPacket>("create_handoff_packet", payload);
+}
+
+export function createCheckpoint(payload: CheckpointCreateInput) {
+  return invoke<CheckpointRecord>("create_checkpoint", payload);
 }
 
 export function markHandoffConsumed(payload: HandoffConsumeInput) {

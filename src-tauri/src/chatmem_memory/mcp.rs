@@ -6,6 +6,7 @@ use rmcp::{
 };
 
 use super::{
+    checkpoints::{CheckpointRecord, CreateCheckpointInput},
     models::{
         BuildHandoffPacketInput, CreateMemoryCandidateInput, CreateMemoryCandidateResult,
         GetRepoMemoryInput, ListMemoryCandidatesInput, ListMemoryCandidatesPayload,
@@ -39,6 +40,7 @@ impl ChatMemMcpService {
             .with_route((Self::get_repo_memory_tool_attr(), Self::get_repo_memory))
             .with_route((Self::search_repo_history_tool_attr(), Self::search_repo_history))
             .with_route((Self::create_memory_candidate_tool_attr(), Self::create_memory_candidate))
+            .with_route((Self::create_checkpoint_tool_attr(), Self::create_checkpoint))
             .with_route((Self::list_memory_candidates_tool_attr(), Self::list_memory_candidates))
             .with_route((Self::build_handoff_packet_tool_attr(), Self::build_handoff_packet))
     }
@@ -86,6 +88,17 @@ impl ChatMemMcpService {
         }))
     }
 
+    #[tool(name = "create_checkpoint", description = "Freeze the current repo context into a resumable checkpoint")]
+    async fn create_checkpoint(
+        &self,
+        Parameters(input): Parameters<CreateCheckpointInput>,
+    ) -> Result<Json<CheckpointRecord>, McpError> {
+        self.store
+            .create_checkpoint(&input)
+            .map(Json)
+            .map_err(|error| internal_error(error.to_string()))
+    }
+
     #[tool(name = "list_memory_candidates", description = "List pending or filtered repository memory candidates")]
     async fn list_memory_candidates(
         &self,
@@ -123,6 +136,7 @@ impl ServerHandler for ChatMemMcpService {}
 mod tests {
     use super::ChatMemMcpService;
     use crate::chatmem_memory::{
+        checkpoints::CreateCheckpointInput,
         models::{BuildHandoffPacketInput, ListMemoryCandidatesPayload},
         store::MemoryStore,
     };
@@ -173,5 +187,25 @@ mod tests {
             .unwrap();
 
         assert_eq!(packet.target_profile.as_deref(), Some("claude_contextual"));
+    }
+
+    #[tokio::test]
+    async fn create_checkpoint_returns_an_active_checkpoint_record() {
+        let service = ChatMemMcpService::new(new_store());
+
+        let Json(checkpoint) = service
+            .create_checkpoint(Parameters(CreateCheckpointInput {
+                repo_root: "d:/vsp/agentswap-gui".to_string(),
+                conversation_id: "claude:conv-001".to_string(),
+                source_agent: "claude".to_string(),
+                summary: "Freeze the current debugging state".to_string(),
+                resume_command: Some("claude --resume conv-001".to_string()),
+                metadata_json: None,
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(checkpoint.status, "active");
+        assert_eq!(checkpoint.resume_command.as_deref(), Some("claude --resume conv-001"));
     }
 }

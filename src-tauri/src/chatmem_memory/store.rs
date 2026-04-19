@@ -8,6 +8,7 @@ use std::{
 use agentswap_core::types::{ChangeType, Conversation, Role, ToolStatus};
 
 use super::{
+    checkpoints::{CheckpointRecord, CreateCheckpointInput},
     db,
     handoff,
     models::{
@@ -675,6 +676,79 @@ impl MemoryStore {
         Ok(episodes)
     }
 
+    pub fn create_checkpoint(&self, input: &CreateCheckpointInput) -> Result<CheckpointRecord> {
+        let repo_id = self.ensure_repo(&input.repo_root)?;
+        let repo_root = self.repo_root_for_id(&repo_id)?;
+        let checkpoint = CheckpointRecord {
+            checkpoint_id: uuid::Uuid::new_v4().to_string(),
+            repo_root,
+            conversation_id: input.conversation_id.clone(),
+            source_agent: input.source_agent.clone(),
+            status: "active".to_string(),
+            summary: input.summary.clone(),
+            resume_command: input.resume_command.clone(),
+            metadata_json: input
+                .metadata_json
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "{}".to_string()),
+            handoff_id: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let conn = self.conn()?;
+
+        conn.execute(
+            "INSERT INTO checkpoints (
+                checkpoint_id, repo_id, conversation_id, source_agent, status, summary,
+                resume_command, metadata_json, handoff_id, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                checkpoint.checkpoint_id,
+                repo_id,
+                checkpoint.conversation_id,
+                checkpoint.source_agent,
+                checkpoint.status,
+                checkpoint.summary,
+                checkpoint.resume_command,
+                checkpoint.metadata_json,
+                checkpoint.handoff_id,
+                checkpoint.created_at,
+            ],
+        )?;
+
+        Ok(checkpoint)
+    }
+
+    pub fn list_checkpoints(&self, repo_root: &str) -> Result<Vec<CheckpointRecord>> {
+        let repo_id = self.ensure_repo(repo_root)?;
+        let repo_root = self.repo_root_for_id(&repo_id)?;
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT checkpoint_id, conversation_id, source_agent, status, summary,
+                    resume_command, metadata_json, handoff_id, created_at
+             FROM checkpoints
+             WHERE repo_id = ?1
+             ORDER BY created_at DESC",
+        )?;
+
+        let rows = stmt.query_map([repo_id], |row| {
+            Ok(CheckpointRecord {
+                checkpoint_id: row.get(0)?,
+                repo_root: repo_root.clone(),
+                conversation_id: row.get(1)?,
+                source_agent: row.get(2)?,
+                status: row.get(3)?,
+                summary: row.get(4)?,
+                resume_command: row.get(5)?,
+                metadata_json: row.get(6)?,
+                handoff_id: row.get(7)?,
+                created_at: row.get(8)?,
+            })
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     pub fn list_handoffs(&self, repo_root: &str) -> Result<Vec<HandoffPacketResponse>> {
         let repo_id = self.ensure_repo(repo_root)?;
         let repo_root = self.repo_root_for_id(&repo_id)?;
@@ -829,6 +903,141 @@ impl MemoryStore {
                 packet.consumed_by,
                 packet.created_at,
             ],
+        )?;
+
+        Ok(packet)
+    }
+
+    pub fn build_and_store_handoff_from_checkpoint(
+        &self,
+        checkpoint_id: &str,
+        from_agent: &str,
+        to_agent: &str,
+        goal_hint: Option<&str>,
+        target_profile: Option<&str>,
+    ) -> Result<HandoffPacketResponse> {
+        let conn = self.conn()?;
+        let checkpoint = conn
+            .query_row(
+                "SELECT repo_id, conversation_id, source_agent, status, summary, resume_command
+                 FROM checkpoints
+                 WHERE checkpoint_id = ?1",
+                [checkpoint_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        let Some((repo_id, conversation_id, source_agent, status, summary, resume_command)) = checkpoint else {
+            return Err(anyhow::anyhow!("checkpoint {checkpoint_id} not found"));
+        };
+
+        if status != "active" {
+            return Err(anyhow::anyhow!(
+                "checkpoint {checkpoint_id} is not active and cannot be promoted"
+            ));
+        }
+
+        let repo_root = self.repo_root_for_id(&repo_id)?;
+        let key_files = {
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT path
+                 FROM file_changes
+                 WHERE conversation_id = ?1
+                 ORDER BY timestamp DESC
+                 LIMIT 5",
+            )?;
+            let rows = stmt.query_map([conversation_id], |row| row.get::<_, String>(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+
+        let related_memories = self
+            .list_repo_memories(&repo_root)?
+            .into_iter()
+            .filter(|memory| memory.status == "active")
+            .take(3)
+            .collect::<Vec<_>>();
+        let mut useful_commands = related_memories
+            .iter()
+            .filter(|memory| memory.kind == "command")
+            .map(|memory| memory.value.clone())
+            .take(3)
+            .collect::<Vec<_>>();
+        if let Some(command) = &resume_command {
+            if !useful_commands.iter().any(|value| value == command) {
+                useful_commands.insert(0, command.clone());
+            }
+        }
+        let related_episodes = self
+            .list_episodes(&repo_root)?
+            .into_iter()
+            .take(2)
+            .collect::<Vec<_>>();
+        let current_goal = handoff::derive_goal(goal_hint, Some(&summary));
+        let done_items = vec![format!("Checkpoint frozen from {source_agent}: {summary}")];
+        let mut next_items = vec![current_goal.clone()];
+        if let Some(command) = &resume_command {
+            next_items.push(format!("Resume with: {command}"));
+        }
+
+        let mut packet = handoff::build_handoff_packet(
+            &repo_root,
+            from_agent,
+            to_agent,
+            current_goal,
+            done_items,
+            next_items,
+            key_files,
+            useful_commands,
+            related_memories,
+            related_episodes,
+            target_profile,
+        );
+        packet.checkpoint_id = Some(checkpoint_id.to_string());
+
+        conn.execute(
+            "INSERT INTO handoff_packets (
+                handoff_id, repo_id, from_agent, to_agent, status, target_profile, checkpoint_id,
+                compression_strategy, current_goal,
+                done_json, next_json, key_files_json, commands_json,
+                related_memories_json, related_episodes_json, consumed_at, consumed_by, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            params![
+                packet.handoff_id,
+                repo_id,
+                packet.from_agent,
+                packet.to_agent,
+                packet.status,
+                packet.target_profile,
+                packet.checkpoint_id,
+                packet.compression_strategy,
+                packet.current_goal,
+                serde_json::to_string(&packet.done_items)?,
+                serde_json::to_string(&packet.next_items)?,
+                serde_json::to_string(&packet.key_files)?,
+                serde_json::to_string(&packet.useful_commands)?,
+                serde_json::to_string(&packet.related_memories)?,
+                serde_json::to_string(&packet.related_episodes)?,
+                packet.consumed_at,
+                packet.consumed_by,
+                packet.created_at,
+            ],
+        )?;
+
+        conn.execute(
+            "UPDATE checkpoints
+             SET status = 'promoted',
+                 handoff_id = ?2
+             WHERE checkpoint_id = ?1",
+            params![checkpoint_id, packet.handoff_id],
         )?;
 
         Ok(packet)
@@ -1173,7 +1382,10 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{MemoryStore, ReviewAction};
-    use crate::chatmem_memory::models::CreateMemoryCandidateInput;
+    use crate::chatmem_memory::{
+        checkpoints::CreateCheckpointInput,
+        models::CreateMemoryCandidateInput,
+    };
     use rusqlite::params;
     use std::{thread, time::Duration};
 
@@ -1495,5 +1707,60 @@ mod tests {
 
         let latest = store.latest_handoff(repo_root).unwrap().unwrap();
         assert_eq!(latest.target_profile.as_deref(), Some("claude_contextual"));
+    }
+
+    #[test]
+    fn create_checkpoint_persists_an_active_resume_snapshot() {
+        let store = new_store();
+        let checkpoint = store
+            .create_checkpoint(&CreateCheckpointInput {
+                repo_root: "d:/vsp/agentswap-gui".to_string(),
+                conversation_id: "claude:conv-001".to_string(),
+                source_agent: "claude".to_string(),
+                summary: "Freeze the current debugging state".to_string(),
+                resume_command: Some("claude --resume conv-001".to_string()),
+                metadata_json: Some("{\"storage_path\":\"C:/Users/demo/.claude/projects/conv-001.jsonl\"}".to_string()),
+            })
+            .unwrap();
+
+        assert_eq!(checkpoint.status, "active");
+
+        let checkpoints = store.list_checkpoints("d:/vsp/agentswap-gui").unwrap();
+        assert_eq!(checkpoints.len(), 1);
+        assert_eq!(checkpoints[0].resume_command.as_deref(), Some("claude --resume conv-001"));
+        assert_eq!(checkpoints[0].status, "active");
+    }
+
+    #[test]
+    fn promoting_a_checkpoint_to_handoff_links_both_records() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+
+        let checkpoint = store
+            .create_checkpoint(&CreateCheckpointInput {
+                repo_root: repo_root.to_string(),
+                conversation_id: "claude:conv-001".to_string(),
+                source_agent: "claude".to_string(),
+                summary: "Freeze the current debugging state".to_string(),
+                resume_command: Some("claude --resume conv-001".to_string()),
+                metadata_json: None,
+            })
+            .unwrap();
+
+        let packet = store
+            .build_and_store_handoff_from_checkpoint(
+                &checkpoint.checkpoint_id,
+                "claude",
+                "codex",
+                Some("Continue from the frozen checkpoint"),
+                Some("codex_execution"),
+            )
+            .unwrap();
+
+        assert_eq!(packet.checkpoint_id.as_deref(), Some(checkpoint.checkpoint_id.as_str()));
+
+        let checkpoints = store.list_checkpoints(repo_root).unwrap();
+        assert_eq!(checkpoints[0].status, "promoted");
+        assert_eq!(checkpoints[0].handoff_id.as_deref(), Some(packet.handoff_id.as_str()));
     }
 }
