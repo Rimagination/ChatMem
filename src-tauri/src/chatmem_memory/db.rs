@@ -203,7 +203,11 @@ fn backfill_legacy_memory_verification_metadata(conn: &Connection) -> Result<()>
              END,
              verified_at = COALESCE(verified_at, last_verified_at),
              verified_by = COALESCE(verified_by, 'legacy_migration')
-         WHERE last_verified_at IS NOT NULL",
+         WHERE last_verified_at IS NOT NULL
+           AND freshness_status = 'unknown'
+           AND freshness_score = 0.0
+           AND verified_at IS NULL
+           AND verified_by IS NULL",
         [],
     )?;
 
@@ -396,5 +400,59 @@ mod tests {
         assert_eq!(row.1, 1.0);
         assert_eq!(row.2.as_deref(), Some("2026-04-19T09:00:00Z"));
         assert_eq!(row.3.as_deref(), Some("legacy_migration"));
+    }
+
+    #[test]
+    fn migrations_do_not_rewrite_non_legacy_memory_verifier() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO approved_memories (
+                memory_id, repo_id, kind, title, value, usage_hint, status,
+                last_verified_at, freshness_status, freshness_score,
+                verified_at, verified_by, created_from_candidate_id, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, ?13, ?13)",
+            rusqlite::params![
+                "mem-current",
+                "repo-1",
+                "command",
+                "Current verification",
+                "cargo test",
+                "Use before shipping",
+                "active",
+                "2026-04-20T09:00:00Z",
+                "fresh",
+                1.0_f64,
+                "2026-04-20T09:00:00Z",
+                Option::<String>::None,
+                "2026-04-20T09:00:00Z",
+            ],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let row = conn
+            .query_row(
+                "SELECT freshness_status, freshness_score, verified_at, verified_by
+                 FROM approved_memories
+                 WHERE memory_id = ?1",
+                ["mem-current"],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, f64>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(row.0, "fresh");
+        assert_eq!(row.1, 1.0);
+        assert_eq!(row.2.as_deref(), Some("2026-04-20T09:00:00Z"));
+        assert_eq!(row.3, None);
     }
 }
