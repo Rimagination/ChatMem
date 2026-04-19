@@ -1,0 +1,903 @@
+use anyhow::{Context, Result};
+use rusqlite::{params, Connection, OptionalExtension};
+use std::path::PathBuf;
+
+use agentswap_core::types::{ChangeType, Conversation, Role, ToolStatus};
+
+use super::{
+    db,
+    handoff,
+    models::{
+        ApprovedMemoryResponse, CreateMemoryCandidateInput, EpisodeResponse, EvidenceRef,
+        HandoffPacketResponse, MemoryCandidateResponse, SearchHistoryMatch,
+    },
+    repo_identity,
+};
+
+#[derive(Debug, Clone)]
+pub struct MemoryStore {
+    db_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub enum ReviewAction {
+    Approve { title: String, usage_hint: String },
+    ApproveWithEdit { title: String, value: String, usage_hint: String },
+    Reject,
+    Snooze,
+}
+
+impl MemoryStore {
+    pub fn open_app() -> Result<Self> {
+        let path = db::default_db_path()?;
+        Self::new(path)
+    }
+
+    pub fn new(db_path: PathBuf) -> Result<Self> {
+        let _ = db::open_connection(&db_path)?;
+        Ok(Self { db_path })
+    }
+
+    fn conn(&self) -> Result<Connection> {
+        db::open_connection(&self.db_path)
+    }
+
+    pub fn ensure_repo(&self, repo_root: &str) -> Result<String> {
+        let repo_root = repo_identity::normalize_repo_root(repo_root);
+        let repo_id = repo_identity::fingerprint_repo(&repo_root, None, None);
+        let now = chrono::Utc::now().to_rfc3339();
+        let conn = self.conn()?;
+
+        conn.execute(
+            "INSERT INTO repos (
+                repo_id, repo_root, repo_fingerprint, git_remote, default_branch, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, NULL, NULL, ?4, ?4)
+             ON CONFLICT(repo_id) DO UPDATE SET repo_root = excluded.repo_root, updated_at = excluded.updated_at",
+            params![repo_id, repo_root, repo_id, now],
+        )?;
+
+        Ok(repo_id)
+    }
+
+    pub fn repo_root_for_id(&self, repo_id: &str) -> Result<String> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT repo_root FROM repos WHERE repo_id = ?1",
+            [repo_id],
+            |row| row.get::<_, String>(0),
+        )
+        .context("repository not found")
+    }
+
+    pub fn upsert_conversation_snapshot(
+        &self,
+        agent: &str,
+        conversation: &Conversation,
+        storage_path: Option<String>,
+    ) -> Result<String> {
+        let repo_id = self.ensure_repo(&conversation.project_dir)?;
+        let conversation_id = format!("{agent}:{}", conversation.id);
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+
+        tx.execute(
+            "INSERT INTO conversations (
+                conversation_id, repo_id, source_agent, source_conversation_id, summary,
+                started_at, updated_at, storage_path
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(conversation_id) DO UPDATE SET
+                repo_id = excluded.repo_id,
+                summary = excluded.summary,
+                updated_at = excluded.updated_at,
+                storage_path = excluded.storage_path",
+            params![
+                conversation_id,
+                repo_id,
+                agent,
+                conversation.id,
+                conversation.summary,
+                conversation.created_at.to_rfc3339(),
+                conversation.updated_at.to_rfc3339(),
+                storage_path,
+            ],
+        )?;
+
+        tx.execute("DELETE FROM tool_calls WHERE message_id IN (SELECT message_id FROM messages WHERE conversation_id = ?1)", [conversation_id.clone()])?;
+        tx.execute("DELETE FROM messages WHERE conversation_id = ?1", [conversation_id.clone()])?;
+        tx.execute("DELETE FROM file_changes WHERE conversation_id = ?1", [conversation_id.clone()])?;
+
+        for message in &conversation.messages {
+            let message_id = format!("{conversation_id}:{}", message.id);
+            let role = match message.role {
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::System => "system",
+            };
+
+            tx.execute(
+                "INSERT INTO messages (message_id, conversation_id, role, content, timestamp)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    message_id,
+                    conversation_id,
+                    role,
+                    message.content,
+                    message.timestamp.to_rfc3339(),
+                ],
+            )?;
+
+            for (index, tool_call) in message.tool_calls.iter().enumerate() {
+                let tool_call_id = format!("{message_id}:tool:{index}");
+                let status = match tool_call.status {
+                    ToolStatus::Success => "success",
+                    ToolStatus::Error => "error",
+                };
+                tx.execute(
+                    "INSERT INTO tool_calls (tool_call_id, message_id, name, input_json, output_text, status)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        tool_call_id,
+                        message_id,
+                        tool_call.name,
+                        serde_json::to_string(&tool_call.input).unwrap_or_else(|_| "{}".to_string()),
+                        tool_call.output,
+                        status,
+                    ],
+                )?;
+            }
+        }
+
+        for (index, file_change) in conversation.file_changes.iter().enumerate() {
+            let file_change_id = format!("{conversation_id}:change:{index}");
+            let message_id = format!("{conversation_id}:{}", file_change.message_id);
+            let change_type = match file_change.change_type {
+                ChangeType::Created => "created",
+                ChangeType::Modified => "modified",
+                ChangeType::Deleted => "deleted",
+            };
+
+            tx.execute(
+                "INSERT INTO file_changes (file_change_id, conversation_id, message_id, path, change_type, timestamp)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    file_change_id,
+                    conversation_id,
+                    message_id,
+                    file_change.path,
+                    change_type,
+                    file_change.timestamp.to_rfc3339(),
+                ],
+            )?;
+        }
+
+        let title = conversation
+            .summary
+            .clone()
+            .unwrap_or_else(|| conversation.id.clone());
+        let search_body = build_conversation_search_body(conversation);
+        let search_doc_id = format!("conversation:{conversation_id}");
+        upsert_search_document_tx(
+            &tx,
+            &search_doc_id,
+            &repo_id,
+            "conversation",
+            &conversation_id,
+            &title,
+            &search_body,
+        )?;
+
+        let episode_id = format!("episode:{conversation_id}");
+        let episode_summary = summarize_conversation(conversation);
+        tx.execute(
+            "INSERT INTO episodes (
+                episode_id, repo_id, title, summary, outcome, created_at, source_conversation_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(episode_id) DO UPDATE SET
+                title = excluded.title,
+                summary = excluded.summary,
+                outcome = excluded.outcome,
+                created_at = excluded.created_at",
+            params![
+                episode_id,
+                repo_id,
+                title,
+                episode_summary,
+                "captured",
+                conversation.updated_at.to_rfc3339(),
+                conversation_id,
+            ],
+        )?;
+
+        upsert_search_document_tx(
+            &tx,
+            &format!("episode:{conversation_id}"),
+            &repo_id,
+            "episode",
+            &episode_id,
+            &title,
+            &episode_summary,
+        )?;
+
+        let excerpt = search_body.chars().take(240).collect::<String>();
+        tx.execute("DELETE FROM evidence_refs WHERE owner_type = 'episode' AND owner_id = ?1", [episode_id.clone()])?;
+        tx.execute(
+            "INSERT INTO evidence_refs (
+                evidence_id, owner_type, owner_id, conversation_id, message_id, tool_call_id, file_change_id, excerpt, created_at
+             ) VALUES (?1, 'episode', ?2, ?3, NULL, NULL, NULL, ?4, ?5)",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                episode_id,
+                conversation_id,
+                excerpt,
+                chrono::Utc::now().to_rfc3339(),
+            ],
+        )?;
+
+        tx.commit()?;
+
+        Ok(repo_id)
+    }
+
+    pub fn create_candidate(&self, input: &CreateMemoryCandidateInput) -> Result<String> {
+        let repo_id = self.ensure_repo(&input.repo_root)?;
+        let candidate_id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+
+        tx.execute(
+            "INSERT INTO memory_candidates (
+                candidate_id, repo_id, kind, summary, value, why_it_matters,
+                confidence, proposed_by, status, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending_review', ?9)",
+            params![
+                candidate_id,
+                repo_id,
+                input.kind,
+                input.summary,
+                input.value,
+                input.why_it_matters,
+                input.confidence,
+                input.proposed_by,
+                now,
+            ],
+        )?;
+
+        replace_evidence_refs_tx(&tx, "candidate", &candidate_id, &input.evidence_refs)?;
+        tx.commit()?;
+
+        Ok(candidate_id)
+    }
+
+    pub fn review_candidate(&self, candidate_id: &str, review: ReviewAction) -> Result<()> {
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+
+        let candidate = tx
+            .query_row(
+                "SELECT repo_id, kind, summary, value, why_it_matters FROM memory_candidates WHERE candidate_id = ?1",
+                [candidate_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .with_context(|| format!("candidate {candidate_id} not found"))?;
+
+        let now = chrono::Utc::now().to_rfc3339();
+        match review {
+            ReviewAction::Approve { title, usage_hint } => {
+                let memory_id = uuid::Uuid::new_v4().to_string();
+                tx.execute(
+                    "INSERT INTO approved_memories (
+                        memory_id, repo_id, kind, title, value, usage_hint, status,
+                        last_verified_at, created_from_candidate_id, created_at, updated_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?7, ?7)",
+                    params![
+                        memory_id,
+                        candidate.0,
+                        candidate.1,
+                        title,
+                        candidate.3,
+                        usage_hint,
+                        now,
+                        candidate_id,
+                    ],
+                )?;
+                tx.execute(
+                    "UPDATE memory_candidates SET status = 'approved', reviewed_at = ?2 WHERE candidate_id = ?1",
+                    params![candidate_id, now],
+                )?;
+                let evidence = load_evidence_refs_from_conn(&tx, "candidate", candidate_id)?;
+                replace_evidence_refs_tx(&tx, "memory", &memory_id, &evidence)?;
+                upsert_search_document_tx(
+                    &tx,
+                    &format!("memory:{memory_id}"),
+                    &candidate.0,
+                    "memory",
+                    &memory_id,
+                    &title,
+                    &candidate.3,
+                )?;
+            }
+            ReviewAction::ApproveWithEdit {
+                title,
+                value,
+                usage_hint,
+            } => {
+                let memory_id = uuid::Uuid::new_v4().to_string();
+                tx.execute(
+                    "INSERT INTO approved_memories (
+                        memory_id, repo_id, kind, title, value, usage_hint, status,
+                        last_verified_at, created_from_candidate_id, created_at, updated_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?7, ?7)",
+                    params![
+                        memory_id,
+                        candidate.0,
+                        candidate.1,
+                        title,
+                        value,
+                        usage_hint,
+                        now,
+                        candidate_id,
+                    ],
+                )?;
+                tx.execute(
+                    "UPDATE memory_candidates SET status = 'approved', reviewed_at = ?2 WHERE candidate_id = ?1",
+                    params![candidate_id, now],
+                )?;
+                let evidence = load_evidence_refs_from_conn(&tx, "candidate", candidate_id)?;
+                replace_evidence_refs_tx(&tx, "memory", &memory_id, &evidence)?;
+                upsert_search_document_tx(
+                    &tx,
+                    &format!("memory:{memory_id}"),
+                    &candidate.0,
+                    "memory",
+                    &memory_id,
+                    &title,
+                    &value,
+                )?;
+            }
+            ReviewAction::Reject => {
+                tx.execute(
+                    "UPDATE memory_candidates SET status = 'rejected', reviewed_at = ?2 WHERE candidate_id = ?1",
+                    params![candidate_id, now],
+                )?;
+            }
+            ReviewAction::Snooze => {
+                tx.execute(
+                    "UPDATE memory_candidates SET status = 'snoozed', reviewed_at = ?2 WHERE candidate_id = ?1",
+                    params![candidate_id, now],
+                )?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn list_repo_memories(&self, repo_root: &str) -> Result<Vec<ApprovedMemoryResponse>> {
+        let repo_id = self.ensure_repo(repo_root)?;
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT memory_id, kind, title, value, usage_hint, status, last_verified_at
+             FROM approved_memories
+             WHERE repo_id = ?1
+             ORDER BY updated_at DESC",
+        )?;
+
+        let rows = stmt.query_map([repo_id], |row| {
+            Ok(ApprovedMemoryResponse {
+                memory_id: row.get(0)?,
+                kind: row.get(1)?,
+                title: row.get(2)?,
+                value: row.get(3)?,
+                usage_hint: row.get(4)?,
+                status: row.get(5)?,
+                last_verified_at: row.get(6)?,
+                selected_because: None,
+                evidence_refs: vec![],
+            })
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+            .and_then(|mut memories| {
+                for memory in &mut memories {
+                    memory.evidence_refs = self.evidence_refs("memory", &memory.memory_id)?;
+                }
+                Ok(memories)
+            })
+    }
+
+    pub fn list_candidates(&self, repo_root: &str) -> Result<Vec<MemoryCandidateResponse>> {
+        let repo_id = self.ensure_repo(repo_root)?;
+        self.list_candidates_by_repo_id(&repo_id, None)
+    }
+
+    pub fn list_candidates_with_status(
+        &self,
+        repo_root: &str,
+        status: Option<&str>,
+    ) -> Result<Vec<MemoryCandidateResponse>> {
+        let repo_id = self.ensure_repo(repo_root)?;
+        self.list_candidates_by_repo_id(&repo_id, status)
+    }
+
+    fn list_candidates_by_repo_id(
+        &self,
+        repo_id: &str,
+        status: Option<&str>,
+    ) -> Result<Vec<MemoryCandidateResponse>> {
+        let conn = self.conn()?;
+        let mut sql = String::from(
+            "SELECT candidate_id, kind, summary, value, why_it_matters, confidence, proposed_by, status, created_at
+             FROM memory_candidates
+             WHERE repo_id = ?1",
+        );
+        if status.is_some() {
+            sql.push_str(" AND status = ?2");
+        }
+        sql.push_str(" ORDER BY created_at DESC");
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = if let Some(status) = status {
+            stmt.query_map(params![repo_id, status], |row| {
+                Ok(MemoryCandidateResponse {
+                    candidate_id: row.get(0)?,
+                    kind: row.get(1)?,
+                    summary: row.get(2)?,
+                    value: row.get(3)?,
+                    why_it_matters: row.get(4)?,
+                    confidence: row.get(5)?,
+                    proposed_by: row.get(6)?,
+                    status: row.get(7)?,
+                    created_at: row.get(8)?,
+                    evidence_refs: vec![],
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+        } else {
+            stmt.query_map(params![repo_id], |row| {
+                Ok(MemoryCandidateResponse {
+                    candidate_id: row.get(0)?,
+                    kind: row.get(1)?,
+                    summary: row.get(2)?,
+                    value: row.get(3)?,
+                    why_it_matters: row.get(4)?,
+                    confidence: row.get(5)?,
+                    proposed_by: row.get(6)?,
+                    status: row.get(7)?,
+                    created_at: row.get(8)?,
+                    evidence_refs: vec![],
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+        };
+
+        let mut candidates = rows;
+        for candidate in &mut candidates {
+            candidate.evidence_refs = self.evidence_refs("candidate", &candidate.candidate_id)?;
+        }
+        Ok(candidates)
+    }
+
+    pub fn list_episodes(&self, repo_root: &str) -> Result<Vec<EpisodeResponse>> {
+        let repo_id = self.ensure_repo(repo_root)?;
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT episode_id, title, summary, outcome, created_at, source_conversation_id
+             FROM episodes
+             WHERE repo_id = ?1
+             ORDER BY created_at DESC",
+        )?;
+
+        let rows = stmt
+            .query_map([repo_id], |row| {
+                Ok(EpisodeResponse {
+                    episode_id: row.get(0)?,
+                    title: row.get(1)?,
+                    summary: row.get(2)?,
+                    outcome: row.get(3)?,
+                    created_at: row.get(4)?,
+                    source_conversation_id: row.get(5)?,
+                    evidence_refs: vec![],
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut episodes = rows;
+        for episode in &mut episodes {
+            episode.evidence_refs = self.evidence_refs("episode", &episode.episode_id)?;
+        }
+        Ok(episodes)
+    }
+
+    pub fn list_handoffs(&self, repo_root: &str) -> Result<Vec<HandoffPacketResponse>> {
+        let repo_id = self.ensure_repo(repo_root)?;
+        let repo_root = self.repo_root_for_id(&repo_id)?;
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT handoff_id, from_agent, to_agent, current_goal, done_json, next_json,
+                    key_files_json, commands_json, related_memories_json, related_episodes_json, created_at
+             FROM handoff_packets
+             WHERE repo_id = ?1
+             ORDER BY created_at DESC",
+        )?;
+
+        let rows = stmt
+            .query_map([repo_id], |row| {
+                Ok(HandoffPacketResponse {
+                    handoff_id: row.get(0)?,
+                    repo_root: repo_root.clone(),
+                    from_agent: row.get(1)?,
+                    to_agent: row.get(2)?,
+                    current_goal: row.get(3)?,
+                    done_items: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(4)?).unwrap_or_default(),
+                    next_items: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(5)?).unwrap_or_default(),
+                    key_files: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(6)?).unwrap_or_default(),
+                    useful_commands: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(7)?).unwrap_or_default(),
+                    related_memories: serde_json::from_str::<Vec<ApprovedMemoryResponse>>(&row.get::<_, String>(8)?).unwrap_or_default(),
+                    related_episodes: serde_json::from_str::<Vec<EpisodeResponse>>(&row.get::<_, String>(9)?).unwrap_or_default(),
+                    created_at: row.get(10)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(rows)
+    }
+
+    pub fn latest_handoff(&self, repo_root: &str) -> Result<Option<HandoffPacketResponse>> {
+        Ok(self.list_handoffs(repo_root)?.into_iter().next())
+    }
+
+    pub fn build_and_store_handoff(
+        &self,
+        repo_root: &str,
+        from_agent: &str,
+        to_agent: &str,
+        goal_hint: Option<&str>,
+    ) -> Result<HandoffPacketResponse> {
+        let repo_id = self.ensure_repo(repo_root)?;
+        let repo_root = self.repo_root_for_id(&repo_id)?;
+        let conn = self.conn()?;
+        let latest_summary = conn
+            .query_row(
+                "SELECT summary FROM conversations WHERE repo_id = ?1 ORDER BY updated_at DESC LIMIT 1",
+                [repo_id.clone()],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+
+        let key_files = {
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT path FROM file_changes
+                 WHERE conversation_id IN (
+                    SELECT conversation_id FROM conversations WHERE repo_id = ?1 ORDER BY updated_at DESC LIMIT 3
+                 )
+                 ORDER BY timestamp DESC
+                 LIMIT 5",
+            )?;
+            let rows = stmt
+                .query_map([repo_id.clone()], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+
+        let related_memories = self
+            .list_repo_memories(&repo_root)?
+            .into_iter()
+            .filter(|memory| memory.status == "active")
+            .take(3)
+            .collect::<Vec<_>>();
+        let useful_commands = related_memories
+            .iter()
+            .filter(|memory| memory.kind == "command")
+            .map(|memory| memory.value.clone())
+            .take(3)
+            .collect::<Vec<_>>();
+        let related_episodes = self.list_episodes(&repo_root)?.into_iter().take(2).collect::<Vec<_>>();
+        let done_items = handoff::summarize_done_item(latest_summary.as_deref());
+        let next_items = vec![handoff::derive_goal(goal_hint, latest_summary.as_deref())];
+        let packet = HandoffPacketResponse {
+            handoff_id: uuid::Uuid::new_v4().to_string(),
+            repo_root,
+            from_agent: from_agent.to_string(),
+            to_agent: to_agent.to_string(),
+            current_goal: handoff::derive_goal(goal_hint, latest_summary.as_deref()),
+            done_items,
+            next_items,
+            key_files,
+            useful_commands,
+            related_memories,
+            related_episodes,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+
+        conn.execute(
+            "INSERT INTO handoff_packets (
+                handoff_id, repo_id, from_agent, to_agent, current_goal,
+                done_json, next_json, key_files_json, commands_json,
+                related_memories_json, related_episodes_json, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                packet.handoff_id,
+                repo_id,
+                packet.from_agent,
+                packet.to_agent,
+                packet.current_goal,
+                serde_json::to_string(&packet.done_items)?,
+                serde_json::to_string(&packet.next_items)?,
+                serde_json::to_string(&packet.key_files)?,
+                serde_json::to_string(&packet.useful_commands)?,
+                serde_json::to_string(&packet.related_memories)?,
+                serde_json::to_string(&packet.related_episodes)?,
+                packet.created_at,
+            ],
+        )?;
+
+        Ok(packet)
+    }
+
+    pub fn search_history(&self, repo_root: &str, query: &str, limit: usize) -> Result<Vec<SearchHistoryMatch>> {
+        let repo_id = self.ensure_repo(repo_root)?;
+        let conn = self.conn()?;
+        let mut matches = Vec::new();
+
+        let fts_result = conn.prepare(
+            "SELECT sd.doc_type, sd.doc_ref_id, sd.title, sd.body
+             FROM search_documents_fts
+             JOIN search_documents sd ON sd.doc_id = search_documents_fts.doc_id
+             WHERE sd.repo_id = ?1 AND search_documents_fts MATCH ?2
+             ORDER BY bm25(search_documents_fts)
+             LIMIT ?3",
+        );
+
+        if let Ok(mut stmt) = fts_result {
+            let rows = stmt.query_map(params![repo_id.clone(), query, limit as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?;
+
+            for row in rows {
+                let (doc_type, doc_ref_id, title, body) = row?;
+                matches.push(SearchHistoryMatch {
+                    r#type: doc_type.clone(),
+                    title,
+                    summary: truncate_text(&body, 280),
+                    why_matched: "Repository history search match".to_string(),
+                    score: 1.0,
+                    evidence_refs: self.evidence_refs(evidence_owner_for_doc_type(&doc_type), &doc_ref_id)?,
+                });
+            }
+        }
+
+        if matches.is_empty() {
+            let like = format!("%{}%", query.to_lowercase());
+            let mut stmt = conn.prepare(
+                "SELECT doc_type, doc_ref_id, title, body
+                 FROM search_documents
+                 WHERE repo_id = ?1 AND lower(title || ' ' || body) LIKE ?2
+                 ORDER BY updated_at DESC
+                 LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(params![repo_id, like, limit as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?;
+
+            for row in rows {
+                let (doc_type, doc_ref_id, title, body) = row?;
+                matches.push(SearchHistoryMatch {
+                    r#type: doc_type.clone(),
+                    title,
+                    summary: truncate_text(&body, 280),
+                    why_matched: "Repository history search fallback match".to_string(),
+                    score: 0.5,
+                    evidence_refs: self.evidence_refs(evidence_owner_for_doc_type(&doc_type), &doc_ref_id)?,
+                });
+            }
+        }
+
+        Ok(matches)
+    }
+
+    pub fn evidence_refs(&self, owner_type: &str, owner_id: &str) -> Result<Vec<EvidenceRef>> {
+        let conn = self.conn()?;
+        load_evidence_refs_from_conn(&conn, owner_type, owner_id)
+    }
+}
+
+fn evidence_owner_for_doc_type(doc_type: &str) -> &'static str {
+    match doc_type {
+        "memory" => "memory",
+        "episode" => "episode",
+        _ => "conversation",
+    }
+}
+
+fn load_evidence_refs_from_conn(conn: &Connection, owner_type: &str, owner_id: &str) -> Result<Vec<EvidenceRef>> {
+    let mut stmt = conn.prepare(
+        "SELECT evidence_id, conversation_id, message_id, tool_call_id, file_change_id, excerpt
+         FROM evidence_refs
+         WHERE owner_type = ?1 AND owner_id = ?2
+         ORDER BY created_at ASC",
+    )?;
+    let rows = stmt
+        .query_map(params![owner_type, owner_id], |row| {
+            Ok(EvidenceRef {
+                evidence_id: Some(row.get(0)?),
+                conversation_id: row.get(1)?,
+                message_id: row.get(2)?,
+                tool_call_id: row.get(3)?,
+                file_change_id: row.get(4)?,
+                excerpt: row.get(5)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+fn replace_evidence_refs_tx(
+    conn: &Connection,
+    owner_type: &str,
+    owner_id: &str,
+    evidence_refs: &[EvidenceRef],
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM evidence_refs WHERE owner_type = ?1 AND owner_id = ?2",
+        params![owner_type, owner_id],
+    )?;
+
+    for evidence in evidence_refs {
+        conn.execute(
+            "INSERT INTO evidence_refs (
+                evidence_id, owner_type, owner_id, conversation_id, message_id, tool_call_id, file_change_id, excerpt, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                owner_type,
+                owner_id,
+                evidence.conversation_id,
+                evidence.message_id,
+                evidence.tool_call_id,
+                evidence.file_change_id,
+                evidence.excerpt,
+                chrono::Utc::now().to_rfc3339(),
+            ],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn upsert_search_document_tx(
+    conn: &Connection,
+    doc_id: &str,
+    repo_id: &str,
+    doc_type: &str,
+    doc_ref_id: &str,
+    title: &str,
+    body: &str,
+) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO search_documents (doc_id, repo_id, doc_type, doc_ref_id, title, body, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(doc_id) DO UPDATE SET
+            repo_id = excluded.repo_id,
+            doc_type = excluded.doc_type,
+            doc_ref_id = excluded.doc_ref_id,
+            title = excluded.title,
+            body = excluded.body,
+            updated_at = excluded.updated_at",
+        params![doc_id, repo_id, doc_type, doc_ref_id, title, body, now],
+    )?;
+    conn.execute("DELETE FROM search_documents_fts WHERE doc_id = ?1", [doc_id])?;
+    conn.execute(
+        "INSERT INTO search_documents_fts (doc_id, title, body) VALUES (?1, ?2, ?3)",
+        params![doc_id, title, body],
+    )?;
+    Ok(())
+}
+
+fn summarize_conversation(conversation: &Conversation) -> String {
+    if let Some(summary) = &conversation.summary {
+        if !summary.trim().is_empty() {
+            return summary.clone();
+        }
+    }
+
+    conversation
+        .messages
+        .iter()
+        .find(|message| !message.content.trim().is_empty())
+        .map(|message| truncate_text(&message.content, 240))
+        .unwrap_or_else(|| conversation.id.clone())
+}
+
+fn build_conversation_search_body(conversation: &Conversation) -> String {
+    let mut sections = Vec::new();
+    if let Some(summary) = &conversation.summary {
+        sections.push(summary.clone());
+    }
+
+    for message in conversation.messages.iter().take(12) {
+        if !message.content.trim().is_empty() {
+            sections.push(message.content.clone());
+        }
+    }
+
+    for file_change in conversation.file_changes.iter().take(8) {
+        sections.push(file_change.path.clone());
+    }
+
+    truncate_text(&sections.join("\n"), 4_000)
+}
+
+fn truncate_text(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}...")
+    } else {
+        truncated
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MemoryStore, ReviewAction};
+    use crate::chatmem_memory::models::CreateMemoryCandidateInput;
+
+    fn new_store() -> MemoryStore {
+        let path = std::env::temp_dir().join(format!("chatmem-store-test-{}.sqlite", uuid::Uuid::new_v4()));
+        MemoryStore::new(path).unwrap()
+    }
+
+    #[test]
+    fn approving_a_candidate_promotes_it_to_approved_memory() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "command".to_string(),
+                summary: "Run tests".to_string(),
+                value: "npm run test:run".to_string(),
+                why_it_matters: "Needed before merge".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.92,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        store
+            .review_candidate(
+                &candidate_id,
+                ReviewAction::Approve {
+                    title: "Primary test command".into(),
+                    usage_hint: "Inject on startup when the task hint mentions tests".into(),
+                },
+            )
+            .unwrap();
+
+        let memories = store.list_repo_memories(repo_root).unwrap();
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].value, "npm run test:run");
+    }
+}

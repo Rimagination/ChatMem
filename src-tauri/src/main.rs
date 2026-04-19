@@ -3,10 +3,15 @@
     windows_subsystem = "windows"
 )]
 
-use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use tauri::command;
-use walkdir::WalkDir;
+use chatmem::chatmem_memory::{
+    models::{
+        ApprovedMemoryResponse, EpisodeResponse, HandoffPacketResponse, MemoryCandidateResponse,
+    },
+    store::{MemoryStore, ReviewAction},
+    sync::{build_resume_command, resolve_storage_path, sync_conversation_into_store},
+};
 
 // Import AgentSwap adapters
 use agentswap_claude::ClaudeAdapter;
@@ -81,85 +86,6 @@ fn agent_key(agent: &AgentKind) -> &'static str {
         AgentKind::Claude => "claude",
         AgentKind::Codex => "codex",
         AgentKind::Gemini => "gemini",
-    }
-}
-
-fn build_resume_command(agent: &str, id: &str) -> Option<String> {
-    match agent {
-        "claude" => Some(format!("claude --resume {}", id)),
-        "codex" => Some(format!("codex resume {}", id)),
-        "gemini" => Some(format!("gemini --resume {}", id)),
-        _ => None,
-    }
-}
-
-fn resolve_claude_storage_path(id: &str) -> Option<String> {
-    let projects_dir = dirs::home_dir()?.join(".claude").join("projects");
-    let filename = format!("{}.jsonl", id);
-
-    WalkDir::new(projects_dir)
-        .min_depth(2)
-        .max_depth(2)
-        .into_iter()
-        .filter_map(|entry| entry.ok())
-        .find(|entry| entry.file_name().to_string_lossy() == filename)
-        .map(|entry| entry.path().display().to_string())
-}
-
-fn resolve_codex_storage_path(id: &str) -> Option<String> {
-    let db_path = dirs::home_dir()?.join(".codex").join("state_5.sqlite");
-    let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
-    let mut stmt = conn
-        .prepare("SELECT rollout_path FROM threads WHERE id = ?1")
-        .ok()?;
-    stmt.query_row([id], |row| row.get::<_, String>(0)).ok()
-}
-
-fn resolve_gemini_storage_path(id: &str) -> Option<String> {
-    let tmp_dir = dirs::home_dir()?.join(".gemini").join("tmp");
-
-    WalkDir::new(tmp_dir)
-        .min_depth(3)
-        .max_depth(3)
-        .into_iter()
-        .filter_map(|entry| entry.ok())
-        .find_map(|entry| {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-                return None;
-            }
-
-            let parent_name = path
-                .parent()
-                .and_then(|parent| parent.file_name())
-                .and_then(|name| name.to_str())?;
-            if parent_name != "chats" {
-                return None;
-            }
-
-            let file_name = path.file_name()?.to_string_lossy();
-            let direct_match = file_name == format!("session-{}.json", id) || file_name == format!("{}.json", id);
-            if direct_match {
-                return Some(path.display().to_string());
-            }
-
-            let data = std::fs::read(path).ok()?;
-            let parsed = serde_json::from_slice::<serde_json::Value>(&data).ok()?;
-            let session_id = parsed.get("sessionId").and_then(|value| value.as_str())?;
-            if session_id == id {
-                Some(path.display().to_string())
-            } else {
-                None
-            }
-        })
-}
-
-fn resolve_storage_path(agent: &str, id: &str) -> Option<String> {
-    match agent {
-        "claude" => resolve_claude_storage_path(id),
-        "codex" => resolve_codex_storage_path(id),
-        "gemini" => resolve_gemini_storage_path(id),
-        _ => None,
     }
 }
 
@@ -286,6 +212,10 @@ fn convert_conversation(
     }
 }
 
+fn open_memory_store() -> Result<MemoryStore, String> {
+    MemoryStore::open_app().map_err(|e| e.to_string())
+}
+
 #[command]
 async fn list_conversations(agent: String) -> Result<Vec<ConversationSummaryResponse>, String> {
     let adapter = get_adapter(&agent)?;
@@ -345,6 +275,9 @@ async fn read_conversation(agent: String, id: String) -> Result<ConversationResp
     let conversation = adapter.read_conversation(&id).map_err(|e| e.to_string())?;
     let storage_path = resolve_storage_path(&agent, &id);
     let resume_command = build_resume_command(&agent, &id);
+    if let Ok(store) = MemoryStore::open_app() {
+        let _ = sync_conversation_into_store(&store, &agent, &conversation);
+    }
     Ok(convert_conversation(conversation, storage_path, resume_command))
 }
 
@@ -387,6 +320,74 @@ async fn check_agent_available(agent: String) -> Result<bool, String> {
     Ok(adapter.is_available())
 }
 
+#[command]
+async fn list_repo_memories(repo_root: String) -> Result<Vec<ApprovedMemoryResponse>, String> {
+    let store = open_memory_store()?;
+    store.list_repo_memories(&repo_root).map_err(|e| e.to_string())
+}
+
+#[command]
+async fn list_memory_candidates(
+    repo_root: String,
+    status: Option<String>,
+) -> Result<Vec<MemoryCandidateResponse>, String> {
+    let store = open_memory_store()?;
+    store
+        .list_candidates_with_status(&repo_root, status.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[command]
+async fn review_memory_candidate(
+    candidate_id: String,
+    action: String,
+    edited_title: Option<String>,
+    edited_value: Option<String>,
+    edited_usage_hint: Option<String>,
+) -> Result<(), String> {
+    let store = open_memory_store()?;
+    let review = match action.as_str() {
+        "approve" => ReviewAction::Approve {
+            title: edited_title.unwrap_or_else(|| "Approved memory".to_string()),
+            usage_hint: edited_usage_hint.unwrap_or_else(|| "Used for startup injection".to_string()),
+        },
+        "approve_with_edit" => ReviewAction::ApproveWithEdit {
+            title: edited_title.unwrap_or_else(|| "Approved memory".to_string()),
+            value: edited_value.unwrap_or_default(),
+            usage_hint: edited_usage_hint.unwrap_or_else(|| "Used for startup injection".to_string()),
+        },
+        "reject" => ReviewAction::Reject,
+        _ => ReviewAction::Snooze,
+    };
+
+    store.review_candidate(&candidate_id, review).map_err(|e| e.to_string())
+}
+
+#[command]
+async fn list_episodes(repo_root: String) -> Result<Vec<EpisodeResponse>, String> {
+    let store = open_memory_store()?;
+    store.list_episodes(&repo_root).map_err(|e| e.to_string())
+}
+
+#[command]
+async fn list_handoffs(repo_root: String) -> Result<Vec<HandoffPacketResponse>, String> {
+    let store = open_memory_store()?;
+    store.list_handoffs(&repo_root).map_err(|e| e.to_string())
+}
+
+#[command]
+async fn create_handoff_packet(
+    repo_root: String,
+    from_agent: String,
+    to_agent: String,
+    goal_hint: Option<String>,
+) -> Result<HandoffPacketResponse, String> {
+    let store = open_memory_store()?;
+    store
+        .build_and_store_handoff(&repo_root, &from_agent, &to_agent, goal_hint.as_deref())
+        .map_err(|e| e.to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -396,6 +397,12 @@ fn main() {
             migrate_conversation,
             delete_conversation,
             check_agent_available,
+            list_repo_memories,
+            list_memory_candidates,
+            review_memory_candidate,
+            list_episodes,
+            list_handoffs,
+            create_handoff_packet,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

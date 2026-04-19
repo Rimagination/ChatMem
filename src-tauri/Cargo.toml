@@ -1,6 +1,7 @@
 [package]
 name = "chatmem"
-version = "0.1.1"
+version = "0.1.3"
+default-run = "chatmem"
 description = "ChatMem - Your AI conversations, forever remembered"
 authors = ["ChatMem"]
 license = "MIT"
@@ -15,10 +16,13 @@ serde = { version = "1", features = ["derive"] }
 tauri = { version = "1", features = ["shell-open", "updater"] }
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 walkdir = "2"
 dirs = "5"
 rusqlite = { version = "0.31", features = ["bundled"] }
+rmcp = { version = "1.5.0", features = ["server", "macros", "transport-io"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std"] }
+schemars = "1"
 
 # Vendored AgentSwap parser crates for standalone CI builds
 agentswap-core = { path = "../crates/agentswap-core" }
