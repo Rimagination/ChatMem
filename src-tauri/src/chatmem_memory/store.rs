@@ -42,7 +42,7 @@ impl MemoryStore {
         Ok(Self { db_path })
     }
 
-    fn conn(&self) -> Result<Connection> {
+    pub(crate) fn conn(&self) -> Result<Connection> {
         db::open_connection(&self.db_path)
     }
 
@@ -849,7 +849,7 @@ impl MemoryStore {
         let related_memories = self
             .list_repo_memories(&repo_root)?
             .into_iter()
-            .filter(|memory| memory.status == "active")
+            .filter(|memory| memory.status == "active" && memory.freshness_status == "fresh")
             .take(3)
             .collect::<Vec<_>>();
         let useful_commands = related_memories
@@ -967,7 +967,7 @@ impl MemoryStore {
         let related_memories = self
             .list_repo_memories(&repo_root)?
             .into_iter()
-            .filter(|memory| memory.status == "active")
+            .filter(|memory| memory.status == "active" && memory.freshness_status == "fresh")
             .take(3)
             .collect::<Vec<_>>();
         let mut useful_commands = related_memories
@@ -1595,6 +1595,97 @@ mod tests {
         assert!(lint_memory.freshness_score < 1.0);
         assert_eq!(rust_memory.freshness_status, "stale");
         assert!(rust_memory.freshness_score < lint_memory.freshness_score);
+    }
+
+    #[test]
+    fn handoff_builder_excludes_non_fresh_approved_memories() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+
+        let memories = [
+            ("Fresh command", Some(0_i64)),
+            ("Needs review command", Some(10_i64)),
+            ("Stale command", Some(45_i64)),
+            ("Unknown command", None),
+        ];
+
+        let conn = store.conn().unwrap();
+        for (title, days_ago) in memories {
+            let candidate_id = store
+                .create_candidate(&CreateMemoryCandidateInput {
+                    repo_root: repo_root.to_string(),
+                    kind: "command".to_string(),
+                    summary: title.to_string(),
+                    value: format!("echo {title}"),
+                    why_it_matters: "Should only ship when fresh".to_string(),
+                    evidence_refs: vec![],
+                    confidence: 0.86,
+                    proposed_by: "codex".to_string(),
+                })
+                .unwrap();
+            store
+                .review_candidate(
+                    &candidate_id,
+                    ReviewAction::Approve {
+                        title: title.to_string(),
+                        usage_hint: "Keep the gate tight".to_string(),
+                    },
+                )
+                .unwrap();
+
+            let memory_id = store
+                .list_repo_memories(repo_root)
+                .unwrap()
+                .into_iter()
+                .find(|memory| memory.title == title)
+                .map(|memory| memory.memory_id)
+                .unwrap();
+
+            match days_ago {
+                Some(days_ago) => {
+                    let verification_at =
+                        (chrono::Utc::now() - chrono::Duration::days(days_ago)).to_rfc3339();
+                    conn.execute(
+                        "UPDATE approved_memories
+                         SET last_verified_at = ?2,
+                             verified_at = ?2,
+                             freshness_status = 'fresh',
+                             freshness_score = 1.0
+                         WHERE memory_id = ?1",
+                        params![memory_id, verification_at],
+                    )
+                    .unwrap();
+                }
+                None => {
+                    conn.execute(
+                        "UPDATE approved_memories
+                         SET last_verified_at = NULL,
+                             verified_at = NULL,
+                             freshness_status = 'unknown',
+                             freshness_score = 0.0
+                         WHERE memory_id = ?1",
+                        params![memory_id],
+                    )
+                    .unwrap();
+                }
+            }
+        }
+
+        let packet = store
+            .build_and_store_handoff(repo_root, "codex", "claude", Some("Wrap schema changes"))
+            .unwrap();
+
+        let related_titles = packet
+            .related_memories
+            .iter()
+            .map(|memory| memory.title.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(related_titles, vec!["Fresh command"]);
+        assert!(packet
+            .related_memories
+            .iter()
+            .all(|memory| memory.freshness_status == "fresh"));
     }
 
     #[test]

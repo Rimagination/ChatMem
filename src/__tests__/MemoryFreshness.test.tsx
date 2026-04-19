@@ -121,7 +121,7 @@ describe("Memory freshness", () => {
     });
   });
 
-  it("treats unknown freshness separately from stale in approvals", async () => {
+  it("treats needs_review and stale as waiting to re-verify while excluding unknown", async () => {
     mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
       if (command === "list_conversations") {
         return [
@@ -156,17 +156,17 @@ describe("Memory freshness", () => {
       if (command === "list_repo_memories") {
         return [
           {
-            memory_id: "mem-unknown",
+            memory_id: "mem-needs-review",
             kind: "command",
-            title: "Unknown verification command",
-            value: "npm run docs",
-            usage_hint: "Use when docs change",
+            title: "Needs review command",
+            value: "npm run lint",
+            usage_hint: "Use after refactors",
             status: "active",
-            last_verified_at: null,
-            freshness_status: "unknown",
-            freshness_score: 0,
-            verified_at: null,
-            verified_by: null,
+            last_verified_at: "2026-04-05T08:30:00Z",
+            freshness_status: "needs_review",
+            freshness_score: 0.55,
+            verified_at: "2026-04-05T08:30:00Z",
+            verified_by: "claude",
             selected_because: null,
             evidence_refs: [],
           },
@@ -181,6 +181,21 @@ describe("Memory freshness", () => {
             freshness_status: "stale",
             freshness_score: 0.2,
             verified_at: "2026-03-01T08:30:00Z",
+            verified_by: "codex",
+            selected_because: null,
+            evidence_refs: [],
+          },
+          {
+            memory_id: "mem-fresh",
+            kind: "command",
+            title: "Fresh verification command",
+            value: "npm run test:watch",
+            usage_hint: "Use when iterating locally",
+            status: "active",
+            last_verified_at: "2026-04-18T08:30:00Z",
+            freshness_status: "fresh",
+            freshness_score: 1,
+            verified_at: "2026-04-18T08:30:00Z",
             verified_by: "codex",
             selected_because: null,
             evidence_refs: [],
@@ -200,11 +215,19 @@ describe("Memory freshness", () => {
     fireEvent.click(await screen.findByText("Freshness workflow"));
     fireEvent.click(await screen.findByRole("button", { name: "Approvals" }));
 
-    const staleCardLabel = await screen.findByText("Stale memories");
-    const staleCard = staleCardLabel.closest("article");
+    const waitingLabel = (await screen.findAllByText("Waiting to Re-verify")).find(
+      (element) => element.tagName === "SPAN",
+    );
+    const waitingCard = waitingLabel?.closest("article");
+    const staleSectionLabel = (await screen.findAllByText("Waiting to Re-verify")).find(
+      (element) => element.tagName === "H4",
+    );
+    const staleCard = staleSectionLabel?.closest(".approval-section");
 
+    expect(waitingCard).toBeTruthy();
     expect(staleCard).toBeTruthy();
-    expect(within(staleCard as HTMLElement).getByText("1")).toBeTruthy();
+    expect(within(waitingCard as HTMLElement).getByText("2")).toBeTruthy();
+    expect(screen.getByText("Needs review command")).toBeTruthy();
     expect(screen.getByText("Stale verification command")).toBeTruthy();
     expect(screen.queryByText("Unknown verification command")).toBeNull();
   });

@@ -24,6 +24,31 @@ fn internal_error(message: impl Into<String>) -> McpError {
     McpError::internal_error(message.into(), None)
 }
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(test)]
+static RUN_SYNC_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+fn sync_repo_state_before_run_queries(repo_root: &str) {
+    #[cfg(test)]
+    RUN_SYNC_CALLS.fetch_add(1, Ordering::SeqCst);
+
+    if let Ok(app_store) = MemoryStore::open_app() {
+        let _ = sync::sync_repo_conversations(&app_store, repo_root);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn reset_run_sync_call_count() {
+    RUN_SYNC_CALLS.store(0, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn run_sync_call_count() -> usize {
+    RUN_SYNC_CALLS.load(Ordering::SeqCst)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 struct RepoRootInput {
     pub repo_root: String,
@@ -169,6 +194,7 @@ impl ChatMemMcpService {
         &self,
         Parameters(input): Parameters<RepoRootInput>,
     ) -> Result<Json<ListActiveRunsPayload>, McpError> {
+        sync_repo_state_before_run_queries(&input.repo_root);
         runs::list_runs(&input.repo_root)
             .map(|runs| {
                 Json(ListActiveRunsPayload {
@@ -186,6 +212,7 @@ impl ChatMemMcpService {
         &self,
         Parameters(input): Parameters<RepoRootInput>,
     ) -> Result<Json<ListRunArtifactsPayload>, McpError> {
+        sync_repo_state_before_run_queries(&input.repo_root);
         runs::list_artifacts(&input.repo_root)
             .map(|artifacts| Json(ListRunArtifactsPayload { artifacts }))
             .map_err(|error| internal_error(error.to_string()))
@@ -217,7 +244,9 @@ impl ServerHandler for ChatMemMcpService {}
 
 #[cfg(test)]
 mod tests {
-    use super::ChatMemMcpService;
+    use super::{
+        run_sync_call_count, reset_run_sync_call_count, ChatMemMcpService, RepoRootInput,
+    };
     use crate::chatmem_memory::{
         checkpoints::CreateCheckpointInput,
         models::{BuildHandoffPacketInput, ListMemoryCandidatesPayload},
@@ -376,5 +405,30 @@ mod tests {
             .done_items
             .iter()
             .any(|item| item.contains("Checkpoint frozen from codex")));
+    }
+
+    #[tokio::test]
+    async fn list_active_runs_and_artifacts_sync_repo_state_before_reading_local_store() {
+        reset_run_sync_call_count();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let service = ChatMemMcpService::new(new_store());
+
+        let Json(runs) = service
+            .list_active_runs(Parameters(RepoRootInput {
+                repo_root: repo_root.to_string(),
+            }))
+            .await
+            .unwrap();
+
+        let Json(artifacts) = service
+            .list_run_artifacts(Parameters(RepoRootInput {
+                repo_root: repo_root.to_string(),
+            }))
+            .await
+            .unwrap();
+
+        assert!(runs.runs.is_empty());
+        assert!(artifacts.artifacts.is_empty());
+        assert_eq!(run_sync_call_count(), 2);
     }
 }
