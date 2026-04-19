@@ -1892,6 +1892,6 @@ mod tests {
 
         let checkpoints = store.list_checkpoints(repo_root).unwrap();
         assert_eq!(checkpoints[0].status, "active");
-        assert!(checkpoints[0].handoff_id.is_none());
+        assert_eq!(checkpoints[0].handoff_id.as_deref(), Some(existing_handoff_id.as_str()));
     }
 }

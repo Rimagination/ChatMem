@@ -230,11 +230,68 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_column(conn, "handoff_packets", "compression_strategy", "TEXT")?;
     ensure_column(conn, "handoff_packets", "consumed_at", "TEXT")?;
     ensure_column(conn, "handoff_packets", "consumed_by", "TEXT")?;
+    dedupe_legacy_checkpoint_handoff_links(conn)?;
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_packets_checkpoint_id_unique
          ON handoff_packets(checkpoint_id)
          WHERE checkpoint_id IS NOT NULL",
         [],
+    )?;
+
+    Ok(())
+}
+
+fn dedupe_legacy_checkpoint_handoff_links(conn: &Connection) -> Result<()> {
+    if !table_has_column(conn, "handoff_packets", "checkpoint_id")? {
+        return Ok(());
+    }
+
+    // Legacy Task 5 builds could race and persist multiple handoffs for the same checkpoint.
+    // Keep the earliest created linkage for audit continuity, and detach later duplicates by
+    // nulling their checkpoint_id so startup can safely add the unique index without deleting
+    // historical handoff rows.
+    conn.execute_batch(
+        "
+        WITH ranked_duplicates AS (
+            SELECT rowid,
+                   checkpoint_id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY checkpoint_id
+                       ORDER BY created_at ASC, handoff_id ASC, rowid ASC
+                   ) AS duplicate_rank
+            FROM handoff_packets
+            WHERE checkpoint_id IS NOT NULL
+        )
+        UPDATE handoff_packets
+        SET checkpoint_id = NULL
+        WHERE rowid IN (
+            SELECT rowid
+            FROM ranked_duplicates
+            WHERE duplicate_rank > 1
+        );
+
+        WITH surviving_links AS (
+            SELECT checkpoint_id, handoff_id
+            FROM (
+                SELECT checkpoint_id,
+                       handoff_id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY checkpoint_id
+                           ORDER BY created_at ASC, handoff_id ASC, rowid ASC
+                       ) AS duplicate_rank
+                FROM handoff_packets
+                WHERE checkpoint_id IS NOT NULL
+            )
+            WHERE duplicate_rank = 1
+        )
+        UPDATE checkpoints
+        SET handoff_id = (
+                SELECT surviving_links.handoff_id
+                FROM surviving_links
+                WHERE surviving_links.checkpoint_id = checkpoints.checkpoint_id
+            )
+        WHERE checkpoint_id IN (SELECT checkpoint_id FROM surviving_links);
+        ",
     )?;
 
     Ok(())
@@ -291,7 +348,7 @@ fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool
 #[cfg(test)]
 mod tests {
     use super::{migrate, open_connection};
-    use rusqlite::Connection;
+    use rusqlite::{params, Connection};
 
     fn column_names(conn: &Connection, table: &str) -> Vec<String> {
         let mut stmt = conn
@@ -422,6 +479,147 @@ mod tests {
         assert_eq!(row.1.as_deref(), Some("claude --resume conv-001"));
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn migrations_dedupe_legacy_duplicate_checkpoint_handoffs_before_creating_unique_index() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE checkpoints (
+                checkpoint_id TEXT PRIMARY KEY,
+                repo_id TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                source_agent TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                summary TEXT NOT NULL,
+                resume_command TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                handoff_id TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE handoff_packets (
+                handoff_id TEXT PRIMARY KEY,
+                repo_id TEXT NOT NULL,
+                from_agent TEXT NOT NULL,
+                to_agent TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft',
+                target_profile TEXT,
+                checkpoint_id TEXT,
+                compression_strategy TEXT,
+                current_goal TEXT NOT NULL,
+                done_json TEXT NOT NULL,
+                next_json TEXT NOT NULL,
+                key_files_json TEXT NOT NULL,
+                commands_json TEXT NOT NULL,
+                related_memories_json TEXT NOT NULL DEFAULT '[]',
+                related_episodes_json TEXT NOT NULL DEFAULT '[]',
+                consumed_at TEXT,
+                consumed_by TEXT,
+                created_at TEXT NOT NULL
+            );
+            ",
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO checkpoints (
+                checkpoint_id, repo_id, conversation_id, source_agent, status, summary,
+                resume_command, metadata_json, handoff_id, created_at
+             ) VALUES (?1, ?2, ?3, ?4, 'promoted', ?5, ?6, '{}', ?7, ?8)",
+            params![
+                "checkpoint-001",
+                "repo-001",
+                "codex:conv-001",
+                "codex",
+                "Checkpoint summary",
+                "codex resume conv-001",
+                "handoff-newer",
+                "2026-04-20T10:00:00Z",
+            ],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO handoff_packets (
+                handoff_id, repo_id, from_agent, to_agent, status, target_profile, checkpoint_id,
+                compression_strategy, current_goal, done_json, next_json, key_files_json,
+                commands_json, related_memories_json, related_episodes_json, consumed_at,
+                consumed_by, created_at
+             ) VALUES (?1, ?2, ?3, ?4, 'draft', NULL, ?5, NULL, ?6, '[]', '[]', '[]', '[]', '[]', '[]', NULL, NULL, ?7)",
+            params![
+                "handoff-older",
+                "repo-001",
+                "codex",
+                "claude",
+                "checkpoint-001",
+                "Checkpoint summary",
+                "2026-04-20T10:01:00Z",
+            ],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO handoff_packets (
+                handoff_id, repo_id, from_agent, to_agent, status, target_profile, checkpoint_id,
+                compression_strategy, current_goal, done_json, next_json, key_files_json,
+                commands_json, related_memories_json, related_episodes_json, consumed_at,
+                consumed_by, created_at
+             ) VALUES (?1, ?2, ?3, ?4, 'draft', NULL, ?5, NULL, ?6, '[]', '[]', '[]', '[]', '[]', '[]', NULL, NULL, ?7)",
+            params![
+                "handoff-newer",
+                "repo-001",
+                "codex",
+                "gemini",
+                "checkpoint-001",
+                "Checkpoint summary",
+                "2026-04-20T10:02:00Z",
+            ],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let linked_handoffs = conn
+            .prepare(
+                "SELECT handoff_id
+                 FROM handoff_packets
+                 WHERE checkpoint_id = ?1
+                 ORDER BY handoff_id ASC",
+            )
+            .unwrap()
+            .query_map(["checkpoint-001"], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(linked_handoffs, vec!["handoff-older"]);
+
+        let nulled_handoffs = conn
+            .prepare(
+                "SELECT handoff_id
+                 FROM handoff_packets
+                 WHERE checkpoint_id IS NULL
+                 ORDER BY handoff_id ASC",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(nulled_handoffs, vec!["handoff-newer"]);
+
+        let checkpoint_handoff = conn
+            .query_row(
+                "SELECT handoff_id FROM checkpoints WHERE checkpoint_id = ?1",
+                ["checkpoint-001"],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .unwrap();
+
+        assert_eq!(checkpoint_handoff.as_deref(), Some("handoff-older"));
     }
 
     #[test]
