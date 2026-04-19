@@ -24,4 +24,10 @@ All candidate writes are review-gated. The desktop app exposes this in `Memory I
 
 ## Optional Local Install
 
-Run `scripts/sync-chatmem-plugin.ps1` to copy the Codex plugin bundle into `~/plugins/chatmem`, register it in `~/.agents/plugins/marketplace.json`, and copy the Claude bundle into `~/.claude/plugins/chatmem` for home-level use. The sync step also writes `repo-root.txt` so the copied launcher still points back at this repo checkout. Restart Codex App after syncing so the local marketplace is reloaded.
+Run `scripts/sync-chatmem-plugin.ps1 -CodexWorkspaceRoot <your-codex-workspace-root>` to copy the Codex plugin bundle into `<workspace-root>/plugins/chatmem` and register it in `<workspace-root>/.agents/plugins/marketplace.json`. If you also want the shared Claude bundle, add `-InstallClaude`. The sync step writes `repo-root.txt` so the copied launcher still points back at this repo checkout. Restart Codex App after syncing, or reopen the target workspace root so the local marketplace is reloaded.
+
+Example for a Codex workspace rooted at `D:\VSP`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\sync-chatmem-plugin.ps1 -CodexWorkspaceRoot D:\VSP
+```
