@@ -11,6 +11,10 @@ function formatFreshnessLabel(status: string) {
     return "fresh";
   }
 
+  if (status === "needs_review") {
+    return "needs review";
+  }
+
   if (status === "stale") {
     return "stale";
   }

@@ -453,6 +453,11 @@ impl MemoryStore {
         )?;
 
         let rows = stmt.query_map([repo_id], |row| {
+            let last_verified_at = row.get::<_, Option<String>>(6)?;
+            let verified_at = row.get::<_, Option<String>>(9)?;
+            let (freshness_status, freshness_score) =
+                evaluate_memory_freshness(last_verified_at.as_deref(), verified_at.as_deref());
+
             Ok(ApprovedMemoryResponse {
                 memory_id: row.get(0)?,
                 kind: row.get(1)?,
@@ -460,10 +465,10 @@ impl MemoryStore {
                 value: row.get(3)?,
                 usage_hint: row.get(4)?,
                 status: row.get(5)?,
-                last_verified_at: row.get(6)?,
-                freshness_status: row.get(7)?,
-                freshness_score: row.get(8)?,
-                verified_at: row.get(9)?,
+                last_verified_at,
+                freshness_status,
+                freshness_score,
+                verified_at,
                 verified_by: row.get(10)?,
                 selected_because: None,
                 evidence_refs: vec![],
@@ -1131,6 +1136,30 @@ fn merge_similarity(
     (title_overlap * 0.45) + (value_overlap * 0.45) + (why_overlap * 0.10)
 }
 
+fn evaluate_memory_freshness(
+    last_verified_at: Option<&str>,
+    verified_at: Option<&str>,
+) -> (String, f64) {
+    let verification_timestamp = last_verified_at.or(verified_at);
+    let Some(verification_timestamp) = verification_timestamp else {
+        return ("unknown".to_string(), 0.0);
+    };
+
+    let Ok(parsed_at) = chrono::DateTime::parse_from_rfc3339(verification_timestamp) else {
+        return ("unknown".to_string(), 0.0);
+    };
+
+    let age = chrono::Utc::now().signed_duration_since(parsed_at.with_timezone(&chrono::Utc));
+
+    if age <= chrono::Duration::days(7) {
+        ("fresh".to_string(), 1.0)
+    } else if age <= chrono::Duration::days(30) {
+        ("needs_review".to_string(), 0.55)
+    } else {
+        ("stale".to_string(), 0.2)
+    }
+}
+
 fn truncate_text(text: &str, max_chars: usize) -> String {
     let mut chars = text.chars();
     let truncated = chars.by_ref().take(max_chars).collect::<String>();
@@ -1145,6 +1174,7 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
 mod tests {
     use super::{MemoryStore, ReviewAction};
     use crate::chatmem_memory::models::CreateMemoryCandidateInput;
+    use rusqlite::params;
     use std::{thread, time::Duration};
 
     fn new_store() -> MemoryStore {
@@ -1221,6 +1251,109 @@ mod tests {
         assert_eq!(memories[0].verified_by.as_deref(), Some("claude"));
         assert!(memories[0].verified_at.is_some());
         assert_eq!(memories[0].last_verified_at, memories[0].verified_at);
+    }
+
+    #[test]
+    fn list_repo_memories_decays_freshness_from_verification_age() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+
+        let needs_review_candidate = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "command".to_string(),
+                summary: "Recent-ish verification".to_string(),
+                value: "npm run lint".to_string(),
+                why_it_matters: "Still relevant but should be checked soon".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.91,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+        store
+            .review_candidate(
+                &needs_review_candidate,
+                ReviewAction::Approve {
+                    title: "Lint command".into(),
+                    usage_hint: "Use before submitting changes".into(),
+                },
+            )
+            .unwrap();
+
+        let stale_candidate = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "command".to_string(),
+                summary: "Old verification".to_string(),
+                value: "cargo test".to_string(),
+                why_it_matters: "Needs a much fresher validation".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.88,
+                proposed_by: "claude".to_string(),
+            })
+            .unwrap();
+        store
+            .review_candidate(
+                &stale_candidate,
+                ReviewAction::Approve {
+                    title: "Rust test command".into(),
+                    usage_hint: "Use before merging Rust changes".into(),
+                },
+            )
+            .unwrap();
+
+        let memories = store.list_repo_memories(repo_root).unwrap();
+        let lint_memory_id = memories
+            .iter()
+            .find(|memory| memory.title == "Lint command")
+            .unwrap()
+            .memory_id
+            .clone();
+        let rust_memory_id = memories
+            .iter()
+            .find(|memory| memory.title == "Rust test command")
+            .unwrap()
+            .memory_id
+            .clone();
+
+        let needs_review_at = (chrono::Utc::now() - chrono::Duration::days(10)).to_rfc3339();
+        let stale_at = (chrono::Utc::now() - chrono::Duration::days(45)).to_rfc3339();
+        let conn = store.conn().unwrap();
+        conn.execute(
+            "UPDATE approved_memories
+             SET last_verified_at = ?2,
+                 verified_at = ?2,
+                 freshness_status = 'fresh',
+                 freshness_score = 1.0
+             WHERE memory_id = ?1",
+            params![lint_memory_id, needs_review_at],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE approved_memories
+             SET last_verified_at = ?2,
+                 verified_at = ?2,
+                 freshness_status = 'fresh',
+                 freshness_score = 1.0
+             WHERE memory_id = ?1",
+            params![rust_memory_id, stale_at],
+        )
+        .unwrap();
+
+        let memories = store.list_repo_memories(repo_root).unwrap();
+        let lint_memory = memories
+            .iter()
+            .find(|memory| memory.title == "Lint command")
+            .unwrap();
+        let rust_memory = memories
+            .iter()
+            .find(|memory| memory.title == "Rust test command")
+            .unwrap();
+
+        assert_eq!(lint_memory.freshness_status, "needs_review");
+        assert!(lint_memory.freshness_score < 1.0);
+        assert_eq!(rust_memory.freshness_status, "stale");
+        assert!(rust_memory.freshness_score < lint_memory.freshness_score);
     }
 
     #[test]

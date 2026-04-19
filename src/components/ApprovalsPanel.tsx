@@ -10,9 +10,7 @@ type ApprovalsPanelProps = {
 };
 
 function staleMemories(memories: ApprovedMemory[]) {
-  return memories.filter(
-    (memory) => memory.freshness_status === "stale" || memory.freshness_score < 0.5,
-  );
+  return memories.filter((memory) => memory.freshness_status === "stale");
 }
 
 function evidenceSummary(candidate: MemoryCandidate) {

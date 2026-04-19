@@ -535,6 +535,11 @@ select {
   color: var(--success);
 }
 
+.memory-freshness-needs_review {
+  background: rgba(217, 119, 6, 0.12);
+  color: #a16207;
+}
+
 .memory-freshness-stale {
   background: rgba(223, 63, 64, 0.12);
   color: var(--danger);
