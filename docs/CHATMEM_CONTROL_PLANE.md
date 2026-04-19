@@ -18,14 +18,17 @@ MCP remains the integration surface for host tools and other clients. The origin
 - `list_memory_candidates`
 - `build_handoff_packet`
 
-The V2 tools are additive:
+Checkpoint creation also remains available from the earlier checkpoint phase:
+
+- `create_checkpoint`
+
+Task 6 adds the new additive control-plane tools:
 
 - `list_active_runs`
 - `list_run_artifacts`
-- `create_checkpoint`
 - `resume_from_checkpoint`
 
-These tools expose the run timeline and checkpoint continuation flow without changing the existing V1 contract.
+Those additions expose the run timeline and checkpoint continuation flow without changing the existing V1 contract or re-defining pre-existing checkpoint creation.
 
 ### A2A-Lite Metadata
 
@@ -43,12 +46,14 @@ The card is exposed from the Tauri layer and currently communicates:
 Compatibility is a design constraint, not a best effort.
 
 - Existing V1 MCP clients keep working.
-- The additive V2 tools do not replace the original five tools.
+- The additive Task 6 tools do not replace the original five tools.
+- `create_checkpoint` remains part of the checkpoint flow that predated Task 6.
 - The desktop app can use the new surfaces without requiring remote coordination.
 - The metadata card is informational only and does not alter run, checkpoint, or handoff behavior.
 
 ## Practical Guidance
 
 - Use V1 tools when you only need repository memory or a handoff packet.
-- Use V2 tools when you need to inspect active runs, enumerate artifacts, or freeze and resume a checkpoint.
+- Use `create_checkpoint` when you want to freeze the current state into a checkpoint.
+- Use the Task 6 additive tools when you need to inspect active runs, enumerate artifacts, or resume from a checkpoint.
 - Use the Agent Card when a client needs a compact description of ChatMem before deciding how to integrate with it.

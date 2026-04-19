@@ -4,19 +4,24 @@ This document covers the working ChatMem setup for Codex App after the MCP schem
 
 ## What ChatMem Is
 
-ChatMem is best used as a local MCP server that gives Codex repository memory tools and a small control-plane layer:
+ChatMem is best used as a local MCP server that gives Codex repository memory tools and a small local control-plane layer.
+
+The long-lived MCP surface includes the original repository memory tools plus checkpoint creation from the earlier checkpoint phase:
 
 - `get_repo_memory`
 - `search_repo_history`
 - `create_memory_candidate`
 - `list_memory_candidates`
 - `build_handoff_packet`
+- `create_checkpoint`
+
+Task 6 adds additive control-plane tools on top of that existing surface:
+
 - `list_active_runs`
 - `list_run_artifacts`
-- `create_checkpoint`
 - `resume_from_checkpoint`
 
-The original five MCP tools remain supported. The new V2 tools are additive and can be adopted incrementally without breaking existing clients.
+The original five MCP tools remain supported, and `create_checkpoint` continues to work as the pre-existing checkpoint entry point. The Task 6 additions can be adopted incrementally without breaking existing clients.
 
 In Codex App, this is an MCP integration first. Do not rely on the local plugin marketplace flow as the primary installation path.
 
@@ -137,9 +142,9 @@ Use these when switching agents or pausing work:
 - "Build a ChatMem handoff packet for another agent."
 - "Generate a handoff for this repo so we can resume later."
 
-### Control-plane examples
+### Checkpoint and control-plane examples
 
-Use these when you need the newer V2 surfaces:
+Use these when you need checkpoint or Task 6 control-plane flows:
 
 - "List active ChatMem runs for this repository."
 - "Show the artifacts produced by recent runs."

@@ -32,9 +32,7 @@ struct RepoRootInput {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 struct ResumeFromCheckpointInput {
     pub checkpoint_id: String,
-    pub from_agent: String,
     pub to_agent: String,
-    pub goal_hint: Option<String>,
     pub target_profile: Option<String>,
 }
 
@@ -76,24 +74,11 @@ impl ChatMemMcpService {
     }
 
     pub fn debug_tool_names(&self) -> Vec<String> {
-        Self::tool_names()
+        self.tool_router
+            .list_all()
             .iter()
-            .map(|tool_name| (*tool_name).to_string())
+            .map(|tool| tool.name.to_string())
             .collect()
-    }
-
-    fn tool_names() -> &'static [&'static str] {
-        &[
-            "get_repo_memory",
-            "search_repo_history",
-            "create_memory_candidate",
-            "create_checkpoint",
-            "list_memory_candidates",
-            "build_handoff_packet",
-            "list_active_runs",
-            "list_run_artifacts",
-            "resume_from_checkpoint",
-        ]
     }
 
     #[tool(name = "get_repo_memory", description = "Return compact repository startup memory for an agent")]
@@ -217,9 +202,9 @@ impl ChatMemMcpService {
         self.store
             .build_and_store_handoff_from_checkpoint(
                 &input.checkpoint_id,
-                &input.from_agent,
+                "",
                 &input.to_agent,
-                input.goal_hint.as_deref(),
+                None,
                 input.target_profile.as_deref(),
             )
             .map(Json)
@@ -240,6 +225,7 @@ mod tests {
     };
     use rmcp::{Json, handler::server::wrapper::Parameters};
     use schemars::schema_for;
+    use std::collections::BTreeSet;
 
     fn new_store() -> MemoryStore {
         let path =
@@ -270,26 +256,54 @@ mod tests {
     }
 
     #[test]
-    fn debug_tool_names_retains_v1_tools_and_adds_v2_tools() {
-        let service = ChatMemMcpService::new(new_store());
-        let names = service.debug_tool_names();
+    fn resume_from_checkpoint_tool_schema_only_exposes_effective_inputs() {
+        let schema_json = serde_json::to_value(
+            ChatMemMcpService::resume_from_checkpoint_tool_attr().input_schema,
+        )
+        .unwrap();
 
-        for expected in [
-            "get_repo_memory",
-            "search_repo_history",
-            "create_memory_candidate",
-            "list_memory_candidates",
-            "build_handoff_packet",
-            "list_active_runs",
-            "list_run_artifacts",
-            "create_checkpoint",
-            "resume_from_checkpoint",
-        ] {
+        let properties = schema_json
+            .get("properties")
+            .and_then(|value| value.as_object())
+            .unwrap();
+
+        assert!(properties.contains_key("checkpoint_id"));
+        assert!(properties.contains_key("to_agent"));
+        assert!(properties.contains_key("target_profile"));
+        assert!(!properties.contains_key("from_agent"));
+        assert!(!properties.contains_key("goal_hint"));
+    }
+
+    #[test]
+    fn debug_tool_names_reflect_actual_router_registrations() {
+        let service = ChatMemMcpService::new(new_store());
+        let names = service
+            .debug_tool_names()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let expected_names = [
+            ChatMemMcpService::get_repo_memory_tool_attr().name,
+            ChatMemMcpService::search_repo_history_tool_attr().name,
+            ChatMemMcpService::create_memory_candidate_tool_attr().name,
+            ChatMemMcpService::create_checkpoint_tool_attr().name,
+            ChatMemMcpService::list_memory_candidates_tool_attr().name,
+            ChatMemMcpService::build_handoff_packet_tool_attr().name,
+            ChatMemMcpService::list_active_runs_tool_attr().name,
+            ChatMemMcpService::list_run_artifacts_tool_attr().name,
+            ChatMemMcpService::resume_from_checkpoint_tool_attr().name,
+        ]
+        .into_iter()
+        .map(|name| name.to_string())
+        .collect::<BTreeSet<_>>();
+
+        for expected in &expected_names {
             assert!(
-                names.iter().any(|name| name == expected),
-                "missing tool name: {expected}"
+                service.tool_router.has_route(expected),
+                "missing router registration: {expected}"
             );
         }
+
+        assert_eq!(names, expected_names);
     }
 
     #[tokio::test]
@@ -328,5 +342,39 @@ mod tests {
 
         assert_eq!(checkpoint.status, "active");
         assert_eq!(checkpoint.resume_command.as_deref(), Some("claude --resume conv-001"));
+    }
+
+    #[tokio::test]
+    async fn resume_from_checkpoint_uses_checkpoint_provenance_and_goal() {
+        let service = ChatMemMcpService::new(new_store());
+
+        let Json(checkpoint) = service
+            .create_checkpoint(Parameters(CreateCheckpointInput {
+                repo_root: "d:/vsp/agentswap-gui".to_string(),
+                conversation_id: "codex:conv-777".to_string(),
+                source_agent: "codex".to_string(),
+                summary: "Checkpoint-owned goal".to_string(),
+                resume_command: Some("codex resume conv-777".to_string()),
+                metadata_json: None,
+            }))
+            .await
+            .unwrap();
+
+        let Json(packet) = service
+            .resume_from_checkpoint(Parameters(super::ResumeFromCheckpointInput {
+                checkpoint_id: checkpoint.checkpoint_id,
+                to_agent: "gemini".to_string(),
+                target_profile: Some("gemini_research".to_string()),
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(packet.from_agent, "codex");
+        assert_eq!(packet.to_agent, "gemini");
+        assert_eq!(packet.current_goal, "Checkpoint-owned goal");
+        assert!(packet
+            .done_items
+            .iter()
+            .any(|item| item.contains("Checkpoint frozen from codex")));
     }
 }
