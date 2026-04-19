@@ -1,6 +1,6 @@
 [package]
 name = "chatmem"
-version = "0.1.1"
+version = "0.1.2"
 description = "ChatMem - Your AI conversations, forever remembered"
 authors = ["ChatMem"]
 license = "MIT"

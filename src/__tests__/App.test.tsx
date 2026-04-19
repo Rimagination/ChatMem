@@ -136,7 +136,7 @@ describe("App", () => {
     mockCheckUpdate.mockResolvedValue({
       shouldUpdate: true,
       manifest: {
-        version: "0.1.1",
+        version: "0.1.2",
         date: "2026-04-08T12:00:00Z",
         body: "Bug fixes",
       },
@@ -149,7 +149,7 @@ describe("App", () => {
     });
 
     expect(mockCheckUpdate).toHaveBeenCalledTimes(1);
-    expect(screen.getByText("发现新版本 0.1.1")).toBeTruthy();
+    expect(screen.getByText("发现新版本 0.1.2")).toBeTruthy();
   });
 
   it("renders file location and copy actions for the selected conversation", async () => {
