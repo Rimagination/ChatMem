@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "chatmem": {
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "./scripts/run-chatmem-mcp.ps1"
+      ],
+      "note": "Launches the local chatmem-mcp stdio server for repository memory, history search, candidate writes, and handoffs."
+    }
+  }
+}

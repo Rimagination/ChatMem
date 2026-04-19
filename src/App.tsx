@@ -4,10 +4,28 @@ import ConversationList from "./components/ConversationList";
 import ConversationDetail from "./components/ConversationDetail";
 import MigrateModal from "./components/MigrateModal";
 import SettingsPanel from "./components/SettingsPanel";
+import RepoMemoryPanel from "./components/RepoMemoryPanel";
+import MemoryInboxPanel from "./components/MemoryInboxPanel";
+import EpisodesPanel from "./components/EpisodesPanel";
+import HandoffsPanel from "./components/HandoffsPanel";
 import { useI18n } from "./i18n/I18nProvider";
 import type { Locale } from "./i18n/types";
 import { loadSettings, updateSettings, type AppSettings } from "./settings/storage";
 import { installAvailableUpdate, runUpdateCheck, type UpdateState } from "./updater/updater";
+import {
+  createHandoffPacket,
+  listEpisodes,
+  listHandoffs,
+  listMemoryCandidates,
+  listRepoMemories,
+  reviewMemoryCandidate,
+} from "./chatmem-memory/api";
+import type {
+  ApprovedMemory,
+  EpisodeRecord,
+  HandoffPacket,
+  MemoryCandidate,
+} from "./chatmem-memory/types";
 
 interface ConversationSummary {
   id: string;
@@ -63,6 +81,7 @@ type CopyState = {
   target: CopyTarget | null;
   status: "idle" | "success" | "error";
 };
+type WorkspaceView = "conversation" | "repo-memory" | "memory-inbox" | "episodes" | "handoffs";
 
 const COPY_RESET_DELAY_MS = 1800;
 
@@ -92,10 +111,18 @@ function App() {
   const [copyState, setCopyState] = useState<CopyState>({ target: null, status: "idle" });
   const [appSettings, setAppSettings] = useState<AppSettings>(() => loadSettings());
   const [updateState, setUpdateState] = useState<UpdateState>({ kind: "idle" });
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("conversation");
+  const [memoryLoading, setMemoryLoading] = useState(false);
+  const [repoMemories, setRepoMemories] = useState<ApprovedMemory[]>([]);
+  const [memoryCandidates, setMemoryCandidates] = useState<MemoryCandidate[]>([]);
+  const [episodes, setEpisodes] = useState<EpisodeRecord[]>([]);
+  const [handoffs, setHandoffs] = useState<HandoffPacket[]>([]);
+  const activeRepoRoot = selectedConversation?.project_dir ?? null;
 
   useEffect(() => {
     setSelectedConversation(null);
     setCopyState({ target: null, status: "idle" });
+    setWorkspaceView("conversation");
   }, [selectedAgent]);
 
   useEffect(() => {
@@ -104,6 +131,7 @@ function App() {
 
   useEffect(() => {
     setCopyState({ target: null, status: "idle" });
+    setWorkspaceView("conversation");
   }, [selectedConversation?.id]);
 
   useEffect(() => {
@@ -124,6 +152,41 @@ function App() {
 
     return () => window.clearTimeout(timer);
   }, [appSettings.autoCheckUpdates]);
+
+  useEffect(() => {
+    if (!activeRepoRoot) {
+      setRepoMemories([]);
+      setMemoryCandidates([]);
+      setEpisodes([]);
+      setHandoffs([]);
+      return;
+    }
+
+    if (workspaceView === "conversation") {
+      return;
+    }
+
+    const loadWorkspaceData = async () => {
+      setMemoryLoading(true);
+      try {
+        if (workspaceView === "repo-memory") {
+          setRepoMemories(await listRepoMemories(activeRepoRoot));
+        } else if (workspaceView === "memory-inbox") {
+          setMemoryCandidates(await listMemoryCandidates(activeRepoRoot, "pending_review"));
+        } else if (workspaceView === "episodes") {
+          setEpisodes(await listEpisodes(activeRepoRoot));
+        } else if (workspaceView === "handoffs") {
+          setHandoffs(await listHandoffs(activeRepoRoot));
+        }
+      } catch (error) {
+        console.error(`Failed to load ${workspaceView}:`, error);
+      } finally {
+        setMemoryLoading(false);
+      }
+    };
+
+    void loadWorkspaceData();
+  }, [activeRepoRoot, workspaceView]);
 
   const loadConversations = async (query = searchQuery, agent = selectedAgent) => {
     setListLoading(true);
@@ -235,6 +298,73 @@ function App() {
           current.target === target ? { target: null, status: "idle" } : current,
         );
       }, COPY_RESET_DELAY_MS);
+    }
+  };
+
+  const handleApproveCandidate = async (candidate: MemoryCandidate) => {
+    if (!activeRepoRoot) {
+      return;
+    }
+
+    setMemoryLoading(true);
+    try {
+      await reviewMemoryCandidate({
+        candidateId: candidate.candidate_id,
+        action: "approve",
+        editedTitle: candidate.summary,
+        editedUsageHint: candidate.why_it_matters,
+      });
+      const [nextCandidates, nextMemories] = await Promise.all([
+        listMemoryCandidates(activeRepoRoot, "pending_review"),
+        listRepoMemories(activeRepoRoot),
+      ]);
+      setMemoryCandidates(nextCandidates);
+      setRepoMemories(nextMemories);
+    } catch (error) {
+      console.error("Failed to approve memory candidate:", error);
+    } finally {
+      setMemoryLoading(false);
+    }
+  };
+
+  const handleRejectCandidate = async (candidateId: string) => {
+    if (!activeRepoRoot) {
+      return;
+    }
+
+    setMemoryLoading(true);
+    try {
+      await reviewMemoryCandidate({
+        candidateId,
+        action: "reject",
+      });
+      setMemoryCandidates(await listMemoryCandidates(activeRepoRoot, "pending_review"));
+    } catch (error) {
+      console.error("Failed to reject memory candidate:", error);
+    } finally {
+      setMemoryLoading(false);
+    }
+  };
+
+  const handleCreateHandoff = async (targetAgent: string) => {
+    if (!activeRepoRoot) {
+      return;
+    }
+
+    setMemoryLoading(true);
+    try {
+      const packet = await createHandoffPacket({
+        repoRoot: activeRepoRoot,
+        fromAgent: selectedAgent,
+        toAgent: targetAgent,
+        goalHint: selectedConversation?.summary ?? undefined,
+      });
+      setHandoffs((current) => [packet, ...current]);
+      setWorkspaceView("handoffs");
+    } catch (error) {
+      console.error("Failed to create handoff packet:", error);
+    } finally {
+      setMemoryLoading(false);
     }
   };
 
@@ -390,13 +520,75 @@ function App() {
           </div>
         )}
 
+        <div className="workspace-mode-tabs">
+          <button
+            type="button"
+            className={`workspace-mode-tab ${workspaceView === "conversation" ? "active" : ""}`}
+            onClick={() => setWorkspaceView("conversation")}
+          >
+            Conversation
+          </button>
+          <button
+            type="button"
+            className={`workspace-mode-tab ${workspaceView === "repo-memory" ? "active" : ""}`}
+            onClick={() => setWorkspaceView("repo-memory")}
+            disabled={!activeRepoRoot}
+          >
+            Repo Memory
+          </button>
+          <button
+            type="button"
+            className={`workspace-mode-tab ${workspaceView === "memory-inbox" ? "active" : ""}`}
+            onClick={() => setWorkspaceView("memory-inbox")}
+            disabled={!activeRepoRoot}
+          >
+            Memory Inbox
+          </button>
+          <button
+            type="button"
+            className={`workspace-mode-tab ${workspaceView === "episodes" ? "active" : ""}`}
+            onClick={() => setWorkspaceView("episodes")}
+            disabled={!activeRepoRoot}
+          >
+            Episodes
+          </button>
+          <button
+            type="button"
+            className={`workspace-mode-tab ${workspaceView === "handoffs" ? "active" : ""}`}
+            onClick={() => setWorkspaceView("handoffs")}
+            disabled={!activeRepoRoot}
+          >
+            Handoffs
+          </button>
+        </div>
+
         <div className="workspace-body">
-          {detailLoading ? (
+          {workspaceView === "conversation" && detailLoading ? (
             <div className="detail-loading">
               <div className="spinner"></div>
             </div>
           ) : selectedConversation ? (
+            workspaceView === "conversation" ? (
             <ConversationDetail conversation={selectedConversation} />
+            ) : workspaceView === "repo-memory" ? (
+              <RepoMemoryPanel memories={repoMemories} loading={memoryLoading} />
+            ) : workspaceView === "memory-inbox" ? (
+              <MemoryInboxPanel
+                candidates={memoryCandidates}
+                loading={memoryLoading}
+                onApprove={handleApproveCandidate}
+                onReject={handleRejectCandidate}
+              />
+            ) : workspaceView === "episodes" ? (
+              <EpisodesPanel episodes={episodes} loading={memoryLoading} />
+            ) : (
+              <HandoffsPanel
+                handoffs={handoffs}
+                loading={memoryLoading}
+                availableTargets={["claude", "codex", "gemini"].filter((agent) => agent !== selectedAgent)}
+                onCreate={handleCreateHandoff}
+              />
+            )
           ) : (
             <div className="empty-state empty-state-large">
               <div className="empty-state-icon">⌘</div>
