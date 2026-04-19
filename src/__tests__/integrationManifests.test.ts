@@ -43,7 +43,8 @@ describe("chatmem integration manifests", () => {
   });
 
   it("ships a sync helper for installing the local plugin bundle", () => {
-    expect(syncScript).toContain(".codex\\plugins");
+    expect(syncScript).toContain('Join-Path $HOME "plugins"');
+    expect(syncScript).toContain(".agents\\plugins\\marketplace.json");
     expect(syncScript).toContain(".claude\\plugins");
   });
 
@@ -51,5 +52,6 @@ describe("chatmem integration manifests", () => {
     expect(setupDoc).toContain("Codex App");
     expect(setupDoc).toContain("Memory Inbox");
     expect(setupDoc).toContain("chatmem-mcp");
+    expect(setupDoc).toContain("~/.agents/plugins/marketplace.json");
   });
 });
