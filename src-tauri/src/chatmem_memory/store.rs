@@ -296,8 +296,9 @@ impl MemoryStore {
                 tx.execute(
                     "INSERT INTO approved_memories (
                         memory_id, repo_id, kind, title, value, usage_hint, status,
-                        last_verified_at, created_from_candidate_id, created_at, updated_at
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?7, ?7)",
+                        last_verified_at, freshness_status, freshness_score,
+                        verified_at, verified_by, created_from_candidate_id, created_at, updated_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, 'fresh', 1.0, ?7, NULL, ?8, ?7, ?7)",
                     params![
                         memory_id,
                         candidate.0,
@@ -334,8 +335,9 @@ impl MemoryStore {
                 tx.execute(
                     "INSERT INTO approved_memories (
                         memory_id, repo_id, kind, title, value, usage_hint, status,
-                        last_verified_at, created_from_candidate_id, created_at, updated_at
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?7, ?7)",
+                        last_verified_at, freshness_status, freshness_score,
+                        verified_at, verified_by, created_from_candidate_id, created_at, updated_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, 'fresh', 1.0, ?7, NULL, ?8, ?7, ?7)",
                     params![
                         memory_id,
                         candidate.0,
@@ -385,7 +387,8 @@ impl MemoryStore {
         let repo_id = self.ensure_repo(repo_root)?;
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT memory_id, kind, title, value, usage_hint, status, last_verified_at
+            "SELECT memory_id, kind, title, value, usage_hint, status, last_verified_at,
+                    freshness_status, freshness_score, verified_at, verified_by
              FROM approved_memories
              WHERE repo_id = ?1
              ORDER BY updated_at DESC",
@@ -400,6 +403,10 @@ impl MemoryStore {
                 usage_hint: row.get(4)?,
                 status: row.get(5)?,
                 last_verified_at: row.get(6)?,
+                freshness_status: row.get(7)?,
+                freshness_score: row.get(8)?,
+                verified_at: row.get(9)?,
+                verified_by: row.get(10)?,
                 selected_because: None,
                 evidence_refs: vec![],
             })
@@ -523,8 +530,10 @@ impl MemoryStore {
         let repo_root = self.repo_root_for_id(&repo_id)?;
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
-            "SELECT handoff_id, from_agent, to_agent, current_goal, done_json, next_json,
-                    key_files_json, commands_json, related_memories_json, related_episodes_json, created_at
+            "SELECT handoff_id, from_agent, to_agent, status, checkpoint_id, target_profile,
+                    compression_strategy, current_goal, done_json, next_json,
+                    key_files_json, commands_json, related_memories_json, related_episodes_json,
+                    consumed_at, consumed_by, created_at
              FROM handoff_packets
              WHERE repo_id = ?1
              ORDER BY created_at DESC",
@@ -537,14 +546,20 @@ impl MemoryStore {
                     repo_root: repo_root.clone(),
                     from_agent: row.get(1)?,
                     to_agent: row.get(2)?,
-                    current_goal: row.get(3)?,
-                    done_items: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(4)?).unwrap_or_default(),
-                    next_items: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(5)?).unwrap_or_default(),
-                    key_files: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(6)?).unwrap_or_default(),
-                    useful_commands: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(7)?).unwrap_or_default(),
-                    related_memories: serde_json::from_str::<Vec<ApprovedMemoryResponse>>(&row.get::<_, String>(8)?).unwrap_or_default(),
-                    related_episodes: serde_json::from_str::<Vec<EpisodeResponse>>(&row.get::<_, String>(9)?).unwrap_or_default(),
-                    created_at: row.get(10)?,
+                    status: row.get(3)?,
+                    checkpoint_id: row.get(4)?,
+                    target_profile: row.get(5)?,
+                    compression_strategy: row.get(6)?,
+                    current_goal: row.get(7)?,
+                    done_items: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(8)?).unwrap_or_default(),
+                    next_items: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(9)?).unwrap_or_default(),
+                    key_files: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(10)?).unwrap_or_default(),
+                    useful_commands: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(11)?).unwrap_or_default(),
+                    related_memories: serde_json::from_str::<Vec<ApprovedMemoryResponse>>(&row.get::<_, String>(12)?).unwrap_or_default(),
+                    related_episodes: serde_json::from_str::<Vec<EpisodeResponse>>(&row.get::<_, String>(13)?).unwrap_or_default(),
+                    consumed_at: row.get(14)?,
+                    consumed_by: row.get(15)?,
+                    created_at: row.get(16)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -603,34 +618,39 @@ impl MemoryStore {
             .take(3)
             .collect::<Vec<_>>();
         let related_episodes = self.list_episodes(&repo_root)?.into_iter().take(2).collect::<Vec<_>>();
+        let current_goal = handoff::derive_goal(goal_hint, latest_summary.as_deref());
         let done_items = handoff::summarize_done_item(latest_summary.as_deref());
-        let next_items = vec![handoff::derive_goal(goal_hint, latest_summary.as_deref())];
-        let packet = HandoffPacketResponse {
-            handoff_id: uuid::Uuid::new_v4().to_string(),
-            repo_root,
-            from_agent: from_agent.to_string(),
-            to_agent: to_agent.to_string(),
-            current_goal: handoff::derive_goal(goal_hint, latest_summary.as_deref()),
+        let next_items = vec![current_goal.clone()];
+        let packet = handoff::build_handoff_packet(
+            &repo_root,
+            from_agent,
+            to_agent,
+            current_goal,
             done_items,
             next_items,
             key_files,
             useful_commands,
             related_memories,
             related_episodes,
-            created_at: chrono::Utc::now().to_rfc3339(),
-        };
+            None,
+        );
 
         conn.execute(
             "INSERT INTO handoff_packets (
-                handoff_id, repo_id, from_agent, to_agent, current_goal,
+                handoff_id, repo_id, from_agent, to_agent, status, target_profile, checkpoint_id,
+                compression_strategy, current_goal,
                 done_json, next_json, key_files_json, commands_json,
-                related_memories_json, related_episodes_json, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                related_memories_json, related_episodes_json, consumed_at, consumed_by, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 packet.handoff_id,
                 repo_id,
                 packet.from_agent,
                 packet.to_agent,
+                packet.status,
+                packet.target_profile,
+                packet.checkpoint_id,
+                packet.compression_strategy,
                 packet.current_goal,
                 serde_json::to_string(&packet.done_items)?,
                 serde_json::to_string(&packet.next_items)?,
@@ -638,11 +658,30 @@ impl MemoryStore {
                 serde_json::to_string(&packet.useful_commands)?,
                 serde_json::to_string(&packet.related_memories)?,
                 serde_json::to_string(&packet.related_episodes)?,
+                packet.consumed_at,
+                packet.consumed_by,
                 packet.created_at,
             ],
         )?;
 
         Ok(packet)
+    }
+
+    pub fn mark_handoff_consumed(&self, handoff_id: &str, consumed_by: &str) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let conn = self.conn()?;
+        let updated = conn.execute(
+            "UPDATE handoff_packets
+             SET status = 'consumed', consumed_at = ?2, consumed_by = ?3
+             WHERE handoff_id = ?1",
+            params![handoff_id, now, consumed_by],
+        )?;
+
+        if updated == 0 {
+            return Err(anyhow::anyhow!("handoff {handoff_id} not found"));
+        }
+
+        Ok(())
     }
 
     pub fn search_history(&self, repo_root: &str, query: &str, limit: usize) -> Result<Vec<SearchHistoryMatch>> {
@@ -899,5 +938,23 @@ mod tests {
         let memories = store.list_repo_memories(repo_root).unwrap();
         assert_eq!(memories.len(), 1);
         assert_eq!(memories[0].value, "npm run test:run");
+    }
+
+    #[test]
+    fn marking_a_handoff_consumed_updates_lifecycle_metadata() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let packet = store
+            .build_and_store_handoff(repo_root, "codex", "claude", Some("Wrap schema changes"))
+            .unwrap();
+
+        store
+            .mark_handoff_consumed(&packet.handoff_id, "claude")
+            .unwrap();
+
+        let latest = store.latest_handoff(repo_root).unwrap().unwrap();
+        assert_eq!(latest.status, "consumed");
+        assert_eq!(latest.consumed_by.as_deref(), Some("claude"));
+        assert!(latest.consumed_at.is_some());
     }
 }

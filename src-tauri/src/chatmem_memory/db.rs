@@ -159,12 +159,75 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         ",
     )?;
 
+    ensure_column(
+        conn,
+        "approved_memories",
+        "freshness_status",
+        "TEXT NOT NULL DEFAULT 'unknown'",
+    )?;
+    ensure_column(
+        conn,
+        "approved_memories",
+        "freshness_score",
+        "REAL NOT NULL DEFAULT 0.0",
+    )?;
+    ensure_column(conn, "approved_memories", "verified_at", "TEXT")?;
+    ensure_column(conn, "approved_memories", "verified_by", "TEXT")?;
+
+    ensure_column(
+        conn,
+        "handoff_packets",
+        "status",
+        "TEXT NOT NULL DEFAULT 'draft'",
+    )?;
+    ensure_column(conn, "handoff_packets", "target_profile", "TEXT")?;
+    ensure_column(conn, "handoff_packets", "checkpoint_id", "TEXT")?;
+    ensure_column(conn, "handoff_packets", "compression_strategy", "TEXT")?;
+    ensure_column(conn, "handoff_packets", "consumed_at", "TEXT")?;
+    ensure_column(conn, "handoff_packets", "consumed_by", "TEXT")?;
+
     Ok(())
+}
+
+fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str) -> Result<()> {
+    if !table_has_column(conn, table, column)? {
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+            [],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
+
+    for existing in columns {
+        if existing? == column {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{migrate, open_connection};
+    use rusqlite::Connection;
+
+    fn column_names(conn: &Connection, table: &str) -> Vec<String> {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap();
+
+        stmt.query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
 
     #[test]
     fn migrations_create_memory_tables() {
@@ -214,6 +277,36 @@ mod tests {
                 "tool_calls",
             ]
         );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn migrations_add_handoff_lifecycle_columns() {
+        let path = std::env::temp_dir().join(format!("chatmem-db-test-{}.sqlite", uuid::Uuid::new_v4()));
+        let conn = open_connection(&path).unwrap();
+        migrate(&conn).unwrap();
+
+        let columns = column_names(&conn, "handoff_packets");
+        assert!(columns.contains(&"status".to_string()));
+        assert!(columns.contains(&"target_profile".to_string()));
+        assert!(columns.contains(&"checkpoint_id".to_string()));
+        assert!(columns.contains(&"consumed_at".to_string()));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn migrations_add_memory_freshness_columns() {
+        let path = std::env::temp_dir().join(format!("chatmem-db-test-{}.sqlite", uuid::Uuid::new_v4()));
+        let conn = open_connection(&path).unwrap();
+        migrate(&conn).unwrap();
+
+        let columns = column_names(&conn, "approved_memories");
+        assert!(columns.contains(&"freshness_status".to_string()));
+        assert!(columns.contains(&"freshness_score".to_string()));
+        assert!(columns.contains(&"verified_at".to_string()));
+        assert!(columns.contains(&"verified_by".to_string()));
 
         let _ = std::fs::remove_file(path);
     }

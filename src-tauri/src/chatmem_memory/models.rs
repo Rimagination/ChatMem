@@ -1,6 +1,14 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+fn default_memory_freshness_status() -> String {
+    "unknown".to_string()
+}
+
+fn default_handoff_status() -> String {
+    "draft".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EvidenceRef {
     pub evidence_id: Option<String>,
@@ -20,6 +28,14 @@ pub struct ApprovedMemoryResponse {
     pub usage_hint: String,
     pub status: String,
     pub last_verified_at: Option<String>,
+    #[serde(default = "default_memory_freshness_status")]
+    pub freshness_status: String,
+    #[serde(default)]
+    pub freshness_score: f64,
+    #[serde(default)]
+    pub verified_at: Option<String>,
+    #[serde(default)]
+    pub verified_by: Option<String>,
     pub selected_because: Option<String>,
     pub evidence_refs: Vec<EvidenceRef>,
 }
@@ -55,6 +71,14 @@ pub struct HandoffPacketResponse {
     pub repo_root: String,
     pub from_agent: String,
     pub to_agent: String,
+    #[serde(default = "default_handoff_status")]
+    pub status: String,
+    #[serde(default)]
+    pub checkpoint_id: Option<String>,
+    #[serde(default)]
+    pub target_profile: Option<String>,
+    #[serde(default)]
+    pub compression_strategy: Option<String>,
     pub current_goal: String,
     pub done_items: Vec<String>,
     pub next_items: Vec<String>,
@@ -62,6 +86,10 @@ pub struct HandoffPacketResponse {
     pub useful_commands: Vec<String>,
     pub related_memories: Vec<ApprovedMemoryResponse>,
     pub related_episodes: Vec<EpisodeResponse>,
+    #[serde(default)]
+    pub consumed_at: Option<String>,
+    #[serde(default)]
+    pub consumed_by: Option<String>,
     pub created_at: String,
 }
 
