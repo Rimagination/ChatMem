@@ -8,8 +8,8 @@ use rmcp::{
 use super::{
     models::{
         BuildHandoffPacketInput, CreateMemoryCandidateInput, CreateMemoryCandidateResult,
-        GetRepoMemoryInput, ListMemoryCandidatesInput, RepoMemoryPayload, SearchHistoryPayload,
-        SearchRepoHistoryInput,
+        GetRepoMemoryInput, ListMemoryCandidatesInput, ListMemoryCandidatesPayload,
+        RepoMemoryPayload, SearchHistoryPayload, SearchRepoHistoryInput,
     },
     search,
     store::MemoryStore,
@@ -90,10 +90,10 @@ impl ChatMemMcpService {
     async fn list_memory_candidates(
         &self,
         Parameters(input): Parameters<ListMemoryCandidatesInput>,
-    ) -> Result<Json<Vec<super::models::MemoryCandidateResponse>>, McpError> {
+    ) -> Result<Json<ListMemoryCandidatesPayload>, McpError> {
         self.store
             .list_candidates_with_status(&input.repo_root, input.status.as_deref())
-            .map(Json)
+            .map(|candidates| Json(ListMemoryCandidatesPayload { candidates }))
             .map_err(|error| internal_error(error.to_string()))
     }
 
@@ -117,3 +117,38 @@ impl ChatMemMcpService {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for ChatMemMcpService {}
+
+#[cfg(test)]
+mod tests {
+    use super::ChatMemMcpService;
+    use crate::chatmem_memory::{models::ListMemoryCandidatesPayload, store::MemoryStore};
+    use schemars::schema_for;
+
+    fn new_store() -> MemoryStore {
+        let path =
+            std::env::temp_dir().join(format!("chatmem-mcp-test-{}.sqlite", uuid::Uuid::new_v4()));
+        MemoryStore::new(path).unwrap()
+    }
+
+    #[test]
+    fn service_initializes_without_panicking() {
+        let store = new_store();
+        let result = std::panic::catch_unwind(|| ChatMemMcpService::new(store));
+        assert!(result.is_ok(), "ChatMemMcpService::new should not panic");
+    }
+
+    #[test]
+    fn list_memory_candidates_payload_schema_has_object_root() {
+        let schema = schema_for!(ListMemoryCandidatesPayload);
+        let schema_json = serde_json::to_value(&schema).unwrap();
+
+        assert_eq!(
+            schema_json.get("type").and_then(|value| value.as_str()),
+            Some("object")
+        );
+        assert!(schema_json
+            .get("properties")
+            .and_then(|value| value.get("candidates"))
+            .is_some());
+    }
+}

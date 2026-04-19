@@ -43,6 +43,19 @@ macOS：
 - 简体中文 / English 切换
 - 应用内检查更新
 
+## ChatMem MCP
+
+ChatMem 现在可以作为 Codex 的本地 MCP 记忆服务使用，用来给仓库工作流提供：
+
+- 仓库启动记忆
+- 历史工作搜索
+- 记忆候选沉淀
+- agent handoff 交接包
+
+推荐查看完整说明：
+
+- [ChatMem MCP Setup](./docs/CHATMEM_MCP_SETUP.md)
+
 ## 本地开发
 
 环境要求：

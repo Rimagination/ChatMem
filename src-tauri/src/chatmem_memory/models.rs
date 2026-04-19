@@ -81,6 +81,11 @@ pub struct SearchHistoryPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListMemoryCandidatesPayload {
+    pub candidates: Vec<MemoryCandidateResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RepoMemoryPayload {
     pub repo_summary: String,
     pub approved_memories: Vec<ApprovedMemoryResponse>,

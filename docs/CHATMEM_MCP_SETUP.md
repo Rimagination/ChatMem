@@ -1,27 +1,168 @@
 # ChatMem MCP Setup
 
-## Codex App
+This document covers the working ChatMem setup for Codex App after the MCP schema fix.
 
-1. Build the `chatmem-mcp` binary from `D:\VSP\agentswap-gui\src-tauri`.
-2. Open this workspace in Codex App.
-3. Install the local `ChatMem` plugin from `D:\VSP\agentswap-gui\.agents\plugins\marketplace.json`.
-4. Start work with the prompt: "Load ChatMem repo memory for this workspace."
+## What ChatMem Is
 
-The Codex plugin bundles both the shared skill and the local MCP launcher. The MCP entry runs `plugins/chatmem/scripts/run-chatmem-mcp.ps1`, which looks for `chatmem-mcp.exe` in the Tauri build output or `CHATMEM_MCP_BIN`.
+ChatMem is best used as a local MCP server that gives Codex repository memory tools:
 
-## Claude Code
+- `get_repo_memory`
+- `search_repo_history`
+- `create_memory_candidate`
+- `list_memory_candidates`
+- `build_handoff_packet`
 
-Use `plugins/chatmem/.claude-plugin/plugin.json` as the shared skill bundle for Claude-side workflows. The MCP process is the same local `chatmem-mcp` server; Claude can point at the same launcher script if you want parity with Codex.
+In Codex App, this is an MCP integration first. Do not rely on the local plugin marketplace flow as the primary installation path.
 
-## Review Flow
+## Build the MCP Binary
 
-- `get_repo_memory`: load startup memory before coding
-- `search_repo_history`: pull prior episodes and commands instead of replaying transcripts
-- `create_memory_candidate`: propose repo facts as pending candidates
-- `build_handoff_packet`: create a cross-agent handoff packet
+From the repo root:
 
-All candidate writes are review-gated. The desktop app exposes this in `Memory Inbox`, where a human approves, edits, rejects, or snoozes candidate memory before it becomes startup context.
+```powershell
+cd D:\VSP\agentswap-gui\src-tauri
+cargo build --release --bin chatmem-mcp
+```
 
-## Optional Local Install
+Expected output:
 
-Run `scripts/sync-chatmem-plugin.ps1` to copy the Codex plugin bundle into `~/plugins/chatmem`, register it in `~/.agents/plugins/marketplace.json`, and copy the Claude bundle into `~/.claude/plugins/chatmem` for home-level use. The sync step also writes `repo-root.txt` so the copied launcher still points back at this repo checkout. Restart Codex App after syncing so the local marketplace is reloaded.
+- `D:\VSP\agentswap-gui\src-tauri\target\release\chatmem-mcp.exe`
+
+## Recommended Codex App Setup
+
+Codex App reads MCP configuration from `config.toml`.
+
+### User-level config
+
+Path:
+
+- `C:\Users\Liang\.codex\config.toml`
+
+Add:
+
+```toml
+[mcp_servers.chatmem]
+command = "powershell"
+args = [
+  "-NoProfile",
+  "-ExecutionPolicy",
+  "Bypass",
+  "-File",
+  "D:\\VSP\\plugins\\chatmem\\scripts\\run-chatmem-mcp.ps1",
+]
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+enabled = true
+```
+
+### Project-level config
+
+Path:
+
+- `D:\VSP\.codex\config.toml`
+
+Add the same block there if you want the workspace to carry its own ChatMem MCP config.
+
+## Launcher Script
+
+The launcher used by Codex lives at:
+
+- `D:\VSP\plugins\chatmem\scripts\run-chatmem-mcp.ps1`
+
+It resolves the repo root from `repo-root.txt`, then tries:
+
+1. `src-tauri\target\release\chatmem-mcp.exe`
+2. `src-tauri\target\debug\chatmem-mcp.exe`
+
+You can override the binary path with:
+
+- `CHATMEM_MCP_BIN`
+
+You can override the repo root with:
+
+- `CHATMEM_REPO_ROOT`
+
+## Restart Requirement
+
+After changing MCP config, fully quit Codex App and open it again.
+
+If ChatMem still does not appear, verify the binary starts cleanly:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File D:\VSP\plugins\chatmem\scripts\run-chatmem-mcp.ps1
+```
+
+If the process stays alive and waits on stdio, the MCP server is healthy.
+
+## How To Use ChatMem In Codex
+
+Once enabled, use ChatMem through natural prompts. The easiest pattern is to ask Codex to call the tools for you.
+
+### Startup examples
+
+Use these when opening a repo or starting a fresh thread:
+
+- "Load ChatMem repo memory for this workspace."
+- "Read the ChatMem memory for this repository before we start."
+- "Search ChatMem history for previous MCP work in this repo."
+
+### During development
+
+Use these when you discover a reusable rule or want prior context:
+
+- "Search ChatMem for earlier discussion about release packaging."
+- "Save this conclusion as a memory candidate for the repo."
+- "List pending memory candidates for this repository."
+
+### Handoff examples
+
+Use these when switching agents or pausing work:
+
+- "Build a ChatMem handoff packet for another agent."
+- "Generate a handoff for this repo so we can resume later."
+
+## Practical Prompt Templates
+
+### New thread template
+
+```text
+Load ChatMem repo memory for this workspace, summarize the key constraints, then continue with the task.
+```
+
+### Development template
+
+```text
+Use ChatMem while we work: read repo memory first, search prior history when needed, and save stable conclusions as memory candidates.
+```
+
+### Handoff template
+
+```text
+Create a ChatMem handoff packet for this repository with the current goal, completed items, next steps, and the key files to inspect first.
+```
+
+## Known Pitfall That Was Fixed
+
+Earlier builds could fail to register in Codex because `list_memory_candidates` exposed an MCP output schema whose root type was `array`.
+
+Codex expects MCP tool output schemas to use an object root. The working payload is now:
+
+```json
+{
+  "candidates": []
+}
+```
+
+That fix is implemented in:
+
+- `src-tauri/src/chatmem_memory/models.rs`
+- `src-tauri/src/chatmem_memory/mcp.rs`
+
+## Optional Local Plugin Shell
+
+The repo still contains local plugin shell files:
+
+- `plugins/chatmem/.codex-plugin/plugin.json`
+- `plugins/chatmem/.mcp.json`
+- `.agents/plugins/marketplace.json`
+
+These are useful as packaging artifacts, but the reliable Codex App setup is the MCP `config.toml` path above.
