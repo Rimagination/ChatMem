@@ -1,16 +1,22 @@
 # ChatMem MCP Setup
 
-This document covers the working ChatMem setup for Codex App after the MCP schema fix.
+This document covers the working ChatMem setup for Codex App after the MCP schema fix and the additive control-plane surfaces.
 
 ## What ChatMem Is
 
-ChatMem is best used as a local MCP server that gives Codex repository memory tools:
+ChatMem is best used as a local MCP server that gives Codex repository memory tools and a small control-plane layer:
 
 - `get_repo_memory`
 - `search_repo_history`
 - `create_memory_candidate`
 - `list_memory_candidates`
 - `build_handoff_packet`
+- `list_active_runs`
+- `list_run_artifacts`
+- `create_checkpoint`
+- `resume_from_checkpoint`
+
+The original five MCP tools remain supported. The new V2 tools are additive and can be adopted incrementally without breaking existing clients.
 
 In Codex App, this is an MCP integration first. Do not rely on the local plugin marketplace flow as the primary installation path.
 
@@ -93,6 +99,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File D:\VSP\plugins\chatmem\scrip
 
 If the process stays alive and waits on stdio, the MCP server is healthy.
 
+## Control-Plane Surfaces
+
+ChatMem now exposes three local surfaces:
+
+- Desktop app for human review and operational visibility
+- MCP for host integration and automation
+- A2A-lite metadata for describing ChatMem as a local-first control plane
+
+The metadata surface is intentionally lightweight. It does not introduce a network transport or a distributed A2A protocol.
+
 ## How To Use ChatMem In Codex
 
 Once enabled, use ChatMem through natural prompts. The easiest pattern is to ask Codex to call the tools for you.
@@ -120,6 +136,15 @@ Use these when switching agents or pausing work:
 
 - "Build a ChatMem handoff packet for another agent."
 - "Generate a handoff for this repo so we can resume later."
+
+### Control-plane examples
+
+Use these when you need the newer V2 surfaces:
+
+- "List active ChatMem runs for this repository."
+- "Show the artifacts produced by recent runs."
+- "Freeze the current state into a checkpoint."
+- "Resume from checkpoint and build the next handoff packet."
 
 ## Practical Prompt Templates
 

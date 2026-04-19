@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::command;
 use chatmem::chatmem_memory::{
+    a2a::AgentCard,
     checkpoints::{CheckpointRecord, CreateCheckpointInput},
     models::{
         ApprovedMemoryResponse, EpisodeResponse, HandoffPacketResponse, MemoryCandidateResponse,
@@ -216,6 +217,11 @@ fn convert_conversation(
 
 fn open_memory_store() -> Result<MemoryStore, String> {
     MemoryStore::open_app().map_err(|e| e.to_string())
+}
+
+#[command]
+async fn get_agent_card() -> Result<AgentCard, String> {
+    Ok(AgentCard::chatmem_default())
 }
 
 #[command]
@@ -473,6 +479,7 @@ fn main() {
             migrate_conversation,
             delete_conversation,
             check_agent_available,
+            get_agent_card,
             list_repo_memories,
             list_memory_candidates,
             review_memory_candidate,

@@ -1,3 +1,4 @@
+pub mod a2a;
 pub mod checkpoints;
 pub mod db;
 pub mod handoff;
