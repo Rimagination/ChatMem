@@ -364,6 +364,14 @@ async fn review_memory_candidate(
 }
 
 #[command]
+async fn reverify_memory(memory_id: String, verified_by: String) -> Result<(), String> {
+    let store = open_memory_store()?;
+    store
+        .reverify_memory(&memory_id, &verified_by)
+        .map_err(|e| e.to_string())
+}
+
+#[command]
 async fn list_episodes(repo_root: String) -> Result<Vec<EpisodeResponse>, String> {
     let store = open_memory_store()?;
     store.list_episodes(&repo_root).map_err(|e| e.to_string())
@@ -415,6 +423,7 @@ fn main() {
             list_repo_memories,
             list_memory_candidates,
             review_memory_candidate,
+            reverify_memory,
             list_episodes,
             list_handoffs,
             create_handoff_packet,

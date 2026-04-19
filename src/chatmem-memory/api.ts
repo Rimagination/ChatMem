@@ -26,6 +26,10 @@ export function reviewMemoryCandidate(payload: {
   return invoke("review_memory_candidate", payload);
 }
 
+export function reverifyMemory(payload: { memoryId: string; verifiedBy: string }) {
+  return invoke("reverify_memory", payload);
+}
+
 export function listEpisodes(repoRoot: string) {
   return invoke<EpisodeRecord[]>("list_episodes", { repoRoot });
 }

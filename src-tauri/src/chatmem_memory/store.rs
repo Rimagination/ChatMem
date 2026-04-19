@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
-use std::path::PathBuf;
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
 
 use agentswap_core::types::{ChangeType, Conversation, Role, ToolStatus};
 
@@ -9,7 +12,7 @@ use super::{
     handoff,
     models::{
         ApprovedMemoryResponse, CreateMemoryCandidateInput, EpisodeResponse, EvidenceRef,
-        HandoffPacketResponse, MemoryCandidateResponse, SearchHistoryMatch,
+        HandoffPacketResponse, MemoryCandidateResponse, MemoryMergeSuggestion, SearchHistoryMatch,
     },
     repo_identity,
 };
@@ -383,6 +386,61 @@ impl MemoryStore {
         Ok(())
     }
 
+    pub fn reverify_memory(&self, memory_id: &str, verified_by: &str) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        let memory = tx
+            .query_row(
+                "SELECT repo_id, title, value
+                 FROM approved_memories
+                 WHERE memory_id = ?1",
+                [memory_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        let Some((repo_id, title, value)) = memory else {
+            return Err(anyhow::anyhow!("memory {memory_id} not found"));
+        };
+
+        tx.execute(
+            "UPDATE approved_memories
+             SET last_verified_at = ?2,
+                 freshness_status = 'fresh',
+                 freshness_score = 1.0,
+                 verified_at = ?2,
+                 verified_by = ?3,
+                 updated_at = ?2
+             WHERE memory_id = ?1",
+            params![memory_id, now, verified_by],
+        )?;
+
+        upsert_search_document_tx(
+            &tx,
+            &format!("memory:{memory_id}"),
+            &repo_id,
+            "memory",
+            memory_id,
+            &title,
+            &value,
+        )?;
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn suggest_memory_merges(&self, repo_root: &str) -> Result<Vec<MemoryMergeSuggestion>> {
+        let repo_id = self.ensure_repo(repo_root)?;
+        self.suggest_memory_merges_by_repo_id(&repo_id)
+    }
+
     pub fn list_repo_memories(&self, repo_root: &str) -> Result<Vec<ApprovedMemoryResponse>> {
         let repo_id = self.ensure_repo(repo_root)?;
         let conn = self.conn()?;
@@ -466,6 +524,7 @@ impl MemoryStore {
                     status: row.get(7)?,
                     created_at: row.get(8)?,
                     evidence_refs: vec![],
+                    merge_suggestion: None,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?
@@ -482,16 +541,102 @@ impl MemoryStore {
                     status: row.get(7)?,
                     created_at: row.get(8)?,
                     evidence_refs: vec![],
+                    merge_suggestion: None,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?
         };
 
+        let merge_suggestions = self
+            .suggest_memory_merges_by_repo_id(repo_id)?
+            .into_iter()
+            .map(|suggestion| (suggestion.candidate_id.clone(), suggestion))
+            .collect::<HashMap<_, _>>();
         let mut candidates = rows;
         for candidate in &mut candidates {
             candidate.evidence_refs = self.evidence_refs("candidate", &candidate.candidate_id)?;
+            candidate.merge_suggestion = merge_suggestions.get(&candidate.candidate_id).cloned();
         }
         Ok(candidates)
+    }
+
+    fn suggest_memory_merges_by_repo_id(&self, repo_id: &str) -> Result<Vec<MemoryMergeSuggestion>> {
+        let conn = self.conn()?;
+        let active_memories = {
+            let mut stmt = conn.prepare(
+                "SELECT memory_id, kind, title, value, usage_hint
+                 FROM approved_memories
+                 WHERE repo_id = ?1 AND status = 'active'",
+            )?;
+            let rows = stmt.query_map([repo_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+
+        let candidate_rows = {
+            let mut stmt = conn.prepare(
+                "SELECT candidate_id, kind, summary, value, why_it_matters
+                 FROM memory_candidates
+                 WHERE repo_id = ?1 AND status = 'pending_review'
+                 ORDER BY created_at DESC",
+            )?;
+            let rows = stmt.query_map([repo_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+
+        let mut suggestions = Vec::new();
+        for (candidate_id, kind, summary, value, why_it_matters) in candidate_rows {
+            let best_match = active_memories
+                .iter()
+                .filter(|(_, memory_kind, _, _, _)| memory_kind == &kind)
+                .filter_map(|(memory_id, _, title, memory_value, usage_hint)| {
+                    let score = merge_similarity(&summary, &value, &why_it_matters, title, memory_value, usage_hint);
+                    if score >= 0.72 {
+                        Some((score, memory_id, title, memory_value))
+                    } else {
+                        None
+                    }
+                })
+                .max_by(|left, right| left.0.partial_cmp(&right.0).unwrap_or(std::cmp::Ordering::Equal));
+
+            if let Some((score, memory_id, title, memory_value)) = best_match {
+                let reason = if normalize_text(&value) == normalize_text(memory_value) {
+                    format!(
+                        "This candidate matches the approved memory value and should be merge-reviewed instead of stored twice (score {:.2}).",
+                        score
+                    )
+                } else {
+                    format!(
+                        "This candidate overlaps an approved memory and likely needs a merge-aware review (score {:.2}).",
+                        score
+                    )
+                };
+
+                suggestions.push(MemoryMergeSuggestion {
+                    candidate_id,
+                    memory_id: memory_id.clone(),
+                    memory_title: title.clone(),
+                    reason,
+                });
+            }
+        }
+
+        Ok(suggestions)
     }
 
     pub fn list_episodes(&self, repo_root: &str) -> Result<Vec<EpisodeResponse>> {
@@ -939,6 +1084,53 @@ fn build_conversation_search_body(conversation: &Conversation) -> String {
     truncate_text(&sections.join("\n"), 4_000)
 }
 
+fn normalize_text(text: &str) -> String {
+    text.to_lowercase()
+        .chars()
+        .map(|ch| if ch.is_alphanumeric() { ch } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn token_overlap(left: &str, right: &str) -> f64 {
+    let left_tokens = normalize_text(left)
+        .split_whitespace()
+        .map(ToString::to_string)
+        .collect::<HashSet<_>>();
+    let right_tokens = normalize_text(right)
+        .split_whitespace()
+        .map(ToString::to_string)
+        .collect::<HashSet<_>>();
+
+    if left_tokens.is_empty() || right_tokens.is_empty() {
+        return 0.0;
+    }
+
+    let overlap = left_tokens.intersection(&right_tokens).count() as f64;
+    overlap / left_tokens.len().max(right_tokens.len()) as f64
+}
+
+fn merge_similarity(
+    candidate_summary: &str,
+    candidate_value: &str,
+    why_it_matters: &str,
+    memory_title: &str,
+    memory_value: &str,
+    usage_hint: &str,
+) -> f64 {
+    if !candidate_value.trim().is_empty() && normalize_text(candidate_value) == normalize_text(memory_value) {
+        return 1.0;
+    }
+
+    let title_overlap = token_overlap(candidate_summary, memory_title);
+    let value_overlap = token_overlap(candidate_value, memory_value);
+    let why_overlap = token_overlap(why_it_matters, usage_hint);
+
+    (title_overlap * 0.45) + (value_overlap * 0.45) + (why_overlap * 0.10)
+}
+
 fn truncate_text(text: &str, max_chars: usize) -> String {
     let mut chars = text.chars();
     let truncated = chars.by_ref().take(max_chars).collect::<String>();
@@ -990,6 +1182,95 @@ mod tests {
         let memories = store.list_repo_memories(repo_root).unwrap();
         assert_eq!(memories.len(), 1);
         assert_eq!(memories[0].value, "npm run test:run");
+    }
+
+    #[test]
+    fn reverify_memory_marks_it_fresh_and_tracks_the_reviewer() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "command".to_string(),
+                summary: "Run tests".to_string(),
+                value: "npm run test:run".to_string(),
+                why_it_matters: "Needed before merge".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.92,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        store
+            .review_candidate(
+                &candidate_id,
+                ReviewAction::Approve {
+                    title: "Primary test command".into(),
+                    usage_hint: "Inject on startup when the task hint mentions tests".into(),
+                },
+            )
+            .unwrap();
+
+        let memory_id = store.list_repo_memories(repo_root).unwrap()[0].memory_id.clone();
+
+        store.reverify_memory(&memory_id, "claude").unwrap();
+
+        let memories = store.list_repo_memories(repo_root).unwrap();
+        assert_eq!(memories[0].freshness_status, "fresh");
+        assert_eq!(memories[0].freshness_score, 1.0);
+        assert_eq!(memories[0].verified_by.as_deref(), Some("claude"));
+        assert!(memories[0].verified_at.is_some());
+        assert_eq!(memories[0].last_verified_at, memories[0].verified_at);
+    }
+
+    #[test]
+    fn suggest_memory_merges_flags_candidates_that_overlap_existing_memory() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let approved_candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "command".to_string(),
+                summary: "Run tests before merge".to_string(),
+                value: "npm run test:run".to_string(),
+                why_it_matters: "Primary verification command".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.95,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        store
+            .review_candidate(
+                &approved_candidate_id,
+                ReviewAction::Approve {
+                    title: "Primary verification".into(),
+                    usage_hint: "Use before merge".into(),
+                },
+            )
+            .unwrap();
+
+        let candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "command".to_string(),
+                summary: "Run tests before shipping".to_string(),
+                value: "npm run test:run".to_string(),
+                why_it_matters: "Same command with updated wording".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.74,
+                proposed_by: "claude".to_string(),
+            })
+            .unwrap();
+
+        let suggestions = store.suggest_memory_merges(repo_root).unwrap();
+        let suggestion = suggestions
+            .into_iter()
+            .find(|item| item.candidate_id == candidate_id)
+            .expect("expected merge suggestion for overlapping command memory");
+
+        assert_eq!(suggestion.memory_title, "Primary verification");
+        assert!(suggestion.reason.contains("merge"));
     }
 
     #[test]

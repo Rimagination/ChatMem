@@ -6,6 +6,7 @@ import MigrateModal from "./components/MigrateModal";
 import SettingsPanel from "./components/SettingsPanel";
 import RepoMemoryPanel from "./components/RepoMemoryPanel";
 import MemoryInboxPanel from "./components/MemoryInboxPanel";
+import ApprovalsPanel from "./components/ApprovalsPanel";
 import EpisodesPanel from "./components/EpisodesPanel";
 import HandoffsPanel from "./components/HandoffsPanel";
 import HandoffComposerModal from "./components/HandoffComposerModal";
@@ -20,6 +21,7 @@ import {
   listMemoryCandidates,
   markHandoffConsumed,
   listRepoMemories,
+  reverifyMemory,
   reviewMemoryCandidate,
 } from "./chatmem-memory/api";
 import type {
@@ -84,7 +86,13 @@ type CopyState = {
   target: CopyTarget | null;
   status: "idle" | "success" | "error";
 };
-type WorkspaceView = "conversation" | "repo-memory" | "memory-inbox" | "episodes" | "handoffs";
+type WorkspaceView =
+  | "conversation"
+  | "repo-memory"
+  | "memory-inbox"
+  | "approvals"
+  | "episodes"
+  | "handoffs";
 type HandoffComposerState = {
   targetAgent: string;
   profileOptions: HandoffTargetProfileOption[];
@@ -219,6 +227,13 @@ function App() {
           setRepoMemories(await listRepoMemories(activeRepoRoot));
         } else if (workspaceView === "memory-inbox") {
           setMemoryCandidates(await listMemoryCandidates(activeRepoRoot, "pending_review"));
+        } else if (workspaceView === "approvals") {
+          const [nextMemories, nextCandidates] = await Promise.all([
+            listRepoMemories(activeRepoRoot),
+            listMemoryCandidates(activeRepoRoot, "pending_review"),
+          ]);
+          setRepoMemories(nextMemories);
+          setMemoryCandidates(nextCandidates);
         } else if (workspaceView === "episodes") {
           setEpisodes(await listEpisodes(activeRepoRoot));
         } else if (workspaceView === "handoffs") {
@@ -422,6 +437,25 @@ function App() {
       setHandoffComposer(null);
     } catch (error) {
       console.error("Failed to create handoff packet:", error);
+    } finally {
+      setMemoryLoading(false);
+    }
+  };
+
+  const handleReverifyMemory = async (memoryId: string) => {
+    if (!activeRepoRoot) {
+      return;
+    }
+
+    setMemoryLoading(true);
+    try {
+      await reverifyMemory({
+        memoryId,
+        verifiedBy: selectedAgent,
+      });
+      setRepoMemories(await listRepoMemories(activeRepoRoot));
+    } catch (error) {
+      console.error("Failed to re-verify memory:", error);
     } finally {
       setMemoryLoading(false);
     }
@@ -631,6 +665,14 @@ function App() {
           </button>
           <button
             type="button"
+            className={`workspace-mode-tab ${workspaceView === "approvals" ? "active" : ""}`}
+            onClick={() => setWorkspaceView("approvals")}
+            disabled={!activeRepoRoot}
+          >
+            Approvals
+          </button>
+          <button
+            type="button"
             className={`workspace-mode-tab ${workspaceView === "episodes" ? "active" : ""}`}
             onClick={() => setWorkspaceView("episodes")}
             disabled={!activeRepoRoot}
@@ -656,13 +698,26 @@ function App() {
             workspaceView === "conversation" ? (
             <ConversationDetail conversation={selectedConversation} />
             ) : workspaceView === "repo-memory" ? (
-              <RepoMemoryPanel memories={repoMemories} loading={memoryLoading} />
+              <RepoMemoryPanel
+                memories={repoMemories}
+                loading={memoryLoading}
+                onReverify={handleReverifyMemory}
+              />
             ) : workspaceView === "memory-inbox" ? (
               <MemoryInboxPanel
                 candidates={memoryCandidates}
                 loading={memoryLoading}
                 onApprove={handleApproveCandidate}
                 onReject={handleRejectCandidate}
+              />
+            ) : workspaceView === "approvals" ? (
+              <ApprovalsPanel
+                candidates={memoryCandidates}
+                memories={repoMemories}
+                loading={memoryLoading}
+                onOpenInbox={() => setWorkspaceView("memory-inbox")}
+                onOpenRepoMemory={() => setWorkspaceView("repo-memory")}
+                onReverify={handleReverifyMemory}
               />
             ) : workspaceView === "episodes" ? (
               <EpisodesPanel episodes={episodes} loading={memoryLoading} />

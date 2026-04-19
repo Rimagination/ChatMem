@@ -41,6 +41,14 @@ pub struct ApprovedMemoryResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryMergeSuggestion {
+    pub candidate_id: String,
+    pub memory_id: String,
+    pub memory_title: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MemoryCandidateResponse {
     pub candidate_id: String,
     pub kind: String,
@@ -52,6 +60,8 @@ pub struct MemoryCandidateResponse {
     pub status: String,
     pub created_at: String,
     pub evidence_refs: Vec<EvidenceRef>,
+    #[serde(default)]
+    pub merge_suggestion: Option<MemoryMergeSuggestion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

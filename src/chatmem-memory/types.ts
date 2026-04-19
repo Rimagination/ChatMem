@@ -23,6 +23,15 @@ export type ApprovedMemory = {
   evidence_refs: EvidenceRef[];
 };
 
+export type MemoryFreshnessStatus = "fresh" | "stale" | "unknown";
+
+export type MemoryMergeSuggestion = {
+  candidate_id: string;
+  memory_id: string;
+  memory_title: string;
+  reason: string;
+};
+
 export type MemoryCandidate = {
   candidate_id: string;
   kind: string;
@@ -34,6 +43,7 @@ export type MemoryCandidate = {
   status: string;
   created_at: string;
   evidence_refs: EvidenceRef[];
+  merge_suggestion?: MemoryMergeSuggestion | null;
 };
 
 export type EpisodeRecord = {

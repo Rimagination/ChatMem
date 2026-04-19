@@ -491,6 +491,14 @@ select {
   gap: 12px;
 }
 
+.memory-card-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .memory-card-kind,
 .memory-card-meta,
 .memory-list-inline {
@@ -505,6 +513,7 @@ select {
 }
 
 .memory-status,
+.memory-freshness,
 .memory-card-confidence {
   display: inline-flex;
   align-items: center;
@@ -519,6 +528,21 @@ select {
 .memory-status-active {
   background: var(--success-soft);
   color: var(--success);
+}
+
+.memory-freshness-fresh {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.memory-freshness-stale {
+  background: rgba(223, 63, 64, 0.12);
+  color: var(--danger);
+}
+
+.memory-freshness-unknown {
+  background: rgba(20, 23, 28, 0.08);
+  color: var(--text-secondary);
 }
 
 .memory-card-confidence {
@@ -568,6 +592,107 @@ select {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.memory-review-cues {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.memory-review-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.memory-review-pill-ready {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.memory-review-pill-needs {
+  background: rgba(223, 63, 64, 0.12);
+  color: var(--danger);
+}
+
+.memory-review-pill-merge {
+  background: rgba(42, 157, 98, 0.12);
+  color: var(--accent-strong);
+}
+
+.memory-review-pill-neutral {
+  background: rgba(20, 23, 28, 0.08);
+  color: var(--text-secondary);
+}
+
+.memory-review-note {
+  padding: 11px 12px;
+  border-radius: var(--radius-md);
+  background: rgba(42, 157, 98, 0.07);
+  border: 1px solid rgba(42, 157, 98, 0.14);
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.approvals-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.approval-summary-card,
+.approval-item {
+  display: grid;
+  gap: 10px;
+  padding: 18px;
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.84);
+  border: 1px solid var(--border-soft);
+}
+
+.approval-summary-card strong {
+  font-size: 28px;
+  letter-spacing: -0.04em;
+}
+
+.approval-summary-card p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.approval-summary-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.approval-section {
+  display: grid;
+  gap: 12px;
+}
+
+.approval-section-header,
+.approval-item-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.approval-section-header h4 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.approval-queue {
+  display: grid;
+  gap: 12px;
 }
 
 .memory-card-split {
@@ -1344,6 +1469,10 @@ select {
   }
 
   .memory-card-split {
+    grid-template-columns: 1fr;
+  }
+
+  .approvals-summary-grid {
     grid-template-columns: 1fr;
   }
 }

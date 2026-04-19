@@ -13,6 +13,18 @@ export default function MemoryInboxPanel({
   onApprove,
   onReject,
 }: MemoryInboxPanelProps) {
+  const renderEvidenceCue = (candidate: MemoryCandidate) => {
+    if (candidate.evidence_refs.length === 0) {
+      return "No linked evidence yet";
+    }
+
+    if (candidate.evidence_refs.length === 1) {
+      return "1 linked evidence reference";
+    }
+
+    return `${candidate.evidence_refs.length} linked evidence references`;
+  };
+
   if (loading) {
     return (
       <section className="memory-panel">
@@ -55,6 +67,29 @@ export default function MemoryInboxPanel({
             <div className="memory-card-meta">
               <span>Proposed by {candidate.proposed_by}</span>
               <span>{candidate.status}</span>
+              <span>{renderEvidenceCue(candidate)}</span>
+            </div>
+            {candidate.merge_suggestion && (
+              <div className="memory-review-note">
+                Potential merge with <strong>{candidate.merge_suggestion.memory_title}</strong>.{" "}
+                {candidate.merge_suggestion.reason}
+              </div>
+            )}
+            <div className="memory-review-cues">
+              <span
+                className={`memory-review-pill ${
+                  candidate.evidence_refs.length > 0 ? "memory-review-pill-ready" : "memory-review-pill-needs"
+                }`}
+              >
+                {candidate.evidence_refs.length > 0 ? "Evidence ready" : "Needs evidence"}
+              </span>
+              <span
+                className={`memory-review-pill ${
+                  candidate.merge_suggestion ? "memory-review-pill-merge" : "memory-review-pill-neutral"
+                }`}
+              >
+                {candidate.merge_suggestion ? "Merge-aware review" : "Net new candidate"}
+              </span>
             </div>
             {candidate.evidence_refs.length > 0 && (
               <div className="memory-evidence-list">
