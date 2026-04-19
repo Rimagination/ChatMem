@@ -2,6 +2,7 @@ node_modules/
 dist/
 dist-portable/
 src-tauri/target/
+.worktrees/
 __pycache__/
 *.log
 npm-debug.log*
