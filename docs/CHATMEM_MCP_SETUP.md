@@ -24,4 +24,4 @@ All candidate writes are review-gated. The desktop app exposes this in `Memory I
 
 ## Optional Local Install
 
-Run `scripts/sync-chatmem-plugin.ps1` to copy the plugin bundle into `~/.codex/plugins/chatmem` and `~/.claude/plugins/chatmem` for home-level use. The sync step also writes `repo-root.txt` so the copied launcher still points back at this repo checkout.
+Run `scripts/sync-chatmem-plugin.ps1` to copy the Codex plugin bundle into `~/plugins/chatmem`, register it in `~/.agents/plugins/marketplace.json`, and copy the Claude bundle into `~/.claude/plugins/chatmem` for home-level use. The sync step also writes `repo-root.txt` so the copied launcher still points back at this repo checkout. Restart Codex App after syncing so the local marketplace is reloaded.
