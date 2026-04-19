@@ -104,11 +104,12 @@ impl ChatMemMcpService {
     ) -> Result<Json<super::models::HandoffPacketResponse>, McpError> {
         let _ = sync::sync_repo_conversations(&self.store, &input.repo_root);
         self.store
-            .build_and_store_handoff(
+            .build_and_store_handoff_for_target_profile(
                 &input.repo_root,
                 &input.from_agent,
                 &input.to_agent,
                 input.goal_hint.as_deref(),
+                input.target_profile.as_deref(),
             )
             .map(Json)
             .map_err(|error| internal_error(error.to_string()))
@@ -121,7 +122,11 @@ impl ServerHandler for ChatMemMcpService {}
 #[cfg(test)]
 mod tests {
     use super::ChatMemMcpService;
-    use crate::chatmem_memory::{models::ListMemoryCandidatesPayload, store::MemoryStore};
+    use crate::chatmem_memory::{
+        models::{BuildHandoffPacketInput, ListMemoryCandidatesPayload},
+        store::MemoryStore,
+    };
+    use rmcp::{Json, handler::server::wrapper::Parameters};
     use schemars::schema_for;
 
     fn new_store() -> MemoryStore {
@@ -150,5 +155,23 @@ mod tests {
             .get("properties")
             .and_then(|value| value.get("candidates"))
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn build_handoff_packet_forwards_target_profile() {
+        let service = ChatMemMcpService::new(new_store());
+
+        let Json(packet) = service
+            .build_handoff_packet(Parameters(BuildHandoffPacketInput {
+                repo_root: "d:/vsp/agentswap-gui".to_string(),
+                from_agent: "codex".to_string(),
+                to_agent: "claude".to_string(),
+                goal_hint: Some("Wrap schema changes".to_string()),
+                target_profile: Some("claude_contextual".to_string()),
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(packet.target_profile.as_deref(), Some("claude_contextual"));
     }
 }
