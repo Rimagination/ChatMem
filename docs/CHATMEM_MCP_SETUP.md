@@ -112,6 +112,7 @@ Use these when you discover a reusable rule or want prior context:
 - "Search ChatMem for earlier discussion about release packaging."
 - "Save this conclusion as a memory candidate for the repo."
 - "List pending memory candidates for this repository."
+- Review proposed memories from the Codex App "Memory Inbox" before accepting them into the repo history.
 
 ### Handoff examples
 
@@ -164,5 +165,6 @@ The repo still contains local plugin shell files:
 - `plugins/chatmem/.codex-plugin/plugin.json`
 - `plugins/chatmem/.mcp.json`
 - `.agents/plugins/marketplace.json`
+- `~/.agents/plugins/marketplace.json`
 
 These are useful as packaging artifacts, but the reliable Codex App setup is the MCP `config.toml` path above.
