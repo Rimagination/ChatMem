@@ -165,4 +165,5 @@ pub struct BuildHandoffPacketInput {
     pub from_agent: String,
     pub to_agent: String,
     pub goal_hint: Option<String>,
+    pub target_profile: Option<String>,
 }

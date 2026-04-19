@@ -15,6 +15,10 @@ export type ApprovedMemory = {
   usage_hint: string;
   status: string;
   last_verified_at: string | null;
+  freshness_status: string;
+  freshness_score: number;
+  verified_at: string | null;
+  verified_by: string | null;
   selected_because?: string | null;
   evidence_refs: EvidenceRef[];
 };
@@ -47,6 +51,10 @@ export type HandoffPacket = {
   repo_root: string;
   from_agent: string;
   to_agent: string;
+  status: string;
+  checkpoint_id: string | null;
+  target_profile: string | null;
+  compression_strategy: string | null;
   current_goal: string;
   done_items: string[];
   next_items: string[];
@@ -54,5 +62,7 @@ export type HandoffPacket = {
   useful_commands: string[];
   related_memories: ApprovedMemory[];
   related_episodes: EpisodeRecord[];
+  consumed_at: string | null;
+  consumed_by: string | null;
   created_at: string;
 };

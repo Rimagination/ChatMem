@@ -578,6 +578,23 @@ impl MemoryStore {
         to_agent: &str,
         goal_hint: Option<&str>,
     ) -> Result<HandoffPacketResponse> {
+        self.build_and_store_handoff_for_target_profile(
+            repo_root,
+            from_agent,
+            to_agent,
+            goal_hint,
+            None,
+        )
+    }
+
+    pub fn build_and_store_handoff_for_target_profile(
+        &self,
+        repo_root: &str,
+        from_agent: &str,
+        to_agent: &str,
+        goal_hint: Option<&str>,
+        target_profile: Option<&str>,
+    ) -> Result<HandoffPacketResponse> {
         let repo_id = self.ensure_repo(repo_root)?;
         let repo_root = self.repo_root_for_id(&repo_id)?;
         let conn = self.conn()?;
@@ -632,7 +649,7 @@ impl MemoryStore {
             useful_commands,
             related_memories,
             related_episodes,
-            None,
+            target_profile,
         );
 
         conn.execute(
@@ -956,5 +973,26 @@ mod tests {
         assert_eq!(latest.status, "consumed");
         assert_eq!(latest.consumed_by.as_deref(), Some("claude"));
         assert!(latest.consumed_at.is_some());
+    }
+
+    #[test]
+    fn building_a_handoff_with_target_profile_persists_it() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+
+        let packet = store
+            .build_and_store_handoff_for_target_profile(
+                repo_root,
+                "codex",
+                "claude",
+                Some("Wrap schema changes"),
+                Some("claude_contextual"),
+            )
+            .unwrap();
+
+        assert_eq!(packet.target_profile.as_deref(), Some("claude_contextual"));
+
+        let latest = store.latest_handoff(repo_root).unwrap().unwrap();
+        assert_eq!(latest.target_profile.as_deref(), Some("claude_contextual"));
     }
 }
