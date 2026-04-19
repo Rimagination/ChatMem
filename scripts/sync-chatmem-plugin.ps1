@@ -1,5 +1,5 @@
 param(
-  [switch]$InstallCodex,
+  [string]$CodexWorkspaceRoot,
   [switch]$InstallClaude
 )
 
@@ -29,47 +29,50 @@ function Sync-Plugin {
 function Update-CodexMarketplace {
   param(
     [Parameter(Mandatory = $true)]
-    [string]$MarketplacePath
+    [string]$WorkspaceRoot
   )
 
+  $MarketplacePath = Join-Path $WorkspaceRoot ".agents\plugins\marketplace.json"
   $marketplaceDir = Split-Path -Parent $MarketplacePath
   New-Item -ItemType Directory -Force -Path $marketplaceDir | Out-Null
 
   if (Test-Path $MarketplacePath) {
-    $marketplace = Get-Content -Raw $MarketplacePath | ConvertFrom-Json -AsHashtable
+    $marketplace = Get-Content -Raw $MarketplacePath | ConvertFrom-Json
   } else {
-    $marketplace = @{
+    $marketplace = [pscustomobject]@{
       name = "chatmem-local"
-      interface = @{
+      interface = [pscustomobject]@{
         displayName = "ChatMem Local Plugins"
       }
       plugins = @()
     }
   }
 
-  if (-not $marketplace.ContainsKey("name") -or [string]::IsNullOrWhiteSpace([string]$marketplace.name)) {
+  if (-not ($marketplace.PSObject.Properties.Name -contains "name") -or [string]::IsNullOrWhiteSpace([string]$marketplace.name)) {
     $marketplace.name = "chatmem-local"
   }
 
-  if (-not $marketplace.ContainsKey("interface") -or $null -eq $marketplace.interface) {
-    $marketplace.interface = @{}
+  if (-not ($marketplace.PSObject.Properties.Name -contains "interface") -or $null -eq $marketplace.interface) {
+    $marketplace | Add-Member -NotePropertyName interface -NotePropertyValue ([pscustomobject]@{}) -Force
   }
 
-  if (-not $marketplace.interface.ContainsKey("displayName") -or [string]::IsNullOrWhiteSpace([string]$marketplace.interface.displayName)) {
+  if (-not ($marketplace.interface.PSObject.Properties.Name -contains "displayName") -or [string]::IsNullOrWhiteSpace([string]$marketplace.interface.displayName)) {
     $marketplace.interface.displayName = "ChatMem Local Plugins"
   }
 
-  if (-not $marketplace.ContainsKey("plugins") -or $null -eq $marketplace.plugins) {
-    $marketplace.plugins = @()
+  if (-not ($marketplace.PSObject.Properties.Name -contains "plugins") -or $null -eq $marketplace.plugins) {
+    $marketplace | Add-Member -NotePropertyName plugins -NotePropertyValue @() -Force
   }
 
-  $entry = @{
+  $plugins = @($marketplace.plugins)
+
+  $entry = [pscustomobject]@{
     name = "chatmem"
-    source = @{
+    source = [pscustomobject]@{
       source = "local"
       path = "./plugins/chatmem"
     }
-    policy = @{
+    policy = [pscustomobject]@{
       installation = "AVAILABLE"
       authentication = "ON_INSTALL"
     }
@@ -77,32 +80,43 @@ function Update-CodexMarketplace {
   }
 
   $existingIndex = -1
-  for ($i = 0; $i -lt $marketplace.plugins.Count; $i++) {
-    if ($marketplace.plugins[$i].name -eq "chatmem") {
+  for ($i = 0; $i -lt $plugins.Count; $i++) {
+    if ($plugins[$i].name -eq "chatmem") {
       $existingIndex = $i
       break
     }
   }
 
   if ($existingIndex -ge 0) {
-    $marketplace.plugins[$existingIndex] = $entry
+    $plugins[$existingIndex] = $entry
   } else {
-    $marketplace.plugins += $entry
+    $plugins += $entry
   }
 
+  $marketplace.plugins = $plugins
   $json = $marketplace | ConvertTo-Json -Depth 10
   Set-Content -Path $MarketplacePath -Value $json -Encoding utf8
   Write-Output "Registered ChatMem in Codex marketplace at $MarketplacePath"
 }
 
-if (-not $InstallCodex -and -not $InstallClaude) {
-  $InstallCodex = $true
+function Sync-CodexWorkspacePlugin {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$WorkspaceRoot
+  )
+
+  Sync-Plugin -DestinationRoot (Join-Path $WorkspaceRoot "plugins")
+  Update-CodexMarketplace -WorkspaceRoot $WorkspaceRoot
+}
+
+if (-not $CodexWorkspaceRoot -and -not $InstallClaude) {
+  $CodexWorkspaceRoot = $repoRoot
   $InstallClaude = $true
 }
 
-if ($InstallCodex) {
-  Sync-Plugin -DestinationRoot (Join-Path $HOME "plugins")
-  Update-CodexMarketplace -MarketplacePath (Join-Path $HOME ".agents\plugins\marketplace.json")
+if ($CodexWorkspaceRoot) {
+  $resolvedWorkspaceRoot = (Resolve-Path $CodexWorkspaceRoot).Path
+  Sync-CodexWorkspacePlugin -WorkspaceRoot $resolvedWorkspaceRoot
 }
 
 if ($InstallClaude) {
