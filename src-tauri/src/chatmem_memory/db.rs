@@ -129,6 +129,37 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS agent_runs (
+            run_id TEXT PRIMARY KEY,
+            repo_id TEXT NOT NULL,
+            source_agent TEXT NOT NULL,
+            task_hint TEXT,
+            status TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            ended_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS run_events (
+            event_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            detail_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS artifacts (
+            artifact_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            artifact_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            body TEXT,
+            file_path TEXT,
+            trust_state TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS evidence_refs (
             evidence_id TEXT PRIMARY KEY,
             owner_type TEXT NOT NULL,
@@ -317,6 +348,35 @@ mod tests {
         assert!(columns.contains(&"target_profile".to_string()));
         assert!(columns.contains(&"checkpoint_id".to_string()));
         assert!(columns.contains(&"consumed_at".to_string()));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn migrations_create_run_timeline_tables() {
+        let path = std::env::temp_dir().join(format!("chatmem-db-test-{}.sqlite", uuid::Uuid::new_v4()));
+        let conn = open_connection(&path).unwrap();
+        migrate(&conn).unwrap();
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master
+                 WHERE type='table' AND name IN (
+                   'agent_runs',
+                   'run_events',
+                   'artifacts'
+                 )
+                 ORDER BY name",
+            )
+            .unwrap();
+
+        let names = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(names, vec!["agent_runs", "artifacts", "run_events"]);
 
         let _ = std::fs::remove_file(path);
     }

@@ -9,6 +9,7 @@ use chatmem::chatmem_memory::{
     models::{
         ApprovedMemoryResponse, EpisodeResponse, HandoffPacketResponse, MemoryCandidateResponse,
     },
+    runs::{list_artifacts as load_artifacts, list_runs as load_runs, ArtifactRecord, RunRecord},
     store::{MemoryStore, ReviewAction},
     sync::{build_resume_command, resolve_storage_path, sync_conversation_into_store},
 };
@@ -384,6 +385,16 @@ async fn list_handoffs(repo_root: String) -> Result<Vec<HandoffPacketResponse>, 
 }
 
 #[command]
+async fn list_runs(repo_root: String) -> Result<Vec<RunRecord>, String> {
+    load_runs(&repo_root).map_err(|e| e.to_string())
+}
+
+#[command]
+async fn list_artifacts(repo_root: String) -> Result<Vec<ArtifactRecord>, String> {
+    load_artifacts(&repo_root).map_err(|e| e.to_string())
+}
+
+#[command]
 async fn create_handoff_packet(
     repo_root: String,
     from_agent: String,
@@ -426,6 +437,8 @@ fn main() {
             reverify_memory,
             list_episodes,
             list_handoffs,
+            list_runs,
+            list_artifacts,
             create_handoff_packet,
             mark_handoff_consumed,
         ])

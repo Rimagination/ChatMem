@@ -56,6 +56,28 @@ export type EpisodeRecord = {
   evidence_refs: EvidenceRef[];
 };
 
+export type RunRecord = {
+  run_id: string;
+  repo_root: string;
+  source_agent: string;
+  task_hint: string | null;
+  status: string;
+  summary: string;
+  started_at: string;
+  ended_at: string | null;
+  artifact_count: number;
+};
+
+export type ArtifactRecord = {
+  artifact_id: string;
+  run_id: string;
+  artifact_type: string;
+  title: string;
+  summary: string;
+  trust_state: string;
+  created_at: string;
+};
+
 export type HandoffCreateInput = {
   repoRoot: string;
   fromAgent: string;

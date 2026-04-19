@@ -177,3 +177,40 @@ pub struct BuildHandoffPacketInput {
     pub goal_hint: Option<String>,
     pub target_profile: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::chatmem_memory::runs::{ArtifactRecord, RunRecord};
+
+    #[test]
+    fn run_record_tracks_waiting_review_status() {
+        let run = RunRecord {
+            run_id: "run-001".into(),
+            repo_root: "d:/vsp/agentswap-gui".into(),
+            source_agent: "codex".into(),
+            task_hint: Some("Build the runs panel".into()),
+            status: "waiting_for_review".into(),
+            summary: "Needs human validation".into(),
+            started_at: "2026-04-20T10:00:00Z".into(),
+            ended_at: None,
+            artifact_count: 2,
+        };
+
+        assert_eq!(run.status, "waiting_for_review");
+    }
+
+    #[test]
+    fn artifact_record_stores_type_and_trust_state() {
+        let artifact = ArtifactRecord {
+            artifact_id: "artifact-001".into(),
+            run_id: "run-001".into(),
+            artifact_type: "patch_set".into(),
+            title: "Timeline patch".into(),
+            summary: "Adds the new panel".into(),
+            trust_state: "reviewed".into(),
+            created_at: "2026-04-20T10:05:00Z".into(),
+        };
+
+        assert_eq!(artifact.trust_state, "reviewed");
+    }
+}

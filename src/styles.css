@@ -770,6 +770,61 @@ select {
   color: var(--text-primary);
 }
 
+.timeline-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+
+.timeline-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.run-status-running,
+.artifact-trust-trusted {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.run-status-waiting_for_review,
+.artifact-trust-reviewed {
+  background: rgba(217, 119, 6, 0.12);
+  color: #a16207;
+}
+
+.run-status-waiting_for_input,
+.artifact-trust-pending_review {
+  background: rgba(59, 130, 246, 0.12);
+  color: #1d4ed8;
+}
+
+.run-status-blocked,
+.run-status-failed,
+.artifact-trust-untrusted {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.run-status-completed,
+.artifact-trust-approved {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.run-status-canceled,
+.artifact-trust-unknown {
+  background: rgba(20, 23, 28, 0.08);
+  color: var(--text-secondary);
+}
+
 .conversation-detail {
   display: grid;
   gap: 18px;

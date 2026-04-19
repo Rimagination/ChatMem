@@ -8,6 +8,8 @@ import RepoMemoryPanel from "./components/RepoMemoryPanel";
 import MemoryInboxPanel from "./components/MemoryInboxPanel";
 import ApprovalsPanel from "./components/ApprovalsPanel";
 import EpisodesPanel from "./components/EpisodesPanel";
+import RunsPanel from "./components/RunsPanel";
+import ArtifactsPanel from "./components/ArtifactsPanel";
 import HandoffsPanel from "./components/HandoffsPanel";
 import HandoffComposerModal from "./components/HandoffComposerModal";
 import { useI18n } from "./i18n/I18nProvider";
@@ -16,9 +18,11 @@ import { loadSettings, updateSettings, type AppSettings } from "./settings/stora
 import { installAvailableUpdate, runUpdateCheck, type UpdateState } from "./updater/updater";
 import {
   createHandoffPacket,
+  listArtifacts,
   listEpisodes,
   listHandoffs,
   listMemoryCandidates,
+  listRuns,
   markHandoffConsumed,
   listRepoMemories,
   reverifyMemory,
@@ -26,10 +30,12 @@ import {
 } from "./chatmem-memory/api";
 import type {
   ApprovedMemory,
+  ArtifactRecord,
   EpisodeRecord,
   HandoffPacket,
   HandoffTargetProfileOption,
   MemoryCandidate,
+  RunRecord,
 } from "./chatmem-memory/types";
 
 interface ConversationSummary {
@@ -92,6 +98,8 @@ type WorkspaceView =
   | "memory-inbox"
   | "approvals"
   | "episodes"
+  | "runs"
+  | "artifacts"
   | "handoffs";
 type HandoffComposerState = {
   targetAgent: string;
@@ -169,6 +177,8 @@ function App() {
   const [repoMemories, setRepoMemories] = useState<ApprovedMemory[]>([]);
   const [memoryCandidates, setMemoryCandidates] = useState<MemoryCandidate[]>([]);
   const [episodes, setEpisodes] = useState<EpisodeRecord[]>([]);
+  const [runs, setRuns] = useState<RunRecord[]>([]);
+  const [artifacts, setArtifacts] = useState<ArtifactRecord[]>([]);
   const [handoffs, setHandoffs] = useState<HandoffPacket[]>([]);
   const [handoffComposer, setHandoffComposer] = useState<HandoffComposerState>(null);
   const activeRepoRoot = selectedConversation?.project_dir ?? null;
@@ -212,6 +222,8 @@ function App() {
       setRepoMemories([]);
       setMemoryCandidates([]);
       setEpisodes([]);
+      setRuns([]);
+      setArtifacts([]);
       setHandoffs([]);
       return;
     }
@@ -236,6 +248,10 @@ function App() {
           setMemoryCandidates(nextCandidates);
         } else if (workspaceView === "episodes") {
           setEpisodes(await listEpisodes(activeRepoRoot));
+        } else if (workspaceView === "runs") {
+          setRuns(await listRuns(activeRepoRoot));
+        } else if (workspaceView === "artifacts") {
+          setArtifacts(await listArtifacts(activeRepoRoot));
         } else if (workspaceView === "handoffs") {
           setHandoffs(await listHandoffs(activeRepoRoot));
         }
@@ -681,6 +697,22 @@ function App() {
           </button>
           <button
             type="button"
+            className={`workspace-mode-tab ${workspaceView === "runs" ? "active" : ""}`}
+            onClick={() => setWorkspaceView("runs")}
+            disabled={!activeRepoRoot}
+          >
+            Runs
+          </button>
+          <button
+            type="button"
+            className={`workspace-mode-tab ${workspaceView === "artifacts" ? "active" : ""}`}
+            onClick={() => setWorkspaceView("artifacts")}
+            disabled={!activeRepoRoot}
+          >
+            Artifacts
+          </button>
+          <button
+            type="button"
             className={`workspace-mode-tab ${workspaceView === "handoffs" ? "active" : ""}`}
             onClick={() => setWorkspaceView("handoffs")}
             disabled={!activeRepoRoot}
@@ -721,6 +753,10 @@ function App() {
               />
             ) : workspaceView === "episodes" ? (
               <EpisodesPanel episodes={episodes} loading={memoryLoading} />
+            ) : workspaceView === "runs" ? (
+              <RunsPanel runs={runs} loading={memoryLoading} />
+            ) : workspaceView === "artifacts" ? (
+              <ArtifactsPanel artifacts={artifacts} loading={memoryLoading} />
             ) : (
               <HandoffsPanel
                 handoffs={handoffs}
