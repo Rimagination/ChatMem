@@ -287,6 +287,8 @@ select {
   min-width: 0;
   font-size: 13.5px;
   font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -330,6 +332,7 @@ select {
 }
 
 .workspace-title-block {
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -344,9 +347,14 @@ select {
 
 .workspace-title-block h2 {
   margin: 0;
-  font-size: 26px;
-  line-height: 1.1;
+  max-width: 100%;
+  font-size: clamp(22px, 2.05vw, 28px);
+  font-weight: 650;
+  line-height: 1.12;
   letter-spacing: -0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .content-header-actions,

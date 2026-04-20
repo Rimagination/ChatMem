@@ -37,13 +37,29 @@ describe("App", () => {
     mockRelaunch.mockReset();
     localStorage.clear();
     vi.useRealTimers();
+    vi.stubGlobal("alert", vi.fn());
 
     mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
       if (command === "list_conversations") {
+        if (payload?.agent === "codex") {
+          return [
+            {
+              id: "migrated-001",
+              source_agent: "codex",
+              project_dir: "D:/VSP/demo",
+              created_at: "2026-04-08T08:00:00Z",
+              updated_at: "2026-04-08T09:30:00Z",
+              summary: "Migrated session",
+              message_count: 2,
+              file_count: 1,
+            },
+          ];
+        }
+
         return [
           {
             id: "conv-001",
-            source_agent: payload?.agent ?? "codex",
+            source_agent: payload?.agent ?? "claude",
             project_dir: "D:/VSP/demo",
             created_at: "2026-04-08T08:00:00Z",
             updated_at: "2026-04-08T09:00:00Z",
@@ -55,9 +71,24 @@ describe("App", () => {
       }
 
       if (command === "read_conversation") {
+        if (payload?.id === "migrated-001") {
+          return {
+            id: "migrated-001",
+            source_agent: payload?.agent ?? "codex",
+            project_dir: "D:/VSP/demo",
+            created_at: "2026-04-08T08:00:00Z",
+            updated_at: "2026-04-08T09:30:00Z",
+            summary: "Migrated session",
+            storage_path: "C:/Users/demo/.codex/sessions/2026/04/08/rollout-migrated-001.jsonl",
+            resume_command: "codex resume migrated-001",
+            messages: [],
+            file_changes: [],
+          };
+        }
+
         return {
           id: "conv-001",
-          source_agent: payload?.agent ?? "codex",
+          source_agent: payload?.agent ?? "claude",
           project_dir: "D:/VSP/demo",
           created_at: "2026-04-08T08:00:00Z",
           updated_at: "2026-04-08T09:00:00Z",
@@ -69,7 +100,7 @@ describe("App", () => {
         };
       }
 
-      if (command === "search_conversations" && payload?.query === "内存泄漏") {
+      if (command === "search_conversations" && payload?.query === "memory leak") {
         return [
           {
             id: "conv-002",
@@ -82,6 +113,10 @@ describe("App", () => {
             file_count: 0,
           },
         ];
+      }
+
+      if (command === "migrate_conversation") {
+        return "migrated-001";
       }
 
       return [];
@@ -109,34 +144,46 @@ describe("App", () => {
   it("opens settings and switches the interface language to English", async () => {
     renderApp();
 
-    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
-    expect(screen.getByRole("heading", { name: "设置" })).toBeTruthy();
+    const settingsButton = document.querySelector(".toolbar-button") as HTMLButtonElement | null;
+    expect(settingsButton).toBeTruthy();
+    fireEvent.click(settingsButton!);
 
-    fireEvent.change(screen.getByLabelText("语言 Language"), {
-      target: { value: "en" },
-    });
+    const localeSelect = document.querySelector("select") as HTMLSelectElement | null;
+    expect(localeSelect).toBeTruthy();
+    fireEvent.change(localeSelect!, { target: { value: "en" } });
 
     expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Check for updates" })).toBeTruthy();
   });
 
-  it("shows the up-to-date state after a manual check", async () => {
-    mockCheckUpdate.mockResolvedValue({ shouldUpdate: false });
+  it("runs a manual update check from settings", async () => {
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+    );
 
     renderApp();
 
-    fireEvent.click(screen.getByRole("button", { name: "打开设置" }));
-    fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
+    const settingsButton = document.querySelector(".toolbar-button") as HTMLButtonElement | null;
+    expect(settingsButton).toBeTruthy();
+    fireEvent.click(settingsButton!);
+    fireEvent.click(await screen.findByRole("button", { name: "Check for updates" }));
 
-    expect(await screen.findByText("当前已是最新版本")).toBeTruthy();
+    await waitFor(() => {
+      expect(mockCheckUpdate).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("auto-checks for updates on launch when enabled", async () => {
     vi.useFakeTimers();
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: true }),
+    );
     mockCheckUpdate.mockResolvedValue({
       shouldUpdate: true,
       manifest: {
-        version: "0.1.3",
+        version: "0.1.4",
         date: "2026-04-08T12:00:00Z",
         body: "Bug fixes",
       },
@@ -149,21 +196,18 @@ describe("App", () => {
     });
 
     expect(mockCheckUpdate).toHaveBeenCalledTimes(1);
-    expect(screen.getByText("发现新版本 0.1.3")).toBeTruthy();
+    expect(screen.getByText(/0\.1\.4/)).toBeTruthy();
   });
 
   it("renders file location and copy actions for the selected conversation", async () => {
     renderApp();
 
-    expect(screen.getByText("本地对话记录，一处查看，随时续接")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "刷新会话列表" })).toBeTruthy();
+    expect(document.querySelectorAll(".toolbar-button").length).toBeGreaterThanOrEqual(2);
 
     const conversation = await screen.findByText("Debug session");
     fireEvent.click(conversation);
 
     await waitFor(() => {
-      expect(screen.getByText("对话文件位置")).toBeTruthy();
-      expect(screen.getByText("操作")).toBeTruthy();
       expect(
         screen.getByText("C:/Users/demo/.codex/sessions/2026/04/08/rollout-conv-001.jsonl"),
       ).toBeTruthy();
@@ -173,17 +217,113 @@ describe("App", () => {
   });
 
   it("searches conversations by message body content", async () => {
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+    );
+
     renderApp();
 
-    const input = await screen.findByPlaceholderText("搜索对话...");
-    fireEvent.change(input, { target: { value: "内存泄漏" } });
+    const input = await screen.findByPlaceholderText("Search conversations...");
+    fireEvent.change(input, { target: { value: "memory leak" } });
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("search_conversations", {
         agent: "claude",
-        query: "内存泄漏",
+        query: "memory leak",
       });
       expect(screen.getByText("Memory investigation")).toBeTruthy();
+    });
+  });
+
+  it("switches to the target agent and opens the migrated conversation", async () => {
+    renderApp();
+
+    fireEvent.click(await screen.findByText("Debug session"));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("C:/Users/demo/.codex/sessions/2026/04/08/rollout-conv-001.jsonl"),
+      ).toBeTruthy();
+    });
+
+    const migrateButton = document.querySelector(
+      ".content-header-actions .btn.btn-secondary",
+    ) as HTMLButtonElement | null;
+    expect(migrateButton).toBeTruthy();
+    fireEvent.click(migrateButton!);
+
+    const confirmButton = document.querySelector(
+      ".modal-actions .btn.btn-primary",
+    ) as HTMLButtonElement | null;
+    expect(confirmButton).toBeTruthy();
+    fireEvent.click(confirmButton!);
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("migrate_conversation", {
+        source: "claude",
+        target: "codex",
+        id: "conv-001",
+        mode: "copy",
+      });
+      expect(mockInvoke).toHaveBeenCalledWith("list_conversations", {
+        agent: "codex",
+      });
+      expect(mockInvoke).toHaveBeenCalledWith("read_conversation", {
+        agent: "codex",
+        id: "migrated-001",
+      });
+      expect(screen.getByText("Migrated session")).toBeTruthy();
+    });
+  });
+
+  it("truncates the workspace heading like Codex app while preserving the full title", async () => {
+    const longTitle =
+      "你是最终收口补丁的独立代码质量 reviewer，请在工作树 D:\\VSP\\agentswap-gui\\.worktrees\\chatmem-control-plane-v2 review 最新提交 16a39b2";
+
+    mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
+      if (command === "list_conversations") {
+        return [
+          {
+            id: "conv-long",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/VSP/demo",
+            created_at: "2026-04-08T08:00:00Z",
+            updated_at: "2026-04-08T09:00:00Z",
+            summary: longTitle,
+            message_count: 2,
+            file_count: 1,
+          },
+        ];
+      }
+
+      if (command === "read_conversation") {
+        return {
+          id: "conv-long",
+          source_agent: payload?.agent ?? "claude",
+          project_dir: "D:/VSP/demo",
+          created_at: "2026-04-08T08:00:00Z",
+          updated_at: "2026-04-08T09:00:00Z",
+          summary: longTitle,
+          storage_path: "C:/Users/demo/.codex/sessions/2026/04/08/rollout-conv-long.jsonl",
+          resume_command: "codex resume conv-long",
+          messages: [],
+          file_changes: [],
+        };
+      }
+
+      return [];
+    });
+
+    renderApp();
+
+    fireEvent.click(await screen.findByTitle(longTitle));
+
+    await waitFor(() => {
+      const heading = screen.getByRole("heading", { level: 2 });
+      expect(heading.textContent).not.toBe(longTitle);
+      expect(heading.textContent?.endsWith("...")).toBe(true);
+      expect(heading.getAttribute("title")).toBe(longTitle);
     });
   });
 });

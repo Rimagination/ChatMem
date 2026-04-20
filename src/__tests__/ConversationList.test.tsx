@@ -30,6 +30,7 @@ describe("ConversationList", () => {
   });
 
   it("renders a compact list row without the old metadata pills", () => {
+    const longTitle = "我本地的chatmem项目，现在点击对话迁移为啥没反应？？";
     const conversations = [
       {
         id: "test-id-1",
@@ -37,7 +38,7 @@ describe("ConversationList", () => {
         project_dir: "/test/project",
         created_at: "2026-03-29T10:00:00Z",
         updated_at: "2026-03-29T10:00:00Z",
-        summary: "Test conversation title that should truncate",
+        summary: longTitle,
         message_count: 5,
         file_count: 2,
       },
@@ -52,7 +53,9 @@ describe("ConversationList", () => {
       />,
     );
 
-    expect(screen.getByText("Test conversation title that should truncate")).toBeTruthy();
+    const title = container.querySelector(".conversation-item-title");
+    expect(title?.textContent).toBe("我本地的chatmem项目，现在点击对话迁移为啥...");
+    expect(title?.getAttribute("title")).toBe(longTitle);
     expect(screen.getByText("/test/project")).toBeTruthy();
     expect(container.querySelector(".conversation-item-row")).toBeTruthy();
     expect(container.querySelector(".conversation-item-time")).toBeTruthy();

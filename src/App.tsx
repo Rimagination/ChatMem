@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import ConversationList from "./components/ConversationList";
 import ConversationDetail from "./components/ConversationDetail";
@@ -17,6 +17,7 @@ import { useI18n } from "./i18n/I18nProvider";
 import type { Locale } from "./i18n/types";
 import { loadSettings, updateSettings, type AppSettings } from "./settings/storage";
 import { installAvailableUpdate, runUpdateCheck, type UpdateState } from "./updater/updater";
+import { normalizeConversationTitle, truncateWorkspaceTitle } from "./utils/titleUtils";
 import {
   createCheckpoint,
   createHandoffPacket,
@@ -160,13 +161,13 @@ const TARGET_PROFILE_OPTIONS: Record<string, HandoffTargetProfileOption[]> = {
 function getAgentHeading(agent: AgentType) {
   switch (agent) {
     case "claude":
-      return "CLAUDE 对话";
+      return "CLAUDE 瀵硅瘽";
     case "codex":
-      return "CODEX 对话";
+      return "CODEX 瀵硅瘽";
     case "gemini":
-      return "GEMINI 对话";
+      return "GEMINI 瀵硅瘽";
     default:
-      return "对话";
+      return "瀵硅瘽";
   }
 }
 
@@ -198,6 +199,10 @@ function App() {
   const availableHandoffTargets = ["claude", "codex", "gemini"].filter(
     (agent) => agent !== selectedAgent,
   );
+  const workspaceTitle = selectedConversation
+    ? normalizeConversationTitle(selectedConversation.summary || selectedConversation.id)
+    : "选择一段对话";
+  const visibleWorkspaceTitle = truncateWorkspaceTitle(workspaceTitle);
 
   useEffect(() => {
     setSelectedConversation(null);
@@ -304,11 +309,11 @@ function App() {
     }
   };
 
-  const loadConversationDetail = async (id: string) => {
+  const loadConversationDetail = async (id: string, agent = selectedAgent) => {
     setDetailLoading(true);
     try {
       const result = await invoke<Conversation>("read_conversation", {
-        agent: selectedAgent,
+        agent,
         id,
       });
       setSelectedConversation(result);
@@ -335,10 +340,11 @@ function App() {
       const modeText = mode === "copy" ? "复制" : "剪切";
       alert(`对话${modeText}成功，新 ID: ${newId}`);
       setShowMigrateModal(false);
-      if (mode === "cut") {
-        setSelectedConversation(null);
-        await loadConversations();
-      }
+      setSearchQuery("");
+      setSelectedConversation(null);
+      setSelectedAgent(targetAgent);
+      await loadConversations("", targetAgent);
+      await loadConversationDetail(newId, targetAgent);
     } catch (error) {
       console.error("Failed to migrate conversation:", error);
       alert("对话迁移失败");
@@ -613,7 +619,7 @@ function App() {
               title={t("settings.open")}
             >
               <span className="toolbar-button-icon" aria-hidden="true">
-                ⚙
+                鈿?
               </span>
               <span>{t("settings.short")}</span>
             </button>
@@ -621,13 +627,13 @@ function App() {
               type="button"
               className="toolbar-button"
               onClick={() => loadConversations()}
-              aria-label="刷新会话列表"
-              title="刷新会话列表"
+              aria-label="鍒锋柊浼氳瘽鍒楄〃"
+              title="鍒锋柊浼氳瘽鍒楄〃"
             >
               <span className="toolbar-button-icon" aria-hidden="true">
-                ↻
+                鈫?
               </span>
-              <span>刷新</span>
+              <span>鍒锋柊</span>
             </button>
           </div>
         </header>
@@ -675,7 +681,7 @@ function App() {
         <div className="workspace-header">
           <div className="workspace-title-block">
             <span className="workspace-eyebrow">{getAgentHeading(selectedAgent)}</span>
-            <h2>{selectedConversation ? selectedConversation.summary || selectedConversation.id : "选择一段对话"}</h2>
+            <h2 title={workspaceTitle}>{visibleWorkspaceTitle}</h2>
           </div>
 
           {selectedConversation && (
@@ -685,10 +691,10 @@ function App() {
                 onClick={() => setShowMigrateModal(true)}
                 disabled={detailLoading}
               >
-                迁移
+                杩佺Щ
               </button>
               <button className="btn btn-danger" onClick={handleDelete} disabled={detailLoading}>
-                删除
+                鍒犻櫎
               </button>
             </div>
           )}
@@ -697,17 +703,17 @@ function App() {
         {selectedConversation && (
           <div className="conversation-meta-strip">
             <div className="conversation-meta-copy">
-              <span className="conversation-meta-label">对话文件位置</span>
+              <span className="conversation-meta-label">瀵硅瘽鏂囦欢浣嶇疆</span>
               <span
                 className={`conversation-meta-value ${selectedConversation.storage_path ? "" : "is-muted"}`}
-                title={selectedConversation.storage_path || "当前来源不可提供文件位置"}
+                title={selectedConversation.storage_path || "褰撳墠鏉ユ簮涓嶅彲鎻愪緵鏂囦欢浣嶇疆"}
               >
-                {selectedConversation.storage_path || "当前来源不可提供文件位置"}
+                {selectedConversation.storage_path || "褰撳墠鏉ユ簮涓嶅彲鎻愪緵鏂囦欢浣嶇疆"}
               </span>
             </div>
 
             <div className="conversation-meta-actions-block">
-              <span className="conversation-meta-label">操作</span>
+              <span className="conversation-meta-label">鎿嶄綔</span>
               <div className="conversation-meta-actions">
                 <button
                   className="btn btn-secondary btn-action"
@@ -858,7 +864,7 @@ function App() {
             )
           ) : (
             <div className="empty-state empty-state-large">
-              <div className="empty-state-icon">⌘</div>
+              <div className="empty-state-icon">○</div>
               <div className="empty-state-text">从左侧选择一段对话，查看上下文、文件位置和恢复命令。</div>
             </div>
           )}
@@ -961,3 +967,4 @@ function App() {
 }
 
 export default App;
+
