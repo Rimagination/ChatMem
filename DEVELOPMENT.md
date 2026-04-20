@@ -65,7 +65,7 @@ npm run tauri build
 本地构建便携版命令：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build-portable.ps1 -Version 0.1.4
+powershell -ExecutionPolicy Bypass -File .\scripts\build-portable.ps1 -Version 0.1.5
 ```
 
 默认读取：
@@ -75,4 +75,4 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-portable.ps1 -Version 0
 
 输出到：
 
-- `dist-portable\ChatMem-v0.1.4-portable.zip`
+- `dist-portable\ChatMem-v0.1.5-portable.zip`

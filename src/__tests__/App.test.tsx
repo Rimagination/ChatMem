@@ -183,7 +183,7 @@ describe("App", () => {
     mockCheckUpdate.mockResolvedValue({
       shouldUpdate: true,
       manifest: {
-        version: "0.1.4",
+        version: "0.1.5",
         date: "2026-04-08T12:00:00Z",
         body: "Bug fixes",
       },
@@ -196,7 +196,7 @@ describe("App", () => {
     });
 
     expect(mockCheckUpdate).toHaveBeenCalledTimes(1);
-    expect(screen.getByText(/0\.1\.4/)).toBeTruthy();
+    expect(screen.getByText(/0\.1\.5/)).toBeTruthy();
   });
 
   it("renders file location and copy actions for the selected conversation", async () => {
