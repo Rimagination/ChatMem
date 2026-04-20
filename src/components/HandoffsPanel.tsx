@@ -3,15 +3,19 @@ import type { HandoffPacket } from "../chatmem-memory/types";
 type HandoffsPanelProps = {
   handoffs: HandoffPacket[];
   loading: boolean;
+  currentAgent: string;
   availableTargets: string[];
   onCreate: (targetAgent: string) => void;
+  onMarkConsumed: (handoffId: string) => void;
 };
 
 export default function HandoffsPanel({
   handoffs,
   loading,
+  currentAgent,
   availableTargets,
   onCreate,
+  onMarkConsumed,
 }: HandoffsPanelProps) {
   if (loading) {
     return (
@@ -61,6 +65,35 @@ export default function HandoffsPanel({
                     {handoff.to_agent}
                   </div>
                 </div>
+                <span className={`handoff-status-pill handoff-status-${handoff.status}`}>
+                  {handoff.status}
+                </span>
+              </div>
+              {handoff.target_profile && (
+                <div className="handoff-profile-row">
+                  <strong>Target profile:</strong> {handoff.target_profile}
+                </div>
+              )}
+              {handoff.checkpoint_id && (
+                <div className="handoff-profile-row">
+                  <strong>Checkpoint:</strong> {handoff.checkpoint_id}
+                </div>
+              )}
+              <div className="handoff-consumption-row">
+                {handoff.consumed_at && handoff.consumed_by ? (
+                  <span className="handoff-consumed-meta">Consumed by {handoff.consumed_by}</span>
+                ) : (
+                  <span className="handoff-consumed-meta">Awaiting consumption</span>
+                )}
+                {!handoff.consumed_at && handoff.to_agent === currentAgent && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => onMarkConsumed(handoff.handoff_id)}
+                  >
+                    Mark as Consumed
+                  </button>
+                )}
               </div>
               <div className="memory-card-split">
                 <div>

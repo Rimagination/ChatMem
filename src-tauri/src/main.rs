@@ -6,9 +6,12 @@
 use serde::{Deserialize, Serialize};
 use tauri::command;
 use chatmem::chatmem_memory::{
+    a2a::AgentCard,
+    checkpoints::{CheckpointRecord, CreateCheckpointInput},
     models::{
         ApprovedMemoryResponse, EpisodeResponse, HandoffPacketResponse, MemoryCandidateResponse,
     },
+    runs::{list_artifacts as load_artifacts, list_runs as load_runs, ArtifactRecord, RunRecord},
     store::{MemoryStore, ReviewAction},
     sync::{build_resume_command, resolve_storage_path, sync_conversation_into_store},
 };
@@ -217,6 +220,11 @@ fn open_memory_store() -> Result<MemoryStore, String> {
 }
 
 #[command]
+async fn get_agent_card() -> Result<AgentCard, String> {
+    Ok(AgentCard::chatmem_default())
+}
+
+#[command]
 async fn list_conversations(agent: String) -> Result<Vec<ConversationSummaryResponse>, String> {
     let adapter = get_adapter(&agent)?;
     
@@ -364,6 +372,14 @@ async fn review_memory_candidate(
 }
 
 #[command]
+async fn reverify_memory(memory_id: String, verified_by: String) -> Result<(), String> {
+    let store = open_memory_store()?;
+    store
+        .reverify_memory(&memory_id, &verified_by)
+        .map_err(|e| e.to_string())
+}
+
+#[command]
 async fn list_episodes(repo_root: String) -> Result<Vec<EpisodeResponse>, String> {
     let store = open_memory_store()?;
     store.list_episodes(&repo_root).map_err(|e| e.to_string())
@@ -376,15 +392,81 @@ async fn list_handoffs(repo_root: String) -> Result<Vec<HandoffPacketResponse>, 
 }
 
 #[command]
+async fn list_checkpoints(repo_root: String) -> Result<Vec<CheckpointRecord>, String> {
+    let store = open_memory_store()?;
+    store.list_checkpoints(&repo_root).map_err(|e| e.to_string())
+}
+
+#[command]
+async fn list_runs(repo_root: String) -> Result<Vec<RunRecord>, String> {
+    load_runs(&repo_root).map_err(|e| e.to_string())
+}
+
+#[command]
+async fn list_artifacts(repo_root: String) -> Result<Vec<ArtifactRecord>, String> {
+    load_artifacts(&repo_root).map_err(|e| e.to_string())
+}
+
+#[command]
 async fn create_handoff_packet(
     repo_root: String,
     from_agent: String,
     to_agent: String,
     goal_hint: Option<String>,
+    target_profile: Option<String>,
+    checkpoint_id: Option<String>,
 ) -> Result<HandoffPacketResponse, String> {
     let store = open_memory_store()?;
+    if let Some(checkpoint_id) = checkpoint_id {
+        store
+            .build_and_store_handoff_from_checkpoint(
+                &checkpoint_id,
+                &from_agent,
+                &to_agent,
+                goal_hint.as_deref(),
+                target_profile.as_deref(),
+            )
+            .map_err(|e| e.to_string())
+    } else {
+        store
+            .build_and_store_handoff_for_target_profile(
+                &repo_root,
+                &from_agent,
+                &to_agent,
+                goal_hint.as_deref(),
+                target_profile.as_deref(),
+            )
+            .map_err(|e| e.to_string())
+    }
+}
+
+#[command]
+async fn mark_handoff_consumed(handoff_id: String, consumed_by: String) -> Result<(), String> {
+    let store = open_memory_store()?;
     store
-        .build_and_store_handoff(&repo_root, &from_agent, &to_agent, goal_hint.as_deref())
+        .mark_handoff_consumed(&handoff_id, &consumed_by)
+        .map_err(|e| e.to_string())
+}
+
+#[command]
+async fn create_checkpoint(
+    repo_root: String,
+    conversation_id: String,
+    source_agent: String,
+    summary: String,
+    resume_command: Option<String>,
+    metadata_json: Option<String>,
+) -> Result<CheckpointRecord, String> {
+    let store = open_memory_store()?;
+    store
+        .create_checkpoint(&CreateCheckpointInput {
+            repo_root,
+            conversation_id,
+            source_agent,
+            summary,
+            resume_command,
+            metadata_json,
+        })
         .map_err(|e| e.to_string())
 }
 
@@ -397,12 +479,19 @@ fn main() {
             migrate_conversation,
             delete_conversation,
             check_agent_available,
+            get_agent_card,
             list_repo_memories,
             list_memory_candidates,
             review_memory_candidate,
+            reverify_memory,
             list_episodes,
             list_handoffs,
+            list_checkpoints,
+            list_runs,
+            list_artifacts,
+            create_checkpoint,
             create_handoff_packet,
+            mark_handoff_consumed,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

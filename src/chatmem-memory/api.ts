@@ -1,9 +1,15 @@
 import { invoke } from "@tauri-apps/api/tauri";
 import type {
   ApprovedMemory,
+  ArtifactRecord,
+  CheckpointCreateInput,
+  CheckpointRecord,
   EpisodeRecord,
+  HandoffConsumeInput,
+  HandoffCreateInput,
   HandoffPacket,
   MemoryCandidate,
+  RunRecord,
 } from "./types";
 
 export function listRepoMemories(repoRoot: string) {
@@ -24,6 +30,10 @@ export function reviewMemoryCandidate(payload: {
   return invoke("review_memory_candidate", payload);
 }
 
+export function reverifyMemory(payload: { memoryId: string; verifiedBy: string }) {
+  return invoke("reverify_memory", payload);
+}
+
 export function listEpisodes(repoRoot: string) {
   return invoke<EpisodeRecord[]>("list_episodes", { repoRoot });
 }
@@ -32,11 +42,26 @@ export function listHandoffs(repoRoot: string) {
   return invoke<HandoffPacket[]>("list_handoffs", { repoRoot });
 }
 
-export function createHandoffPacket(payload: {
-  repoRoot: string;
-  fromAgent: string;
-  toAgent: string;
-  goalHint?: string;
-}) {
+export function listCheckpoints(repoRoot: string) {
+  return invoke<CheckpointRecord[]>("list_checkpoints", { repoRoot });
+}
+
+export function listRuns(repoRoot: string) {
+  return invoke<RunRecord[]>("list_runs", { repoRoot });
+}
+
+export function listArtifacts(repoRoot: string) {
+  return invoke<ArtifactRecord[]>("list_artifacts", { repoRoot });
+}
+
+export function createHandoffPacket(payload: HandoffCreateInput) {
   return invoke<HandoffPacket>("create_handoff_packet", payload);
+}
+
+export function createCheckpoint(payload: CheckpointCreateInput) {
+  return invoke<CheckpointRecord>("create_checkpoint", payload);
+}
+
+export function markHandoffConsumed(payload: HandoffConsumeInput) {
+  return invoke("mark_handoff_consumed", payload);
 }

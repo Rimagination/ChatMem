@@ -1,16 +1,27 @@
 # ChatMem MCP Setup
 
-This document covers the working ChatMem setup for Codex App after the MCP schema fix.
+This document covers the working ChatMem setup for Codex App after the MCP schema fix and the additive control-plane surfaces.
 
 ## What ChatMem Is
 
-ChatMem is best used as a local MCP server that gives Codex repository memory tools:
+ChatMem is best used as a local MCP server that gives Codex repository memory tools and a small local control-plane layer.
+
+The long-lived MCP surface includes the original repository memory tools plus checkpoint creation from the earlier checkpoint phase:
 
 - `get_repo_memory`
 - `search_repo_history`
 - `create_memory_candidate`
 - `list_memory_candidates`
 - `build_handoff_packet`
+- `create_checkpoint`
+
+Task 6 adds additive control-plane tools on top of that existing surface:
+
+- `list_active_runs`
+- `list_run_artifacts`
+- `resume_from_checkpoint`
+
+The original five MCP tools remain supported, and `create_checkpoint` continues to work as the pre-existing checkpoint entry point. The Task 6 additions can be adopted incrementally without breaking existing clients.
 
 In Codex App, this is an MCP integration first. Do not rely on the local plugin marketplace flow as the primary installation path.
 
@@ -93,6 +104,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File D:\VSP\plugins\chatmem\scrip
 
 If the process stays alive and waits on stdio, the MCP server is healthy.
 
+## Control-Plane Surfaces
+
+ChatMem now exposes three local surfaces:
+
+- Desktop app for human review and operational visibility
+- MCP for host integration and automation
+- A2A-lite metadata for describing ChatMem as a local-first control plane
+
+The metadata surface is intentionally lightweight. It does not introduce a network transport or a distributed A2A protocol.
+
 ## How To Use ChatMem In Codex
 
 Once enabled, use ChatMem through natural prompts. The easiest pattern is to ask Codex to call the tools for you.
@@ -112,6 +133,7 @@ Use these when you discover a reusable rule or want prior context:
 - "Search ChatMem for earlier discussion about release packaging."
 - "Save this conclusion as a memory candidate for the repo."
 - "List pending memory candidates for this repository."
+- Review proposed memories from the Codex App "Memory Inbox" before accepting them into the repo history.
 
 ### Handoff examples
 
@@ -119,6 +141,15 @@ Use these when switching agents or pausing work:
 
 - "Build a ChatMem handoff packet for another agent."
 - "Generate a handoff for this repo so we can resume later."
+
+### Checkpoint and control-plane examples
+
+Use these when you need checkpoint or Task 6 control-plane flows:
+
+- "List active ChatMem runs for this repository."
+- "Show the artifacts produced by recent runs."
+- "Freeze the current state into a checkpoint."
+- "Resume from checkpoint and build the next handoff packet."
 
 ## Practical Prompt Templates
 
@@ -164,5 +195,6 @@ The repo still contains local plugin shell files:
 - `plugins/chatmem/.codex-plugin/plugin.json`
 - `plugins/chatmem/.mcp.json`
 - `.agents/plugins/marketplace.json`
+- `~/.agents/plugins/marketplace.json`
 
 These are useful as packaging artifacts, but the reliable Codex App setup is the MCP `config.toml` path above.

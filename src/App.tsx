@@ -6,25 +6,40 @@ import MigrateModal from "./components/MigrateModal";
 import SettingsPanel from "./components/SettingsPanel";
 import RepoMemoryPanel from "./components/RepoMemoryPanel";
 import MemoryInboxPanel from "./components/MemoryInboxPanel";
+import ApprovalsPanel from "./components/ApprovalsPanel";
 import EpisodesPanel from "./components/EpisodesPanel";
+import RunsPanel from "./components/RunsPanel";
+import ArtifactsPanel from "./components/ArtifactsPanel";
+import CheckpointsPanel from "./components/CheckpointsPanel";
 import HandoffsPanel from "./components/HandoffsPanel";
+import HandoffComposerModal from "./components/HandoffComposerModal";
 import { useI18n } from "./i18n/I18nProvider";
 import type { Locale } from "./i18n/types";
 import { loadSettings, updateSettings, type AppSettings } from "./settings/storage";
 import { installAvailableUpdate, runUpdateCheck, type UpdateState } from "./updater/updater";
 import {
+  createCheckpoint,
   createHandoffPacket,
+  listArtifacts,
+  listCheckpoints,
   listEpisodes,
   listHandoffs,
   listMemoryCandidates,
+  listRuns,
+  markHandoffConsumed,
   listRepoMemories,
+  reverifyMemory,
   reviewMemoryCandidate,
 } from "./chatmem-memory/api";
 import type {
   ApprovedMemory,
+  ArtifactRecord,
+  CheckpointRecord,
   EpisodeRecord,
   HandoffPacket,
+  HandoffTargetProfileOption,
   MemoryCandidate,
+  RunRecord,
 } from "./chatmem-memory/types";
 
 interface ConversationSummary {
@@ -81,9 +96,66 @@ type CopyState = {
   target: CopyTarget | null;
   status: "idle" | "success" | "error";
 };
-type WorkspaceView = "conversation" | "repo-memory" | "memory-inbox" | "episodes" | "handoffs";
+type WorkspaceView =
+  | "conversation"
+  | "checkpoints"
+  | "repo-memory"
+  | "memory-inbox"
+  | "approvals"
+  | "episodes"
+  | "runs"
+  | "artifacts"
+  | "handoffs";
+type HandoffComposerState = {
+  targetAgent: string;
+  profileOptions: HandoffTargetProfileOption[];
+  checkpoint?: {
+    checkpointId: string;
+    repoRoot: string;
+    sourceAgent: string;
+    summary: string;
+  };
+} | null;
 
 const COPY_RESET_DELAY_MS = 1800;
+const TARGET_PROFILE_OPTIONS: Record<string, HandoffTargetProfileOption[]> = {
+  claude: [
+    {
+      value: "claude_contextual",
+      label: "Claude Contextual",
+      description: "Carry narrative context, open questions, and review-ready notes for Claude.",
+    },
+    {
+      value: "claude_reviewer",
+      label: "Claude Reviewer",
+      description: "Bias the packet toward auditability, edge cases, and validation checkpoints.",
+    },
+  ],
+  codex: [
+    {
+      value: "codex_execution",
+      label: "Codex Execution",
+      description: "Emphasize concrete next steps, commands, and file-level action items.",
+    },
+    {
+      value: "codex_debugger",
+      label: "Codex Debugger",
+      description: "Highlight repro steps, likely fault lines, and verification commands.",
+    },
+  ],
+  gemini: [
+    {
+      value: "gemini_summarizer",
+      label: "Gemini Summarizer",
+      description: "Compress the latest repo context into a compact summary for quick catch-up.",
+    },
+    {
+      value: "gemini_research",
+      label: "Gemini Research",
+      description: "Focus on history, related context, and cross-cutting background information.",
+    },
+  ],
+};
 
 function getAgentHeading(agent: AgentType) {
   switch (agent) {
@@ -116,8 +188,16 @@ function App() {
   const [repoMemories, setRepoMemories] = useState<ApprovedMemory[]>([]);
   const [memoryCandidates, setMemoryCandidates] = useState<MemoryCandidate[]>([]);
   const [episodes, setEpisodes] = useState<EpisodeRecord[]>([]);
+  const [runs, setRuns] = useState<RunRecord[]>([]);
+  const [artifacts, setArtifacts] = useState<ArtifactRecord[]>([]);
+  const [checkpoints, setCheckpoints] = useState<CheckpointRecord[]>([]);
   const [handoffs, setHandoffs] = useState<HandoffPacket[]>([]);
+  const [handoffComposer, setHandoffComposer] = useState<HandoffComposerState>(null);
   const activeRepoRoot = selectedConversation?.project_dir ?? null;
+  const allAgents = ["claude", "codex", "gemini"];
+  const availableHandoffTargets = ["claude", "codex", "gemini"].filter(
+    (agent) => agent !== selectedAgent,
+  );
 
   useEffect(() => {
     setSelectedConversation(null);
@@ -158,6 +238,9 @@ function App() {
       setRepoMemories([]);
       setMemoryCandidates([]);
       setEpisodes([]);
+      setRuns([]);
+      setArtifacts([]);
+      setCheckpoints([]);
       setHandoffs([]);
       return;
     }
@@ -169,12 +252,25 @@ function App() {
     const loadWorkspaceData = async () => {
       setMemoryLoading(true);
       try {
-        if (workspaceView === "repo-memory") {
+        if (workspaceView === "checkpoints") {
+          setCheckpoints(await listCheckpoints(activeRepoRoot));
+        } else if (workspaceView === "repo-memory") {
           setRepoMemories(await listRepoMemories(activeRepoRoot));
         } else if (workspaceView === "memory-inbox") {
           setMemoryCandidates(await listMemoryCandidates(activeRepoRoot, "pending_review"));
+        } else if (workspaceView === "approvals") {
+          const [nextMemories, nextCandidates] = await Promise.all([
+            listRepoMemories(activeRepoRoot),
+            listMemoryCandidates(activeRepoRoot, "pending_review"),
+          ]);
+          setRepoMemories(nextMemories);
+          setMemoryCandidates(nextCandidates);
         } else if (workspaceView === "episodes") {
           setEpisodes(await listEpisodes(activeRepoRoot));
+        } else if (workspaceView === "runs") {
+          setRuns(await listRuns(activeRepoRoot));
+        } else if (workspaceView === "artifacts") {
+          setArtifacts(await listArtifacts(activeRepoRoot));
         } else if (workspaceView === "handoffs") {
           setHandoffs(await listHandoffs(activeRepoRoot));
         }
@@ -347,22 +443,134 @@ function App() {
   };
 
   const handleCreateHandoff = async (targetAgent: string) => {
-    if (!activeRepoRoot) {
+    const profileOptions = TARGET_PROFILE_OPTIONS[targetAgent] ?? [];
+    setHandoffComposer({
+      targetAgent,
+      profileOptions,
+    });
+  };
+
+  const handleCreateCheckpoint = async () => {
+    if (!activeRepoRoot || !selectedConversation) {
+      return;
+    }
+
+    setMemoryLoading(true);
+    try {
+      const checkpoint = await createCheckpoint({
+        repoRoot: activeRepoRoot,
+        conversationId: `${selectedAgent}:${selectedConversation.id}`,
+        sourceAgent: selectedAgent,
+        summary: selectedConversation.summary ?? selectedConversation.id,
+        resumeCommand: selectedConversation.resume_command ?? undefined,
+        metadataJson: JSON.stringify({
+          storage_path: selectedConversation.storage_path ?? null,
+        }),
+      });
+      setCheckpoints((current) => [checkpoint, ...current]);
+      setWorkspaceView("checkpoints");
+    } catch (error) {
+      console.error("Failed to create checkpoint:", error);
+    } finally {
+      setMemoryLoading(false);
+    }
+  };
+
+  const handlePromoteCheckpoint = (checkpoint: CheckpointRecord, targetAgent: string) => {
+    const profileOptions = TARGET_PROFILE_OPTIONS[targetAgent] ?? [];
+    setHandoffComposer({
+      targetAgent,
+      profileOptions,
+      checkpoint: {
+        checkpointId: checkpoint.checkpoint_id,
+        repoRoot: checkpoint.repo_root,
+        sourceAgent: checkpoint.source_agent,
+        summary: checkpoint.summary,
+      },
+    });
+  };
+
+  const handleConfirmCreateHandoff = async (targetProfile: string) => {
+    if (!activeRepoRoot && !handoffComposer?.checkpoint) {
+      return;
+    }
+    if (!handoffComposer) {
       return;
     }
 
     setMemoryLoading(true);
     try {
       const packet = await createHandoffPacket({
-        repoRoot: activeRepoRoot,
-        fromAgent: selectedAgent,
-        toAgent: targetAgent,
-        goalHint: selectedConversation?.summary ?? undefined,
+        repoRoot: handoffComposer.checkpoint?.repoRoot ?? activeRepoRoot ?? "",
+        fromAgent: handoffComposer.checkpoint?.sourceAgent ?? selectedAgent,
+        toAgent: handoffComposer.targetAgent,
+        goalHint: handoffComposer.checkpoint?.summary ?? selectedConversation?.summary ?? undefined,
+        targetProfile,
+        checkpointId: handoffComposer.checkpoint?.checkpointId,
       });
       setHandoffs((current) => [packet, ...current]);
+      if (handoffComposer.checkpoint) {
+        setCheckpoints((current) =>
+          current.map((checkpoint) =>
+            checkpoint.checkpoint_id === handoffComposer.checkpoint?.checkpointId
+              ? {
+                  ...checkpoint,
+                  status: "promoted",
+                  handoff_id: packet.handoff_id,
+                }
+              : checkpoint,
+          ),
+        );
+      }
       setWorkspaceView("handoffs");
+      setHandoffComposer(null);
     } catch (error) {
       console.error("Failed to create handoff packet:", error);
+    } finally {
+      setMemoryLoading(false);
+    }
+  };
+
+  const handleReverifyMemory = async (memoryId: string) => {
+    if (!activeRepoRoot) {
+      return;
+    }
+
+    setMemoryLoading(true);
+    try {
+      await reverifyMemory({
+        memoryId,
+        verifiedBy: selectedAgent,
+      });
+      setRepoMemories(await listRepoMemories(activeRepoRoot));
+    } catch (error) {
+      console.error("Failed to re-verify memory:", error);
+    } finally {
+      setMemoryLoading(false);
+    }
+  };
+
+  const handleMarkHandoffConsumed = async (handoffId: string) => {
+    setMemoryLoading(true);
+    try {
+      await markHandoffConsumed({
+        handoffId,
+        consumedBy: selectedAgent,
+      });
+      setHandoffs((current) =>
+        current.map((handoff) =>
+          handoff.handoff_id === handoffId
+            ? {
+                ...handoff,
+                status: "consumed",
+                consumed_by: selectedAgent,
+                consumed_at: new Date().toISOString(),
+              }
+            : handoff,
+        ),
+      );
+    } catch (error) {
+      console.error("Failed to mark handoff consumed:", error);
     } finally {
       setMemoryLoading(false);
     }
@@ -530,6 +738,14 @@ function App() {
           </button>
           <button
             type="button"
+            className={`workspace-mode-tab ${workspaceView === "checkpoints" ? "active" : ""}`}
+            onClick={() => setWorkspaceView("checkpoints")}
+            disabled={!activeRepoRoot}
+          >
+            Checkpoints
+          </button>
+          <button
+            type="button"
             className={`workspace-mode-tab ${workspaceView === "repo-memory" ? "active" : ""}`}
             onClick={() => setWorkspaceView("repo-memory")}
             disabled={!activeRepoRoot}
@@ -546,11 +762,35 @@ function App() {
           </button>
           <button
             type="button"
+            className={`workspace-mode-tab ${workspaceView === "approvals" ? "active" : ""}`}
+            onClick={() => setWorkspaceView("approvals")}
+            disabled={!activeRepoRoot}
+          >
+            Approvals
+          </button>
+          <button
+            type="button"
             className={`workspace-mode-tab ${workspaceView === "episodes" ? "active" : ""}`}
             onClick={() => setWorkspaceView("episodes")}
             disabled={!activeRepoRoot}
           >
             Episodes
+          </button>
+          <button
+            type="button"
+            className={`workspace-mode-tab ${workspaceView === "runs" ? "active" : ""}`}
+            onClick={() => setWorkspaceView("runs")}
+            disabled={!activeRepoRoot}
+          >
+            Runs
+          </button>
+          <button
+            type="button"
+            className={`workspace-mode-tab ${workspaceView === "artifacts" ? "active" : ""}`}
+            onClick={() => setWorkspaceView("artifacts")}
+            disabled={!activeRepoRoot}
+          >
+            Artifacts
           </button>
           <button
             type="button"
@@ -570,8 +810,20 @@ function App() {
           ) : selectedConversation ? (
             workspaceView === "conversation" ? (
             <ConversationDetail conversation={selectedConversation} />
+            ) : workspaceView === "checkpoints" ? (
+              <CheckpointsPanel
+                checkpoints={checkpoints}
+                loading={memoryLoading}
+                allAgents={allAgents}
+                onCreate={handleCreateCheckpoint}
+                onPromote={handlePromoteCheckpoint}
+              />
             ) : workspaceView === "repo-memory" ? (
-              <RepoMemoryPanel memories={repoMemories} loading={memoryLoading} />
+              <RepoMemoryPanel
+                memories={repoMemories}
+                loading={memoryLoading}
+                onReverify={handleReverifyMemory}
+              />
             ) : workspaceView === "memory-inbox" ? (
               <MemoryInboxPanel
                 candidates={memoryCandidates}
@@ -579,14 +831,29 @@ function App() {
                 onApprove={handleApproveCandidate}
                 onReject={handleRejectCandidate}
               />
+            ) : workspaceView === "approvals" ? (
+              <ApprovalsPanel
+                candidates={memoryCandidates}
+                memories={repoMemories}
+                loading={memoryLoading}
+                onOpenInbox={() => setWorkspaceView("memory-inbox")}
+                onOpenRepoMemory={() => setWorkspaceView("repo-memory")}
+                onReverify={handleReverifyMemory}
+              />
             ) : workspaceView === "episodes" ? (
               <EpisodesPanel episodes={episodes} loading={memoryLoading} />
+            ) : workspaceView === "runs" ? (
+              <RunsPanel runs={runs} loading={memoryLoading} />
+            ) : workspaceView === "artifacts" ? (
+              <ArtifactsPanel artifacts={artifacts} loading={memoryLoading} />
             ) : (
               <HandoffsPanel
                 handoffs={handoffs}
                 loading={memoryLoading}
-                availableTargets={["claude", "codex", "gemini"].filter((agent) => agent !== selectedAgent)}
+                currentAgent={selectedAgent}
+                availableTargets={availableHandoffTargets}
                 onCreate={handleCreateHandoff}
+                onMarkConsumed={handleMarkHandoffConsumed}
               />
             )
           ) : (
@@ -629,6 +896,15 @@ function App() {
           sourceAgent={selectedAgent}
           onMigrate={handleMigrate}
           onClose={() => setShowMigrateModal(false)}
+        />
+      )}
+
+      {handoffComposer && (
+        <HandoffComposerModal
+          targetAgent={handoffComposer.targetAgent}
+          profileOptions={handoffComposer.profileOptions}
+          onClose={() => setHandoffComposer(null)}
+          onCreate={handleConfirmCreateHandoff}
         />
       )}
 
