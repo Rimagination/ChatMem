@@ -87,9 +87,18 @@
 
 弹层关闭后回到原来的对话或项目首页。
 
-## Phase 1: Current Conversation To Memory
+## Complete Delivery Scope
 
-第一期目标是跑通最小闭环：
+本功能第一次实现就覆盖两个入口：
+
+- 当前对话提炼：从正在阅读的单段对话生成候选记忆。
+- 项目旧对话扫描：从当前项目的旧对话批量生成候选记忆。
+
+两条路径都进入同一个审核弹层，并且都只生成候选，不直接写入项目记忆。
+
+### Current Conversation To Memory
+
+当前对话入口负责跑通最短闭环：
 
 ```text
 当前对话
@@ -100,7 +109,7 @@
 -> 项目记忆
 ```
 
-### User Flow
+#### User Flow
 
 1. 用户打开一段对话。
 2. 用户点击“提炼成记忆”。
@@ -111,7 +120,7 @@
 7. 用户确认、编辑、稍后或拒绝。
 8. 被确认的候选成为项目记忆，并可被后续 `get_repo_memory` 返回。
 
-### Agent-Assisted Prompt Contract
+#### Agent-Assisted Prompt Contract
 
 ChatMem 生成给 agent 的任务提示应包含：
 
@@ -130,7 +139,7 @@ ChatMem 生成给 agent 的任务提示应包含：
 - 不记录临时任务清单、一次性调试噪音、尚未验证的猜测。
 - 不直接批准，只创建 pending memory candidates。
 
-### Phase 1 Success Criteria
+#### Current Conversation Success Criteria
 
 - 用户能从当前对话触发“提炼成记忆”。
 - 对话页仍然全宽显示，没有常驻记忆侧栏。
@@ -139,11 +148,11 @@ ChatMem 生成给 agent 的任务提示应包含：
 - 批准后的记忆出现在项目首页。
 - 后续 agent 通过 ChatMem skill/MCP 能读到这条项目记忆。
 
-## Phase 2: Project Conversation Scan
+### Project Conversation Scan
 
-第二期目标是解决历史项目中已有大量对话但没有项目记忆的问题。
+项目扫描入口负责解决历史项目中已有大量对话但没有项目记忆的问题。
 
-### User Flow
+#### User Flow
 
 1. 用户进入项目首页。
 2. 用户点击“扫描旧对话”。
@@ -156,7 +165,7 @@ ChatMem 生成给 agent 的任务提示应包含：
 6. ChatMem 展示批量结果摘要。
 7. 用户在审核弹层中逐条确认、编辑、稍后或拒绝。
 
-### Batch Requirements
+#### Batch Requirements
 
 - 批量扫描必须进入候选队列，不直接写入项目记忆。
 - 批量结果需要去重或提示潜在合并。
@@ -164,7 +173,7 @@ ChatMem 生成给 agent 的任务提示应包含：
 - 批量任务需要可中断，失败后保留已生成候选。
 - 项目首页应提示“这个项目还没有项目记忆，可以从旧对话提炼”。
 
-### Phase 2 Success Criteria
+#### Project Scan Success Criteria
 
 - 用户能从项目首页批量生成候选。
 - 批量生成不会污染已批准记忆。
@@ -187,7 +196,7 @@ ChatMem 生成给 agent 的任务提示应包含：
 - 项目首页和审核弹层 UI。
 - 批量扫描任务的状态展示。
 
-第一期可以不让桌面端直接调用模型。AI 生成由当前 agent 完成。
+本次完整交付不让桌面端直接调用模型。AI 生成由当前 agent 完成。
 
 ## Error Handling
 
@@ -245,7 +254,7 @@ ChatMem 生成给 agent 的任务提示应包含：
 
 ## Non-Goals
 
-本设计不要求第一期内：
+本设计不要求本次完整交付内：
 
 - 桌面端内置 OpenAI、Claude、本地模型或 API key 管理。
 - 静默自动扫描所有旧对话。
@@ -264,9 +273,9 @@ ChatMem 生成给 agent 的任务提示应包含：
 
 为避免实现阶段产生歧义，本设计采用以下默认决策：
 
-- 第一阶段不在桌面端直接调用 AI，也不要求新增桌面端模型配置。
-- 第一阶段由 agent 通过 ChatMem MCP 调用 `create_memory_candidate` 创建候选。
+- 本次完整交付不在桌面端直接调用 AI，也不要求新增桌面端模型配置。
+- 当前对话提炼和项目批量扫描都由 agent 通过 ChatMem MCP 调用 `create_memory_candidate` 创建候选。
 - 桌面端负责生成 agent-assisted prompt，并提供复制到剪贴板的操作。
-- 第一阶段不做“一键发送到当前 agent”的桌面集成。
+- 本次完整交付不做“一键发送到当前 agent”的桌面集成。
 - 项目首页作为点击左侧项目组后的新状态出现；选中具体对话后仍进入全宽对话页。
-- 第二阶段批量扫描默认范围是当前项目最近 20 段对话，并提供“全部旧对话”作为显式选择。
+- 项目批量扫描默认范围是当前项目最近 20 段对话，并提供“全部旧对话”作为显式选择。
