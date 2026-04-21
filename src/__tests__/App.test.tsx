@@ -12,6 +12,9 @@ const mockMinimize = vi.fn();
 const mockToggleMaximize = vi.fn();
 const mockClose = vi.fn();
 const mockStartDragging = vi.fn();
+const mockIsMaximized = vi.fn();
+const mockIsFullscreen = vi.fn();
+const mockOnResized = vi.fn();
 const longConversationTitle =
   "You are Task 6 的独立代码质量 reviewer。请在工作树 D:\\VSP\\agentswap-gui\\.worktrees\\chatmem-control-plane-v2 review 最新提交，重点寻找真实风险，而不是泛泛建议。";
 
@@ -34,6 +37,9 @@ vi.mock("@tauri-apps/api/window", () => ({
     toggleMaximize: () => mockToggleMaximize(),
     close: () => mockClose(),
     startDragging: () => mockStartDragging(),
+    isMaximized: () => mockIsMaximized(),
+    isFullscreen: () => mockIsFullscreen(),
+    onResized: (handler: unknown) => mockOnResized(handler),
   },
 }));
 
@@ -55,9 +61,15 @@ describe("App", () => {
     mockToggleMaximize.mockReset();
     mockClose.mockReset();
     mockStartDragging.mockReset();
+    mockIsMaximized.mockReset();
+    mockIsFullscreen.mockReset();
+    mockOnResized.mockReset();
     localStorage.clear();
     vi.useRealTimers();
     vi.stubGlobal("alert", vi.fn());
+    mockIsMaximized.mockResolvedValue(false);
+    mockIsFullscreen.mockResolvedValue(false);
+    mockOnResized.mockResolvedValue(vi.fn());
 
     mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
       if (command === "list_conversations") {
@@ -235,8 +247,79 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: "History" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Help" })).toBeNull();
     expect(screen.getByText("Projects")).toBeTruthy();
-    expect(screen.getByText("Chats")).toBeTruthy();
+    expect(screen.queryByText("Chats")).toBeNull();
     expect(screen.getByRole("heading", { name: "Choose a conversation" })).toBeTruthy();
+  });
+
+  it("merges equivalent project paths and does not repeat project conversations as chats", async () => {
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+    );
+    mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
+      if (command === "list_conversations") {
+        return [
+          {
+            id: "windows-prefix",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "\\\\?\\D:\\VSP",
+            created_at: "2026-04-21T08:00:00Z",
+            updated_at: "2026-04-21T09:00:00Z",
+            summary: "Prefixed project path",
+            message_count: 1,
+            file_count: 0,
+          },
+          {
+            id: "plain-windows",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:\\VSP",
+            created_at: "2026-04-21T08:30:00Z",
+            updated_at: "2026-04-21T09:30:00Z",
+            summary: "Plain project path",
+            message_count: 1,
+            file_count: 0,
+          },
+          {
+            id: "file-cwd",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "\\\\?\\D:\\VSP\\bm.md",
+            created_at: "2026-04-21T09:00:00Z",
+            updated_at: "2026-04-21T10:00:00Z",
+            summary: "File cwd path",
+            message_count: 1,
+            file_count: 0,
+          },
+        ];
+      }
+
+      if (
+        command === "list_memory_candidates" ||
+        command === "list_handoffs" ||
+        command === "list_checkpoints" ||
+        command === "list_runs" ||
+        command === "list_artifacts" ||
+        command === "list_episodes" ||
+        command === "list_repo_memories"
+      ) {
+        return [];
+      }
+
+      return [];
+    });
+
+    renderApp();
+
+    await screen.findByText("Prefixed project path");
+
+    await waitFor(() => {
+      const projectGroups = document.querySelectorAll(".project-group");
+      expect(projectGroups).toHaveLength(1);
+      expect(projectGroups[0].textContent).toContain("VSP");
+      expect(projectGroups[0].textContent).toContain("Prefixed project path");
+      expect(projectGroups[0].textContent).toContain("Plain project path");
+      expect(projectGroups[0].textContent).toContain("File cwd path");
+      expect(document.querySelector(".chats-section")).toBeNull();
+    });
   });
 
   it("starts native window dragging from the top bar without hijacking controls", async () => {
@@ -256,6 +339,24 @@ describe("App", () => {
 
     fireEvent.mouseDown(screen.getByRole("button", { name: "Settings" }), { button: 0 });
     expect(mockStartDragging).toHaveBeenCalledTimes(1);
+  });
+
+  it("removes the floating shell when the native window is maximized", async () => {
+    mockIsMaximized.mockResolvedValue(true);
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+    );
+
+    const { container } = renderApp();
+
+    await screen.findByText("ChatMem v0.1.6");
+
+    await waitFor(() => {
+      expect(container.querySelector(".app-shell")?.classList.contains("is-window-filled")).toBe(
+        true,
+      );
+    });
   });
 
   it("shows conversation details, migration, copy actions, and memory in one workspace", async () => {

@@ -3,6 +3,8 @@
     windows_subsystem = "windows"
 )]
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use tauri::command;
 use chatmem::chatmem_memory::{
@@ -96,6 +98,88 @@ fn contains_query(haystack: &str, query: &str) -> bool {
     haystack.to_lowercase().contains(query)
 }
 
+fn is_file_like_path_leaf(leaf: &str) -> bool {
+    let extension = leaf.rsplit_once('.').map(|(_, extension)| {
+        extension.to_ascii_lowercase()
+    });
+
+    matches!(
+        extension.as_deref(),
+        Some(
+            "c" | "cc"
+                | "cpp"
+                | "cs"
+                | "css"
+                | "csv"
+                | "go"
+                | "h"
+                | "hpp"
+                | "html"
+                | "java"
+                | "js"
+                | "json"
+                | "jsonl"
+                | "jsx"
+                | "lock"
+                | "md"
+                | "mdx"
+                | "py"
+                | "rs"
+                | "scss"
+                | "toml"
+                | "ts"
+                | "tsx"
+                | "txt"
+                | "yaml"
+                | "yml"
+        )
+    )
+}
+
+fn strip_file_like_leaf(path: &str) -> String {
+    let Some(leaf) = path.rsplit('/').next() else {
+        return path.to_string();
+    };
+
+    if !is_file_like_path_leaf(leaf) {
+        return path.to_string();
+    }
+
+    path.strip_suffix(leaf)
+        .map(|parent| parent.trim_end_matches('/').to_string())
+        .filter(|parent| !parent.is_empty())
+        .unwrap_or_else(|| path.to_string())
+}
+
+fn normalize_project_dir(project_dir: &str) -> String {
+    let mut normalized = project_dir.trim().to_string();
+
+    if let Some(stripped) = normalized.strip_prefix(r"\\?\UNC\") {
+        normalized = format!("//{stripped}");
+    } else if let Some(stripped) = normalized.strip_prefix(r"\\?\") {
+        normalized = stripped.to_string();
+    } else if let Some(stripped) = normalized.strip_prefix("//?/") {
+        normalized = stripped.to_string();
+    }
+
+    normalized = normalized.replace('\\', "/");
+    while normalized.contains("//") {
+        normalized = normalized.replace("//", "/");
+    }
+
+    let bytes = normalized.as_bytes();
+    if bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b'/'
+        && bytes[2] != b'/'
+    {
+        normalized = format!("{}:/{}", normalized.chars().next().unwrap(), &normalized[2..]);
+    }
+
+    normalized = normalized.trim_end_matches('/').to_string();
+    strip_file_like_leaf(&normalized)
+}
+
 fn summary_matches_query(summary: &ConversationSummary, query: &str) -> bool {
     contains_query(&summary.id, query)
         || contains_query(&summary.project_dir, query)
@@ -147,7 +231,7 @@ fn convert_summary(summary: ConversationSummary) -> ConversationSummaryResponse 
     ConversationSummaryResponse {
         id: summary.id,
         source_agent: agent_key(&summary.source_agent).to_string(),
-        project_dir: summary.project_dir,
+        project_dir: normalize_project_dir(&summary.project_dir),
         created_at: summary.created_at.to_rfc3339(),
         updated_at: summary.updated_at.to_rfc3339(),
         summary: summary.summary,
@@ -164,7 +248,7 @@ fn convert_conversation(
     ConversationResponse {
         id: conv.id,
         source_agent: agent_key(&conv.source_agent).to_string(),
-        project_dir: conv.project_dir,
+        project_dir: normalize_project_dir(&conv.project_dir),
         created_at: conv.created_at.to_rfc3339(),
         updated_at: conv.updated_at.to_rfc3339(),
         summary: conv.summary,
@@ -219,9 +303,77 @@ fn open_memory_store() -> Result<MemoryStore, String> {
     MemoryStore::open_app().map_err(|e| e.to_string())
 }
 
+fn build_webdav_probe_url(
+    scheme: &str,
+    host: &str,
+    webdav_path: &str,
+) -> Result<reqwest::Url, String> {
+    let scheme = match scheme {
+        "http" => "http",
+        _ => "https",
+    };
+    let host = host
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_matches('/');
+
+    if host.is_empty() {
+        return Err("Missing WebDAV host".to_string());
+    }
+
+    let path = webdav_path.trim().trim_matches('/');
+    let url = if path.is_empty() {
+        format!("{scheme}://{host}/")
+    } else {
+        format!("{scheme}://{host}/{path}/")
+    };
+
+    reqwest::Url::parse(&url).map_err(|error| format!("Invalid WebDAV URL: {error}"))
+}
+
 #[command]
 async fn get_agent_card() -> Result<AgentCard, String> {
     Ok(AgentCard::chatmem_default())
+}
+
+#[command]
+async fn verify_webdav_server(
+    webdav_scheme: String,
+    webdav_host: String,
+    webdav_path: String,
+    remote_path: String,
+    username: String,
+    password: String,
+) -> Result<(), String> {
+    if username.trim().is_empty() || password.trim().is_empty() {
+        return Err("Missing WebDAV username or password".to_string());
+    }
+
+    if remote_path.trim().is_empty() {
+        return Err("Missing remote folder".to_string());
+    }
+
+    let url = build_webdav_probe_url(&webdav_scheme, &webdav_host, &webdav_path)?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(12))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let method = reqwest::Method::from_bytes(b"PROPFIND").map_err(|error| error.to_string())?;
+    let response = client
+        .request(method, url.clone())
+        .basic_auth(username.trim(), Some(password))
+        .header("Depth", "0")
+        .send()
+        .await
+        .map_err(|error| format!("Cannot reach WebDAV server: {error}"))?;
+    let status = response.status();
+
+    if status.is_success() {
+        Ok(())
+    } else {
+        Err(format!("Server returned HTTP {status} for {url}"))
+    }
 }
 
 #[command]
@@ -280,7 +432,8 @@ async fn search_conversations(agent: String, query: String) -> Result<Vec<Conver
 #[command]
 async fn read_conversation(agent: String, id: String) -> Result<ConversationResponse, String> {
     let adapter = get_adapter(&agent)?;
-    let conversation = adapter.read_conversation(&id).map_err(|e| e.to_string())?;
+    let mut conversation = adapter.read_conversation(&id).map_err(|e| e.to_string())?;
+    conversation.project_dir = normalize_project_dir(&conversation.project_dir);
     let storage_path = resolve_storage_path(&agent, &id);
     let resume_command = build_resume_command(&agent, &id);
     if let Ok(store) = MemoryStore::open_app() {
@@ -480,6 +633,7 @@ fn main() {
             delete_conversation,
             check_agent_available,
             get_agent_card,
+            verify_webdav_server,
             list_repo_memories,
             list_memory_candidates,
             review_memory_candidate,
@@ -499,7 +653,10 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_resume_command, conversation_matches_query, AgentKind, Conversation};
+    use super::{
+        build_resume_command, build_webdav_probe_url, conversation_matches_query,
+        normalize_project_dir, AgentKind, Conversation,
+    };
     use agentswap_core::types::{Message, Role, ToolCall, ToolStatus};
     use chrono::Utc;
     use serde_json::json;
@@ -517,6 +674,41 @@ mod tests {
     #[test]
     fn returns_none_for_unknown_agent_resume_command() {
         assert_eq!(build_resume_command("unknown", "conv-001"), None);
+    }
+
+    #[test]
+    fn builds_webdav_probe_url_from_host_and_path() {
+        let url = build_webdav_probe_url("https", "example.com", "dav/chatmem").unwrap();
+
+        assert_eq!(url.as_str(), "https://example.com/dav/chatmem/");
+    }
+
+    #[test]
+    fn strips_scheme_and_slashes_from_webdav_host() {
+        let url = build_webdav_probe_url("http", "https://example.com/", "/dav/").unwrap();
+
+        assert_eq!(url.as_str(), "http://example.com/dav/");
+    }
+
+    #[test]
+    fn rejects_missing_webdav_host() {
+        assert!(build_webdav_probe_url("https", "   ", "dav").is_err());
+    }
+
+    #[test]
+    fn normalizes_windows_extended_project_paths() {
+        assert_eq!(
+            normalize_project_dir(r"\\?\D:\VSP"),
+            "D:/VSP".to_string()
+        );
+    }
+
+    #[test]
+    fn normalizes_file_cwd_to_parent_project_path() {
+        assert_eq!(
+            normalize_project_dir(r"\\?\D:\VSP\bm.md"),
+            "D:/VSP".to_string()
+        );
     }
 
     #[test]

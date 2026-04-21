@@ -16,6 +16,16 @@ export type SettingsSyncCopy = {
   downloadFilesLabel: string;
   onSyncDownloadLabel: string;
   asNeededDownloadLabel: string;
+  verifyServerLabel: string;
+  verifyingServerLabel: string;
+  verifySuccessLabel: string;
+  verifyMissingFieldsLabel: string;
+  verifyFailedPrefix: string;
+};
+
+export type WebDavVerificationInput = {
+  syncSettings: SyncSettings;
+  password: string;
 };
 
 type SettingsPanelProps = {
@@ -39,9 +49,16 @@ type SettingsPanelProps = {
   onLocaleChange: (locale: Locale) => void;
   onAutoCheckChange: (nextValue: boolean) => void;
   onSyncSettingsChange: (patch: Partial<SyncSettings>) => void;
+  onVerifyWebDavServer: (input: WebDavVerificationInput) => Promise<void>;
   onCheckUpdates: () => void;
   onInstallUpdate: () => void;
 };
+
+type WebDavVerificationState =
+  | { kind: "idle" }
+  | { kind: "checking" }
+  | { kind: "success" }
+  | { kind: "error"; message: string };
 
 function joinServerPath(syncSettings: SyncSettings) {
   return [syncSettings.webdavHost, syncSettings.webdavPath]
@@ -80,12 +97,50 @@ export default function SettingsPanel({
   onLocaleChange,
   onAutoCheckChange,
   onSyncSettingsChange,
+  onVerifyWebDavServer,
   onCheckUpdates,
   onInstallUpdate,
 }: SettingsPanelProps) {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [webDavVerification, setWebDavVerification] = useState<WebDavVerificationState>({
+    kind: "idle",
+  });
   const fileSyncEnabled = syncSettings.provider === "webdav";
+  const canVerifyWebDav =
+    fileSyncEnabled &&
+    syncSettings.webdavHost.trim().length > 0 &&
+    syncSettings.username.trim().length > 0 &&
+    password.trim().length > 0;
+
+  const handleSyncSettingsChange = (patch: Partial<SyncSettings>) => {
+    setWebDavVerification({ kind: "idle" });
+    onSyncSettingsChange(patch);
+  };
+
+  const handlePasswordChange = (nextPassword: string) => {
+    setWebDavVerification({ kind: "idle" });
+    setPassword(nextPassword);
+  };
+
+  const handleVerifyWebDavServer = async () => {
+    if (!canVerifyWebDav) {
+      setWebDavVerification({ kind: "error", message: syncCopy.verifyMissingFieldsLabel });
+      return;
+    }
+
+    setWebDavVerification({ kind: "checking" });
+    try {
+      await onVerifyWebDavServer({ syncSettings, password });
+      setWebDavVerification({ kind: "success" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setWebDavVerification({
+        kind: "error",
+        message: `${syncCopy.verifyFailedPrefix}: ${message}`,
+      });
+    }
+  };
 
   if (!open) {
     return null;
@@ -131,7 +186,7 @@ export default function SettingsPanel({
                 checked={fileSyncEnabled}
                 aria-label={syncCopy.methodLabel}
                 onChange={(event) =>
-                  onSyncSettingsChange({
+                  handleSyncSettingsChange({
                     provider: event.target.checked ? "webdav" : "off",
                   })
                 }
@@ -150,7 +205,7 @@ export default function SettingsPanel({
                   aria-label={syncCopy.protocolLabel}
                   value={syncSettings.webdavScheme}
                   onChange={(event) =>
-                    onSyncSettingsChange({
+                    handleSyncSettingsChange({
                       webdavScheme: event.target.value === "http" ? "http" : "https",
                     })
                   }
@@ -165,7 +220,7 @@ export default function SettingsPanel({
                   aria-label={syncCopy.serverPathLabel}
                   value={joinServerPath(syncSettings)}
                   placeholder="example.com/webdav"
-                  onChange={(event) => onSyncSettingsChange(splitServerPath(event.target.value))}
+                  onChange={(event) => handleSyncSettingsChange(splitServerPath(event.target.value))}
                 />
                 <span className="webdav-suffix">/{syncSettings.remotePath}/</span>
               </div>
@@ -177,7 +232,7 @@ export default function SettingsPanel({
                   type="text"
                   value={syncSettings.username}
                   autoComplete="username"
-                  onChange={(event) => onSyncSettingsChange({ username: event.target.value })}
+                  onChange={(event) => handleSyncSettingsChange({ username: event.target.value })}
                 />
               </label>
 
@@ -189,7 +244,7 @@ export default function SettingsPanel({
                     type={showPassword ? "text" : "password"}
                     value={password}
                     autoComplete="current-password"
-                    onChange={(event) => setPassword(event.target.value)}
+                    onChange={(event) => handlePasswordChange(event.target.value)}
                   />
                   <button
                     type="button"
@@ -201,6 +256,26 @@ export default function SettingsPanel({
                 </span>
               </label>
 
+              <div className="webdav-verify-row">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => void handleVerifyWebDavServer()}
+                  disabled={webDavVerification.kind === "checking"}
+                >
+                  {webDavVerification.kind === "checking"
+                    ? syncCopy.verifyingServerLabel
+                    : syncCopy.verifyServerLabel}
+                </button>
+              </div>
+
+              {webDavVerification.kind === "success" ? (
+                <p className="settings-notice is-success">{syncCopy.verifySuccessLabel}</p>
+              ) : null}
+
+              {webDavVerification.kind === "error" ? (
+                <p className="settings-notice is-danger">{webDavVerification.message}</p>
+              ) : null}
             </div>
           ) : null}
 
@@ -211,7 +286,7 @@ export default function SettingsPanel({
               aria-label={syncCopy.downloadFilesLabel}
               value={syncSettings.downloadMode}
               onChange={(event) =>
-                onSyncSettingsChange({
+                handleSyncSettingsChange({
                   downloadMode: event.target.value === "as-needed" ? "as-needed" : "on-sync",
                 })
               }

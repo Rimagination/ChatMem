@@ -1,10 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import { appWindow } from "@tauri-apps/api/window";
 import ConversationDetail from "./components/ConversationDetail";
 import MigrateModal from "./components/MigrateModal";
-import SettingsPanel, { type SettingsSyncCopy } from "./components/SettingsPanel";
+import SettingsPanel, {
+  type SettingsSyncCopy,
+  type WebDavVerificationInput,
+} from "./components/SettingsPanel";
 import HandoffComposerModal from "./components/HandoffComposerModal";
 import LibraryPanel from "./components/LibraryPanel";
 import { useI18n } from "./i18n/I18nProvider";
@@ -17,6 +20,7 @@ import {
   truncateSidebarTitle,
   truncateWorkspaceTitle,
 } from "./utils/titleUtils";
+import { normalizeProjectPath, projectPathKey } from "./utils/projectPaths";
 import { buildRepoLibraryRecords, type LibraryRecord } from "./library/model";
 import packageInfo from "../package.json";
 import brandIcon from "../src-tauri/icons/icon.png";
@@ -272,9 +276,21 @@ function getAgentLabel(agent: string) {
 }
 
 function getProjectLabel(projectDir: string) {
-  const trimmed = projectDir.replace(/[\\/]+$/, "");
+  const trimmed = normalizeProjectPath(projectDir).replace(/[\\/]+$/, "");
   const segments = trimmed.split(/[\\/]/).filter(Boolean);
   return segments[segments.length - 1] || projectDir;
+}
+
+function normalizeConversationProject<T extends { project_dir: string }>(conversation: T): T {
+  const projectDir = normalizeProjectPath(conversation.project_dir);
+  if (projectDir === conversation.project_dir) {
+    return conversation;
+  }
+
+  return {
+    ...conversation,
+    project_dir: projectDir,
+  };
 }
 
 function sortConversations(conversations: ConversationSummary[], sortMode: LibrarySort) {
@@ -491,6 +507,11 @@ function getSyncCopy(locale: Locale): SettingsSyncCopy {
       downloadFilesLabel: "Download files",
       onSyncDownloadLabel: "At sync time",
       asNeededDownloadLabel: "As needed",
+      verifyServerLabel: "Verify server",
+      verifyingServerLabel: "Verifying...",
+      verifySuccessLabel: "Verification successful",
+      verifyMissingFieldsLabel: "Fill in the server, username, and password first.",
+      verifyFailedPrefix: "Verification failed",
     };
   }
 
@@ -507,6 +528,11 @@ function getSyncCopy(locale: Locale): SettingsSyncCopy {
     downloadFilesLabel: "\u4e0b\u8f7d\u6587\u4ef6",
     onSyncDownloadLabel: "\u5728\u540c\u6b65\u65f6",
     asNeededDownloadLabel: "\u9700\u8981\u65f6",
+    verifyServerLabel: "\u9a8c\u8bc1\u670d\u52a1\u5668",
+    verifyingServerLabel: "\u6b63\u5728\u9a8c\u8bc1...",
+    verifySuccessLabel: "\u9a8c\u8bc1\u6210\u529f",
+    verifyMissingFieldsLabel: "\u8bf7\u5148\u586b\u5199\u7f51\u5740\u3001\u7528\u6237\u540d\u548c\u5bc6\u7801",
+    verifyFailedPrefix: "\u9a8c\u8bc1\u5931\u8d25",
   };
 }
 
@@ -600,11 +626,60 @@ function App() {
   const [projectFilters, setProjectFilters] = useState<string[]>([]);
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
   const [collapsedSnapshot, setCollapsedSnapshot] = useState<Record<string, boolean> | null>(null);
+  const [isWindowFilled, setIsWindowFilled] = useState(false);
   const organizeMenuRef = useRef<HTMLDivElement | null>(null);
   const activeRepoRoot = selectedConversation?.project_dir ?? null;
   const availableHandoffTargets = ["claude", "codex", "gemini"].filter(
     (agent) => agent !== selectedAgent,
   );
+
+  const syncNativeWindowState = useCallback(async () => {
+    try {
+      const [isMaximized, isFullscreen] = await Promise.all([
+        appWindow.isMaximized(),
+        appWindow.isFullscreen(),
+      ]);
+      setIsWindowFilled(isMaximized || isFullscreen);
+    } catch {
+      setIsWindowFilled(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let isDisposed = false;
+    let unlistenResize: (() => void) | null = null;
+
+    const syncIfMounted = async () => {
+      if (!isDisposed) {
+        await syncNativeWindowState();
+      }
+    };
+
+    void syncIfMounted();
+    const onResized =
+      typeof appWindow.onResized === "function" ? appWindow.onResized.bind(appWindow) : null;
+
+    if (onResized) {
+      void onResized(() => {
+        void syncIfMounted();
+      })
+        .then((unlisten) => {
+          if (isDisposed) {
+            unlisten();
+            return;
+          }
+          unlistenResize = unlisten;
+        })
+        .catch(() => {
+          // Browser tests and web previews can run without a native Tauri window.
+        });
+    }
+
+    return () => {
+      isDisposed = true;
+      unlistenResize?.();
+    };
+  }, [syncNativeWindowState]);
 
   useEffect(() => {
     setSelectedConversation(null);
@@ -702,7 +777,7 @@ function App() {
             query: trimmedQuery,
           })
         : await invoke<ConversationSummary[]>("list_conversations", { agent });
-      setConversations(result);
+      setConversations(result.map(normalizeConversationProject));
     } catch (error) {
       console.error("Failed to load conversations:", error);
     } finally {
@@ -717,7 +792,7 @@ function App() {
         agent,
         id,
       });
-      setSelectedConversation(result);
+      setSelectedConversation(normalizeConversationProject(result));
     } catch (error) {
       console.error("Failed to load conversation:", error);
     } finally {
@@ -802,6 +877,20 @@ function App() {
         );
       }, COPY_RESET_DELAY_MS);
     }
+  };
+
+  const handleVerifyWebDavServer = async ({
+    syncSettings,
+    password,
+  }: WebDavVerificationInput) => {
+    await invoke("verify_webdav_server", {
+      webdavScheme: syncSettings.webdavScheme,
+      webdavHost: syncSettings.webdavHost,
+      webdavPath: syncSettings.webdavPath,
+      remotePath: syncSettings.remotePath,
+      username: syncSettings.username,
+      password,
+    });
   };
 
   const handleApproveCandidate = async (candidate: MemoryCandidate) => {
@@ -1010,10 +1099,17 @@ function App() {
   );
 
   const availableProjects = useMemo(
-    () =>
-      Array.from(new Set(sortedConversations.map((conversation) => conversation.project_dir))).sort(
-        (left, right) => left.localeCompare(right),
-      ),
+    () => {
+      const projects = new Map<string, string>();
+      sortedConversations.forEach((conversation) => {
+        const projectDir = normalizeProjectPath(conversation.project_dir);
+        if (projectDir) {
+          projects.set(projectPathKey(projectDir), projectDir);
+        }
+      });
+
+      return Array.from(projects.values()).sort((left, right) => left.localeCompare(right));
+    },
     [sortedConversations],
   );
 
@@ -1022,10 +1118,21 @@ function App() {
       return sortedConversations;
     }
 
+    const filterKeys = new Set(projectFilters.map(projectPathKey));
     return sortedConversations.filter((conversation) =>
-      projectFilters.includes(conversation.project_dir),
+      filterKeys.has(projectPathKey(conversation.project_dir)),
     );
   }, [projectFilters, sortedConversations]);
+
+  const projectConversations = useMemo(
+    () => filteredConversations.filter((conversation) => normalizeProjectPath(conversation.project_dir)),
+    [filteredConversations],
+  );
+
+  const chatConversations = useMemo(
+    () => filteredConversations.filter((conversation) => !normalizeProjectPath(conversation.project_dir)),
+    [filteredConversations],
+  );
 
   const repoLibraryRecords = useMemo(() => {
     if (!activeRepoRoot) {
@@ -1034,7 +1141,7 @@ function App() {
 
     return buildRepoLibraryRecords({
       conversations: sortedConversations.filter(
-        (conversation) => conversation.project_dir === activeRepoRoot,
+        (conversation) => projectPathKey(conversation.project_dir) === projectPathKey(activeRepoRoot),
       ),
       memories: repoMemories,
       checkpoints,
@@ -1057,29 +1164,32 @@ function App() {
   const projectGroups = useMemo<ProjectGroup[]>(() => {
     const groups = new Map<string, ProjectGroup>();
 
-    filteredConversations.forEach((conversation) => {
-      const existing = groups.get(conversation.project_dir);
+    projectConversations.forEach((conversation) => {
+      const projectDir = normalizeProjectPath(conversation.project_dir);
+      const groupKey = projectPathKey(projectDir);
+      const normalizedConversation = normalizeConversationProject(conversation);
+      const existing = groups.get(groupKey);
       if (existing) {
-        existing.conversations.push(conversation);
+        existing.conversations.push(normalizedConversation);
         if (conversation.updated_at > existing.latestAt) {
           existing.latestAt = conversation.updated_at;
         }
         return;
       }
 
-      groups.set(conversation.project_dir, {
-        id: conversation.project_dir,
-        label: getProjectLabel(conversation.project_dir),
-        fullPath: conversation.project_dir,
+      groups.set(groupKey, {
+        id: groupKey,
+        label: getProjectLabel(projectDir),
+        fullPath: projectDir,
         latestAt: conversation.updated_at,
-        conversations: [conversation],
+        conversations: [normalizedConversation],
       });
     });
 
     return Array.from(groups.values()).sort((left, right) =>
       right.latestAt.localeCompare(left.latestAt),
     );
-  }, [filteredConversations]);
+  }, [projectConversations]);
 
   useEffect(() => {
     setExpandedProjects((current) => {
@@ -2292,8 +2402,15 @@ function App() {
     void appWindow.startDragging();
   };
 
+  const handleToggleWindowSize = async () => {
+    await appWindow.toggleMaximize();
+    window.setTimeout(() => {
+      void syncNativeWindowState();
+    }, 0);
+  };
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${isWindowFilled ? "is-window-filled" : ""}`}>
       <header className="app-topbar" data-tauri-drag-region="true" onMouseDown={handleTopbarMouseDown}>
         <div className="topbar-left" data-tauri-drag-region="true">
           <img className="topbar-app-icon" src={brandIcon} alt="ChatMem icon" />
@@ -2315,7 +2432,7 @@ function App() {
             type="button"
             className="window-control-button"
             aria-label="Toggle window size"
-            onClick={() => void appWindow.toggleMaximize()}
+            onClick={() => void handleToggleWindowSize()}
           >
             <WindowButtonIcon type="maximize" />
           </button>
@@ -2508,23 +2625,21 @@ function App() {
               )}
             </section>
 
-            <section className="library-section chats-section">
-              <div className="library-section-header">
-                <div className="library-section-title-row">
-                  <h2>{shell.chatSection}</h2>
-                  <span className="library-count-pill">{filteredConversations.length}</span>
+            {chatConversations.length > 0 ? (
+              <section className="library-section chats-section">
+                <div className="library-section-header">
+                  <div className="library-section-title-row">
+                    <h2>{shell.chatSection}</h2>
+                    <span className="library-count-pill">{chatConversations.length}</span>
+                  </div>
                 </div>
-              </div>
-              {listLoading ? null : filteredConversations.length === 0 ? (
-                <div className="inline-empty-state sidebar-empty">
-                  <div className="inline-empty-body">{shell.noProgressBody}</div>
-                </div>
-              ) : (
-                <div className="chat-list">
-                  {filteredConversations.map((conversation) => renderConversationRow(conversation))}
-                </div>
-              )}
-            </section>
+                {listLoading ? null : (
+                  <div className="chat-list">
+                    {chatConversations.map((conversation) => renderConversationRow(conversation))}
+                  </div>
+                )}
+              </section>
+            ) : null}
           </div>
 
           <button type="button" className="settings-row" onClick={() => setShowSettings(true)}>
@@ -2616,6 +2731,7 @@ function App() {
           });
           setAppSettings(nextSettings);
         }}
+        onVerifyWebDavServer={handleVerifyWebDavServer}
         onCheckUpdates={async () => {
           setUpdateState({ kind: "checking" });
           try {

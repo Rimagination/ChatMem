@@ -91,4 +91,38 @@ describe("Sync settings", () => {
       expect(JSON.stringify(saved.sync)).not.toContain("local-secret");
     });
   });
+
+  it("verifies the WebDAV server with the entered password and shows success", async () => {
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    fireEvent.click(await screen.findByLabelText("Conversation data sync method:"));
+    fireEvent.change(screen.getByLabelText("Protocol"), {
+      target: { value: "https" },
+    });
+    fireEvent.change(screen.getByLabelText("Server and path"), {
+      target: { value: "example.com/webdav" },
+    });
+    fireEvent.change(screen.getByLabelText("Username"), {
+      target: { value: "liang@example.com" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "local-secret" },
+    });
+
+    mockInvoke.mockResolvedValueOnce(undefined);
+    fireEvent.click(screen.getByRole("button", { name: "Verify server" }));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("verify_webdav_server", {
+        webdavScheme: "https",
+        webdavHost: "example.com",
+        webdavPath: "webdav",
+        remotePath: "chatmem",
+        username: "liang@example.com",
+        password: "local-secret",
+      });
+      expect(screen.getByText("Verification successful")).toBeTruthy();
+    });
+  });
 });
