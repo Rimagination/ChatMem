@@ -56,6 +56,44 @@ ChatMem 现在可以作为 Codex 的本地 MCP 记忆服务使用，用来给仓
 
 - [ChatMem MCP Setup](./docs/CHATMEM_MCP_SETUP.md)
 
+## Codex / Agent 接入
+
+桌面应用负责查看、搜索、迁移和管理本地对话；MCP 负责让 Codex 这类 agent 读取项目记忆、搜索历史、生成交接包。两者可以一起用，也可以只用桌面应用。
+
+如果要让 Codex 调用 ChatMem，先构建本地 MCP：
+
+```powershell
+cd C:\path\to\ChatMem\src-tauri
+cargo build --release --bin chatmem-mcp
+```
+
+然后把下面的配置加入 `%USERPROFILE%\.codex\config.toml`，注意把路径换成你自己的 ChatMem 仓库位置：
+
+```toml
+[mcp_servers.chatmem]
+command = "powershell"
+args = [
+  "-NoProfile",
+  "-ExecutionPolicy",
+  "Bypass",
+  "-File",
+  "C:\\path\\to\\ChatMem\\mcp\\run-chatmem-mcp.ps1",
+]
+startup_timeout_sec = 20
+tool_timeout_sec = 120
+enabled = true
+```
+
+改完后完全退出并重新打开 Codex。ChatMem 不会出现在 `@chatmem` 这种对话提及列表里，它是 agent 后台可调用的 MCP 工具。
+
+Skill 是可选增强：MCP 提供工具，skill 告诉 agent 什么时候应该读取记忆、什么时候应该生成交接包。安装方式是把 `skills/chatmem` 复制到 `%USERPROFILE%\.codex\skills\chatmem`。
+
+可以在新线程里这样提示 agent：
+
+```text
+Use ChatMem to load repo memory for D:\your\repo, then continue from the latest checkpoint or handoff if one exists.
+```
+
 ## 本地开发
 
 环境要求：
@@ -75,7 +113,7 @@ npm run tauri build
 
 ## 发布
 
-发布由 GitHub Actions 处理。推送形如 `v0.1.5` 的 tag 后，工作流会自动：
+发布由 GitHub Actions 处理。推送形如 `v0.1.6` 的 tag 后，工作流会自动：
 
 - 构建 Windows NSIS 安装包
 - 构建 Windows MSI 安装包

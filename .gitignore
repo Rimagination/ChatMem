@@ -1,6 +1,9 @@
 node_modules/
 dist/
 dist-portable/
+.tauri-target-build/
+.playwright-cli/
+output/
 src-tauri/target/
 .worktrees/
 __pycache__/

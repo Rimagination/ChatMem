@@ -18,6 +18,14 @@ vi.mock("@tauri-apps/api/process", () => ({
   relaunch: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@tauri-apps/api/window", () => ({
+  appWindow: {
+    minimize: vi.fn(),
+    toggleMaximize: vi.fn(),
+    close: vi.fn(),
+  },
+}));
+
 function renderApp() {
   return render(
     <I18nProvider>
@@ -66,6 +74,10 @@ describe("Runs workspace", () => {
         };
       }
 
+      if (command === "list_repo_memories" || command === "list_memory_candidates") {
+        return [];
+      }
+
       if (command === "list_runs") {
         return [
           {
@@ -86,18 +98,19 @@ describe("Runs workspace", () => {
     });
   });
 
-  it("renders run status and artifact count", async () => {
+  it("keeps run history outside the simplified conversation workspace", async () => {
     renderApp();
 
-    fireEvent.click(await screen.findByText("Runs timeline"));
-    fireEvent.click(await screen.findByRole("button", { name: "Runs" }));
+    fireEvent.click((await screen.findAllByText("Runs timeline"))[0]);
 
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith("list_runs", {
-        repoRoot: "D:/VSP/agentswap-gui",
-      });
-      expect(screen.getByText("waiting_for_review")).toBeTruthy();
-      expect(screen.getByText("2 artifacts")).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Runs timeline" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Migrate" })).toBeTruthy();
+      expect(screen.getByText("Conversation file location")).toBeTruthy();
     });
+
+    expect(screen.queryByRole("button", { name: "History" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Outputs" })).toBeNull();
+    expect(mockInvoke).not.toHaveBeenCalledWith("list_runs", expect.anything());
   });
 });

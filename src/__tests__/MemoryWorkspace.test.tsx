@@ -18,6 +18,14 @@ vi.mock("@tauri-apps/api/process", () => ({
   relaunch: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@tauri-apps/api/window", () => ({
+  appWindow: {
+    minimize: vi.fn(),
+    toggleMaximize: vi.fn(),
+    close: vi.fn(),
+  },
+}));
+
 function renderApp() {
   return render(
     <I18nProvider>
@@ -30,6 +38,10 @@ describe("Memory workspace", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
     localStorage.clear();
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+    );
 
     mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
       if (command === "list_conversations") {
@@ -103,30 +115,31 @@ describe("Memory workspace", () => {
     });
   });
 
-  it("loads repository memory when switching to the repo memory tab", async () => {
+  it("surfaces project memory and memory candidates beside the selected conversation", async () => {
     renderApp();
 
-    fireEvent.click(await screen.findByText("Memory workflow"));
-    fireEvent.click(await screen.findByRole("button", { name: "Repo Memory" }));
+    fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
 
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith("list_repo_memories", {
-        repoRoot: "D:/VSP/agentswap-gui",
-      });
+      expect(screen.getByRole("heading", { name: "Memory workflow" })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Project Memory" })).toBeTruthy();
       expect(screen.getByText("Primary verification")).toBeTruthy();
       expect(screen.getByText("npm run test:run")).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Memory Candidates" })).toBeTruthy();
+      expect(screen.getByText("Review pending memory")).toBeTruthy();
     });
+
+    expect(screen.queryByRole("button", { name: "Memory Inbox" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Repo Memory" })).toBeNull();
   });
 
-  it("reviews a pending memory candidate from the inbox", async () => {
+  it("reviews a pending memory candidate from the side panel", async () => {
     renderApp();
 
-    fireEvent.click(await screen.findByText("Memory workflow"));
-    fireEvent.click(await screen.findByRole("button", { name: "Memory Inbox" }));
-
+    fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
     expect(await screen.findByText("Review pending memory")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("review_memory_candidate", {

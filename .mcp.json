@@ -7,9 +7,9 @@
         "-ExecutionPolicy",
         "Bypass",
         "-File",
-        "./scripts/run-chatmem-mcp.ps1"
+        "./mcp/run-chatmem-mcp.ps1"
       ],
-      "note": "Launches the local chatmem-mcp stdio server for repository memory, history search, candidate writes, and handoffs."
+      "note": "Launches the local chatmem-mcp stdio server for repository memory, history search, candidate writes, checkpoints, and handoffs."
     }
   }
 }

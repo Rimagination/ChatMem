@@ -1,6 +1,6 @@
 [package]
 name = "chatmem"
-version = "0.1.5"
+version = "0.1.6"
 default-run = "chatmem"
 description = "ChatMem - Your AI conversations, forever remembered"
 authors = ["ChatMem"]
@@ -13,7 +13,7 @@ tauri-build = { version = "1", features = [] }
 [dependencies]
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
-tauri = { version = "1", features = ["shell-open", "updater"] }
+tauri = { version = "1", features = [ "window-all", "shell-open", "updater"] }
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "v5", "serde"] }

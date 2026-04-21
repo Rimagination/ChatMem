@@ -2,15 +2,10 @@ param()
 
 $ErrorActionPreference = "Stop"
 
-$pluginRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$repoRootFile = Join-Path $pluginRoot "repo-root.txt"
-
 if ($env:CHATMEM_REPO_ROOT) {
   $repoRoot = (Resolve-Path $env:CHATMEM_REPO_ROOT).Path
-} elseif (Test-Path $repoRootFile) {
-  $repoRoot = (Resolve-Path (Get-Content $repoRootFile -Raw).Trim()).Path
 } else {
-  $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
+  $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 }
 
 function Resolve-ChatMemMcpBinary {
@@ -20,6 +15,7 @@ function Resolve-ChatMemMcpBinary {
 
   $candidates = @(
     (Join-Path $repoRoot "src-tauri\target\release\chatmem-mcp.exe"),
+    (Join-Path $repoRoot ".tauri-target-build\release\chatmem-mcp.exe"),
     (Join-Path $repoRoot "src-tauri\target\debug\chatmem-mcp.exe")
   )
 
@@ -34,7 +30,7 @@ function Resolve-ChatMemMcpBinary {
 
 $binary = Resolve-ChatMemMcpBinary
 if (-not $binary) {
-  throw "chatmem-mcp binary not found. Build D:\VSP\agentswap-gui\src-tauri first or set CHATMEM_MCP_BIN."
+  throw "chatmem-mcp binary not found. Build the MCP server with cargo build --release --bin chatmem-mcp, or set CHATMEM_MCP_BIN."
 }
 
 & $binary

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import { I18nProvider } from "../i18n/I18nProvider";
@@ -18,6 +18,14 @@ vi.mock("@tauri-apps/api/process", () => ({
   relaunch: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@tauri-apps/api/window", () => ({
+  appWindow: {
+    minimize: vi.fn(),
+    toggleMaximize: vi.fn(),
+    close: vi.fn(),
+  },
+}));
+
 function renderApp() {
   return render(
     <I18nProvider>
@@ -30,8 +38,10 @@ describe("Memory freshness", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
     localStorage.clear();
-
-    let repoMemoryReads = 0;
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+    );
 
     mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
       if (command === "list_conversations") {
@@ -65,7 +75,6 @@ describe("Memory freshness", () => {
       }
 
       if (command === "list_repo_memories") {
-        repoMemoryReads += 1;
         return [
           {
             memory_id: "mem-stale",
@@ -74,19 +83,15 @@ describe("Memory freshness", () => {
             value: "npm run test:run",
             usage_hint: "Use before merge",
             status: "active",
-            last_verified_at: repoMemoryReads > 1 ? "2026-04-20T08:30:00Z" : "2026-04-10T08:30:00Z",
-            freshness_status: repoMemoryReads > 1 ? "fresh" : "stale",
-            freshness_score: repoMemoryReads > 1 ? 0.98 : 0.26,
-            verified_at: repoMemoryReads > 1 ? "2026-04-20T08:30:00Z" : "2026-04-10T08:30:00Z",
-            verified_by: repoMemoryReads > 1 ? "claude" : "codex",
+            last_verified_at: "2026-04-10T08:30:00Z",
+            freshness_status: "stale",
+            freshness_score: 0.26,
+            verified_at: "2026-04-10T08:30:00Z",
+            verified_by: "codex",
             selected_because: null,
             evidence_refs: [{ excerpt: "Verified against the current test workflow." }],
           },
         ];
-      }
-
-      if (command === "reverify_memory") {
-        return null;
       }
 
       if (command === "list_memory_candidates") {
@@ -97,138 +102,18 @@ describe("Memory freshness", () => {
     });
   });
 
-  it("shows freshness state and lets the reviewer re-verify a stale memory", async () => {
+  it("shows repository memory in the side panel without a separate review page", async () => {
     renderApp();
 
-    fireEvent.click(await screen.findByText("Freshness workflow"));
-    fireEvent.click(await screen.findByRole("button", { name: "Repo Memory" }));
-
-    expect(await screen.findByText("Stale verification command")).toBeTruthy();
-    expect(screen.getByText("stale")).toBeTruthy();
-    expect(screen.getByText(/last verified/i)).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "Re-verify" }));
+    fireEvent.click((await screen.findAllByText("Freshness workflow"))[0]);
 
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith("reverify_memory", {
-        memoryId: "mem-stale",
-        verifiedBy: "claude",
-      });
+      expect(screen.getByRole("heading", { name: "Project Memory" })).toBeTruthy();
+      expect(screen.getByText("Stale verification command")).toBeTruthy();
+      expect(screen.getByText("Use before merge")).toBeTruthy();
     });
 
-    await waitFor(() => {
-      expect(screen.getByText("fresh")).toBeTruthy();
-    });
-  });
-
-  it("treats needs_review and stale as waiting to re-verify while excluding unknown", async () => {
-    mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
-      if (command === "list_conversations") {
-        return [
-          {
-            id: "conv-001",
-            source_agent: payload?.agent ?? "claude",
-            project_dir: "D:/VSP/agentswap-gui",
-            created_at: "2026-04-19T08:00:00Z",
-            updated_at: "2026-04-19T09:00:00Z",
-            summary: "Freshness workflow",
-            message_count: 3,
-            file_count: 2,
-          },
-        ];
-      }
-
-      if (command === "read_conversation") {
-        return {
-          id: "conv-001",
-          source_agent: payload?.agent ?? "claude",
-          project_dir: "D:/VSP/agentswap-gui",
-          created_at: "2026-04-19T08:00:00Z",
-          updated_at: "2026-04-19T09:00:00Z",
-          summary: "Freshness workflow",
-          storage_path: "C:/Users/demo/.claude/projects/conv-001.jsonl",
-          resume_command: "claude --resume conv-001",
-          messages: [],
-          file_changes: [],
-        };
-      }
-
-      if (command === "list_repo_memories") {
-        return [
-          {
-            memory_id: "mem-needs-review",
-            kind: "command",
-            title: "Needs review command",
-            value: "npm run lint",
-            usage_hint: "Use after refactors",
-            status: "active",
-            last_verified_at: "2026-04-05T08:30:00Z",
-            freshness_status: "needs_review",
-            freshness_score: 0.55,
-            verified_at: "2026-04-05T08:30:00Z",
-            verified_by: "claude",
-            selected_because: null,
-            evidence_refs: [],
-          },
-          {
-            memory_id: "mem-stale",
-            kind: "command",
-            title: "Stale verification command",
-            value: "npm run test:run",
-            usage_hint: "Use before merge",
-            status: "active",
-            last_verified_at: "2026-03-01T08:30:00Z",
-            freshness_status: "stale",
-            freshness_score: 0.2,
-            verified_at: "2026-03-01T08:30:00Z",
-            verified_by: "codex",
-            selected_because: null,
-            evidence_refs: [],
-          },
-          {
-            memory_id: "mem-fresh",
-            kind: "command",
-            title: "Fresh verification command",
-            value: "npm run test:watch",
-            usage_hint: "Use when iterating locally",
-            status: "active",
-            last_verified_at: "2026-04-18T08:30:00Z",
-            freshness_status: "fresh",
-            freshness_score: 1,
-            verified_at: "2026-04-18T08:30:00Z",
-            verified_by: "codex",
-            selected_because: null,
-            evidence_refs: [],
-          },
-        ];
-      }
-
-      if (command === "list_memory_candidates") {
-        return [];
-      }
-
-      return null;
-    });
-
-    renderApp();
-
-    fireEvent.click(await screen.findByText("Freshness workflow"));
-    fireEvent.click(await screen.findByRole("button", { name: "Approvals" }));
-
-    const waitingLabel = (await screen.findAllByText("Waiting to Re-verify")).find(
-      (element) => element.tagName === "SPAN",
-    );
-    const waitingCard = waitingLabel?.closest("article");
-    const staleSectionLabel = (await screen.findAllByText("Waiting to Re-verify")).find(
-      (element) => element.tagName === "H4",
-    );
-    const staleCard = staleSectionLabel?.closest(".approval-section");
-
-    expect(waitingCard).toBeTruthy();
-    expect(staleCard).toBeTruthy();
-    expect(within(waitingCard as HTMLElement).getByText("2")).toBeTruthy();
-    expect(screen.getByText("Needs review command")).toBeTruthy();
-    expect(screen.getByText("Stale verification command")).toBeTruthy();
-    expect(screen.queryByText("Unknown verification command")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Needs Review" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Re-verify" })).toBeNull();
   });
 });

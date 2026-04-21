@@ -2,11 +2,18 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import { I18nProvider } from "../i18n/I18nProvider";
+import { truncateSidebarTitle, truncateWorkspaceTitle } from "../utils/titleUtils";
 
 const mockInvoke = vi.fn();
 const mockCheckUpdate = vi.fn();
 const mockInstallUpdate = vi.fn();
 const mockRelaunch = vi.fn();
+const mockMinimize = vi.fn();
+const mockToggleMaximize = vi.fn();
+const mockClose = vi.fn();
+const mockStartDragging = vi.fn();
+const longConversationTitle =
+  "You are Task 6 的独立代码质量 reviewer。请在工作树 D:\\VSP\\agentswap-gui\\.worktrees\\chatmem-control-plane-v2 review 最新提交，重点寻找真实风险，而不是泛泛建议。";
 
 vi.mock("@tauri-apps/api/tauri", () => ({
   invoke: (...args: unknown[]) => mockInvoke(...args),
@@ -19,6 +26,15 @@ vi.mock("@tauri-apps/api/updater", () => ({
 
 vi.mock("@tauri-apps/api/process", () => ({
   relaunch: () => mockRelaunch(),
+}));
+
+vi.mock("@tauri-apps/api/window", () => ({
+  appWindow: {
+    minimize: () => mockMinimize(),
+    toggleMaximize: () => mockToggleMaximize(),
+    close: () => mockClose(),
+    startDragging: () => mockStartDragging(),
+  },
 }));
 
 function renderApp() {
@@ -35,6 +51,10 @@ describe("App", () => {
     mockCheckUpdate.mockReset();
     mockInstallUpdate.mockReset();
     mockRelaunch.mockReset();
+    mockMinimize.mockReset();
+    mockToggleMaximize.mockReset();
+    mockClose.mockReset();
+    mockStartDragging.mockReset();
     localStorage.clear();
     vi.useRealTimers();
     vi.stubGlobal("alert", vi.fn());
@@ -67,10 +87,45 @@ describe("App", () => {
             message_count: 2,
             file_count: 1,
           },
+          {
+            id: "conv-002",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/PV/service",
+            created_at: "2026-04-08T10:00:00Z",
+            updated_at: "2026-04-08T11:00:00Z",
+            summary: "Memory investigation",
+            message_count: 4,
+            file_count: 0,
+          },
+          {
+            id: "conv-long",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/VSP/agentswap-gui/.worktrees/chatmem-control-plane-v2",
+            created_at: "2026-04-08T12:00:00Z",
+            updated_at: "2026-04-08T12:30:00Z",
+            summary: longConversationTitle,
+            message_count: 19,
+            file_count: 0,
+          },
         ];
       }
 
       if (command === "read_conversation") {
+        if (payload?.id === "conv-long") {
+          return {
+            id: "conv-long",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/VSP/agentswap-gui/.worktrees/chatmem-control-plane-v2",
+            created_at: "2026-04-08T12:00:00Z",
+            updated_at: "2026-04-08T12:30:00Z",
+            summary: longConversationTitle,
+            storage_path: "C:/Users/demo/.codex/sessions/2026/04/08/rollout-conv-long.jsonl",
+            resume_command: "codex resume conv-long",
+            messages: [],
+            file_changes: [],
+          };
+        }
+
         if (payload?.id === "migrated-001") {
           return {
             id: "migrated-001",
@@ -95,7 +150,16 @@ describe("App", () => {
           summary: "Debug session",
           storage_path: "C:/Users/demo/.codex/sessions/2026/04/08/rollout-conv-001.jsonl",
           resume_command: "codex resume conv-001",
-          messages: [],
+          messages: [
+            {
+              id: "msg-001",
+              timestamp: "2026-04-08T08:00:00Z",
+              role: "user",
+              content: "Fix the memory view",
+              tool_calls: [],
+              metadata: {},
+            },
+          ],
           file_changes: [],
         };
       }
@@ -105,7 +169,7 @@ describe("App", () => {
           {
             id: "conv-002",
             source_agent: payload?.agent ?? "claude",
-            project_dir: "D:/VSP/service",
+            project_dir: "D:/PV/service",
             created_at: "2026-04-08T10:00:00Z",
             updated_at: "2026-04-08T11:00:00Z",
             summary: "Memory investigation",
@@ -115,8 +179,38 @@ describe("App", () => {
         ];
       }
 
+      if (command === "list_repo_memories") {
+        return [
+          {
+            memory_id: "mem-001",
+            kind: "project_rule",
+            title: "Use ChatMem for cross-agent continuation",
+            value: "Prefer memory handoff over pasting long transcripts.",
+            usage_hint: "Load this before resuming the project in another agent.",
+            status: "active",
+            last_verified_at: null,
+            freshness_status: "fresh",
+            freshness_score: 1,
+            verified_at: null,
+            verified_by: null,
+            evidence_refs: [],
+          },
+        ];
+      }
+
       if (command === "migrate_conversation") {
         return "migrated-001";
+      }
+
+      if (
+        command === "list_memory_candidates" ||
+        command === "list_handoffs" ||
+        command === "list_checkpoints" ||
+        command === "list_runs" ||
+        command === "list_artifacts" ||
+        command === "list_episodes"
+      ) {
+        return [];
       }
 
       return [];
@@ -127,36 +221,7 @@ describe("App", () => {
     mockRelaunch.mockResolvedValue(undefined);
   });
 
-  it("restores the saved language and renders the English shell copy", async () => {
-    localStorage.setItem(
-      "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: true }),
-    );
-
-    renderApp();
-
-    expect(
-      await screen.findByText("Your local AI conversations, ready to resume"),
-    ).toBeTruthy();
-    expect(screen.getByPlaceholderText("Search conversations...")).toBeTruthy();
-  });
-
-  it("opens settings and switches the interface language to English", async () => {
-    renderApp();
-
-    const settingsButton = document.querySelector(".toolbar-button") as HTMLButtonElement | null;
-    expect(settingsButton).toBeTruthy();
-    fireEvent.click(settingsButton!);
-
-    const localeSelect = document.querySelector("select") as HTMLSelectElement | null;
-    expect(localeSelect).toBeTruthy();
-    fireEvent.change(localeSelect!, { target: { value: "en" } });
-
-    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Check for updates" })).toBeTruthy();
-  });
-
-  it("runs a manual update check from settings", async () => {
+  it("renders a simple conversation manager shell without dashboard navigation", async () => {
     localStorage.setItem(
       "chatmem.settings",
       JSON.stringify({ locale: "en", autoCheckUpdates: false }),
@@ -164,56 +229,76 @@ describe("App", () => {
 
     renderApp();
 
-    const settingsButton = document.querySelector(".toolbar-button") as HTMLButtonElement | null;
-    expect(settingsButton).toBeTruthy();
-    fireEvent.click(settingsButton!);
-    fireEvent.click(await screen.findByRole("button", { name: "Check for updates" }));
-
-    await waitFor(() => {
-      expect(mockCheckUpdate).toHaveBeenCalledTimes(1);
-    });
+    expect(await screen.findByText("ChatMem v0.1.6")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Continue Work" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Needs Review" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "History" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Help" })).toBeNull();
+    expect(screen.getByText("Projects")).toBeTruthy();
+    expect(screen.getByText("Chats")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Choose a conversation" })).toBeTruthy();
   });
 
-  it("auto-checks for updates on launch when enabled", async () => {
-    vi.useFakeTimers();
+  it("starts native window dragging from the top bar without hijacking controls", async () => {
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: true }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
     );
-    mockCheckUpdate.mockResolvedValue({
-      shouldUpdate: true,
-      manifest: {
-        version: "0.1.5",
-        date: "2026-04-08T12:00:00Z",
-        body: "Bug fixes",
-      },
-    });
 
     renderApp();
 
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3600);
-    });
+    const title = await screen.findByText("ChatMem v0.1.6");
+    const topbar = title.closest(".app-topbar");
+    expect(topbar).toBeTruthy();
 
-    expect(mockCheckUpdate).toHaveBeenCalledTimes(1);
-    expect(screen.getByText(/0\.1\.5/)).toBeTruthy();
+    fireEvent.mouseDown(topbar!, { button: 0 });
+    expect(mockStartDragging).toHaveBeenCalledTimes(1);
+
+    fireEvent.mouseDown(screen.getByRole("button", { name: "Settings" }), { button: 0 });
+    expect(mockStartDragging).toHaveBeenCalledTimes(1);
   });
 
-  it("renders file location and copy actions for the selected conversation", async () => {
+  it("shows conversation details, migration, copy actions, and memory in one workspace", async () => {
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+    );
+
     renderApp();
 
-    expect(document.querySelectorAll(".toolbar-button").length).toBeGreaterThanOrEqual(2);
-
-    const conversation = await screen.findByText("Debug session");
-    fireEvent.click(conversation);
+    fireEvent.click((await screen.findAllByText("Debug session"))[0]);
 
     await waitFor(() => {
-      expect(
-        screen.getByText("C:/Users/demo/.codex/sessions/2026/04/08/rollout-conv-001.jsonl"),
-      ).toBeTruthy();
-      expect(screen.getByRole("button", { name: "复制位置" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "复制恢复命令" })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Debug session" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Copy location" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Copy resume command" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Migrate" })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Project Memory" })).toBeTruthy();
+      expect(screen.getByText("Use ChatMem for cross-agent continuation")).toBeTruthy();
+      expect(screen.queryByRole("heading", { name: "Suggested Next Step" })).toBeNull();
+      expect(screen.queryByRole("heading", { name: "Recent Transfers" })).toBeNull();
     });
+  });
+
+  it("truncates very long workspace titles while keeping the full title available", async () => {
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+    );
+
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText(truncateSidebarTitle(longConversationTitle)))[0]);
+
+    const heading = await screen.findByRole("heading", {
+      name: truncateWorkspaceTitle(longConversationTitle),
+    });
+
+    expect(heading.getAttribute("title")).toBe(longConversationTitle);
+    const workspacePath = document.querySelector(".conversation-title-block span");
+    expect(workspacePath?.getAttribute("title")).toBe(
+      "D:/VSP/agentswap-gui/.worktrees/chatmem-control-plane-v2",
+    );
   });
 
   it("searches conversations by message body content", async () => {
@@ -232,26 +317,20 @@ describe("App", () => {
         agent: "claude",
         query: "memory leak",
       });
-      expect(screen.getByText("Memory investigation")).toBeTruthy();
+      expect(screen.getAllByText("Memory investigation").length).toBeGreaterThan(0);
     });
   });
 
-  it("switches to the target agent and opens the migrated conversation", async () => {
+  it("keeps migration working from the selected conversation detail", async () => {
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+    );
+
     renderApp();
 
-    fireEvent.click(await screen.findByText("Debug session"));
-
-    await waitFor(() => {
-      expect(
-        screen.getByText("C:/Users/demo/.codex/sessions/2026/04/08/rollout-conv-001.jsonl"),
-      ).toBeTruthy();
-    });
-
-    const migrateButton = document.querySelector(
-      ".content-header-actions .btn.btn-secondary",
-    ) as HTMLButtonElement | null;
-    expect(migrateButton).toBeTruthy();
-    fireEvent.click(migrateButton!);
+    fireEvent.click((await screen.findAllByText("Debug session"))[0]);
+    fireEvent.click(await screen.findByRole("button", { name: "Migrate" }));
 
     const confirmButton = document.querySelector(
       ".modal-actions .btn.btn-primary",
@@ -273,57 +352,48 @@ describe("App", () => {
         agent: "codex",
         id: "migrated-001",
       });
-      expect(screen.getByText("Migrated session")).toBeTruthy();
+      expect(screen.getAllByText("Migrated session").length).toBeGreaterThan(0);
     });
   });
 
-  it("truncates the workspace heading like Codex app while preserving the full title", async () => {
-    const longTitle =
-      "你是最终收口补丁的独立代码质量 reviewer，请在工作树 D:\\VSP\\agentswap-gui\\.worktrees\\chatmem-control-plane-v2 review 最新提交 16a39b2";
+  it("runs a manual update check from settings", async () => {
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+    );
 
-    mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
-      if (command === "list_conversations") {
-        return [
-          {
-            id: "conv-long",
-            source_agent: payload?.agent ?? "claude",
-            project_dir: "D:/VSP/demo",
-            created_at: "2026-04-08T08:00:00Z",
-            updated_at: "2026-04-08T09:00:00Z",
-            summary: longTitle,
-            message_count: 2,
-            file_count: 1,
-          },
-        ];
-      }
+    renderApp();
 
-      if (command === "read_conversation") {
-        return {
-          id: "conv-long",
-          source_agent: payload?.agent ?? "claude",
-          project_dir: "D:/VSP/demo",
-          created_at: "2026-04-08T08:00:00Z",
-          updated_at: "2026-04-08T09:00:00Z",
-          summary: longTitle,
-          storage_path: "C:/Users/demo/.codex/sessions/2026/04/08/rollout-conv-long.jsonl",
-          resume_command: "codex resume conv-long",
-          messages: [],
-          file_changes: [],
-        };
-      }
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Check for updates" }));
 
-      return [];
+    await waitFor(() => {
+      expect(mockCheckUpdate).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("auto-checks for updates on launch when enabled", async () => {
+    vi.useFakeTimers();
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: true }),
+    );
+    mockCheckUpdate.mockResolvedValue({
+      shouldUpdate: true,
+      manifest: {
+        version: "0.1.7",
+        date: "2026-04-08T12:00:00Z",
+        body: "Bug fixes",
+      },
     });
 
     renderApp();
 
-    fireEvent.click(await screen.findByTitle(longTitle));
-
-    await waitFor(() => {
-      const heading = screen.getByRole("heading", { level: 2 });
-      expect(heading.textContent).not.toBe(longTitle);
-      expect(heading.textContent?.endsWith("...")).toBe(true);
-      expect(heading.getAttribute("title")).toBe(longTitle);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3600);
     });
+
+    expect(mockCheckUpdate).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByText(/0\.1\.7/).length).toBeGreaterThan(0);
   });
 });
