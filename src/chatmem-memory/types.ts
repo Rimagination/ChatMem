@@ -56,6 +56,20 @@ export type EpisodeRecord = {
   evidence_refs: EvidenceRef[];
 };
 
+export type WikiPage = {
+  page_id: string;
+  repo_root: string;
+  slug: string;
+  title: string;
+  body: string;
+  status: string;
+  source_memory_ids: string[];
+  source_episode_ids: string[];
+  last_built_at: string;
+  last_verified_at: string | null;
+  updated_at: string;
+};
+
 export type RunRecord = {
   run_id: string;
   repo_root: string;

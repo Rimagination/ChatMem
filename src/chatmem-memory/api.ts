@@ -10,6 +10,7 @@ import type {
   HandoffPacket,
   MemoryCandidate,
   RunRecord,
+  WikiPage,
 } from "./types";
 
 export function listRepoMemories(repoRoot: string) {
@@ -36,6 +37,14 @@ export function reverifyMemory(payload: { memoryId: string; verifiedBy: string }
 
 export function listEpisodes(repoRoot: string) {
   return invoke<EpisodeRecord[]>("list_episodes", { repoRoot });
+}
+
+export function listWikiPages(repoRoot: string) {
+  return invoke<WikiPage[]>("list_wiki_pages", { repoRoot });
+}
+
+export function rebuildRepoWiki(repoRoot: string) {
+  return invoke<WikiPage[]>("rebuild_repo_wiki", { repoRoot });
 }
 
 export function listHandoffs(repoRoot: string) {

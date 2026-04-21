@@ -763,10 +763,53 @@ button {
   gap: 12px;
 }
 
+.memory-panel-heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .memory-panel-header h2 {
   margin: 0;
   font-size: 16px;
   line-height: 1.2;
+}
+
+.memory-panel-subtitle {
+  margin: -4px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.memory-section-badge,
+.memory-card-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.memory-section-badge-source {
+  color: var(--accent-strong);
+  background: rgba(58, 143, 100, 0.12);
+}
+
+.memory-section-badge-projection {
+  color: #5e6170;
+  background: rgba(79, 84, 105, 0.11);
+}
+
+.memory-section-badge-review {
+  color: #775f1b;
+  background: rgba(146, 112, 21, 0.12);
 }
 
 .memory-card-list {
@@ -783,9 +826,50 @@ button {
   background: rgba(255, 255, 255, 0.72);
 }
 
+.memory-card-source {
+  border-left: 3px solid rgba(58, 143, 100, 0.5);
+}
+
+.memory-card-projection {
+  border-left: 3px solid rgba(79, 84, 105, 0.34);
+  background: rgba(255, 255, 255, 0.64);
+}
+
+.memory-card-review {
+  border-left: 3px solid rgba(146, 112, 21, 0.36);
+}
+
+.memory-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.memory-card-header > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
 .memory-card strong {
   color: var(--text-primary);
   font-size: 13px;
+}
+
+.memory-card-kind {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.memory-card-status {
+  flex: 0 0 auto;
+  max-width: 120px;
+  overflow: hidden;
+  color: var(--text-secondary);
+  background: rgba(22, 32, 24, 0.05);
+  text-overflow: ellipsis;
 }
 
 .memory-card p,
@@ -1756,6 +1840,8 @@ button {
 
 .webdav-verify-row {
   display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   padding-left: 82px;
 }
 

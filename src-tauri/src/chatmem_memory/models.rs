@@ -119,6 +119,26 @@ pub struct SearchHistoryPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WikiPageResponse {
+    pub page_id: String,
+    pub repo_root: String,
+    pub slug: String,
+    pub title: String,
+    pub body: String,
+    pub status: String,
+    pub source_memory_ids: Vec<String>,
+    pub source_episode_ids: Vec<String>,
+    pub last_built_at: String,
+    pub last_verified_at: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListWikiPagesPayload {
+    pub pages: Vec<WikiPageResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ListMemoryCandidatesPayload {
     pub candidates: Vec<MemoryCandidateResponse>,
 }

@@ -241,7 +241,7 @@ describe("App", () => {
 
     renderApp();
 
-    expect(await screen.findByText("ChatMem v0.1.7")).toBeTruthy();
+    expect(await screen.findByText("ChatMem v0.1.8")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Continue Work" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Needs Review" })).toBeNull();
     expect(screen.queryByRole("button", { name: "History" })).toBeNull();
@@ -330,7 +330,7 @@ describe("App", () => {
 
     renderApp();
 
-    const title = await screen.findByText("ChatMem v0.1.7");
+    const title = await screen.findByText("ChatMem v0.1.8");
     const topbar = title.closest(".app-topbar");
     expect(topbar).toBeTruthy();
 
@@ -350,7 +350,7 @@ describe("App", () => {
 
     const { container } = renderApp();
 
-    await screen.findByText("ChatMem v0.1.7");
+    await screen.findByText("ChatMem v0.1.8");
 
     await waitFor(() => {
       expect(container.querySelector(".app-shell")?.classList.contains("is-window-filled")).toBe(
@@ -482,7 +482,7 @@ describe("App", () => {
     mockCheckUpdate.mockResolvedValue({
       shouldUpdate: true,
       manifest: {
-        version: "0.1.7",
+        version: "0.1.9",
         date: "2026-04-08T12:00:00Z",
         body: "Bug fixes",
       },
@@ -495,6 +495,6 @@ describe("App", () => {
     });
 
     expect(mockCheckUpdate).toHaveBeenCalledTimes(1);
-    expect(screen.getAllByText(/0\.1\.7/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/0\.1\.9/).length).toBeGreaterThan(0);
   });
 });

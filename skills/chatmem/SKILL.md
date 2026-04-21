@@ -7,7 +7,7 @@ description: Use when entering a repository that relies on ChatMem, resuming int
 
 ## Core Principle
 
-ChatMem is an MCP-first memory and continuation layer. This skill is only the operating guide: use it to decide when and how to call the ChatMem MCP server.
+ChatMem is an MCP-first memory and continuation layer. Approved memory is the source of truth; generated wiki pages are readable projections rebuilt from approved memory and episodes. This skill is only the operating guide: use it to decide when and how to call the ChatMem MCP server.
 
 Do not ask the user to paste full historical transcripts when ChatMem can provide repo memory, checkpoints, handoffs, or targeted history.
 
@@ -31,9 +31,10 @@ Do not use it for general web search, unrelated memory, or one-off notes that wi
 2. Call `get_repo_memory` for the repo before substantial work.
 3. If the goal is continuation, inspect the freshest checkpoint or handoff returned by ChatMem before searching raw history.
 4. Call `search_repo_history` only for specific gaps: prior decisions, commands, key files, errors, or earlier attempts.
-5. Use the smallest useful context. Prefer memory, checkpoints, handoffs, and targeted search results over replaying raw conversation logs.
-6. When a stable fact should survive this thread, call `create_memory_candidate` with concise text and evidence.
-7. Before another agent continues the task, call `build_handoff_packet` instead of asking the user to copy the full conversation.
+5. Use the smallest useful context. Prefer approved memory, generated wiki pages, checkpoints, handoffs, and targeted search results over replaying raw conversation logs.
+6. Use `list_repo_wiki_pages` or `rebuild_repo_wiki` when the user asks for a readable project wiki, commands, gotchas, or recent-work pages. Treat those pages as generated projections, not editable source material.
+7. When a stable fact should survive this thread, call `create_memory_candidate` with concise text and evidence.
+8. Before another agent continues the task, call `build_handoff_packet` instead of asking the user to copy the full conversation.
 
 ## Continuation Prompts
 
@@ -57,6 +58,7 @@ Good candidates are durable, repo-scoped, and useful at startup:
 - known compatibility rules
 - stable user preferences for this repo
 - repeatable handoff or verification requirements
+- sync/release caveats that affect future local work
 
 Bad candidates:
 
@@ -64,7 +66,12 @@ Bad candidates:
 - full conversation summaries
 - temporary TODO lists
 - speculative ideas without evidence
+- edits directly to generated wiki output instead of creating or approving memory
 - personal chatter or one-off debugging noise
+
+## WebDAV Sync Rule
+
+The desktop settings screen owns WebDAV credentials and cloud upload. MCP tools do not silently write to the user's cloud storage. When a user expects files to appear in their netdisk, the app must run the explicit WebDAV sync action, which creates the remote `chatmem` folder and uploads JSON conversation snapshots plus a manifest.
 
 ## Handoff Rules
 

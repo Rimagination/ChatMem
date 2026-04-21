@@ -107,6 +107,24 @@ describe("Memory workspace", () => {
         ];
       }
 
+      if (command === "list_wiki_pages" || command === "rebuild_repo_wiki") {
+        return [
+          {
+            page_id: "wiki:commands",
+            repo_root: "D:/VSP/agentswap-gui",
+            slug: "commands",
+            title: "Commands",
+            body: "# Commands\n\n- npm run test:run",
+            status: "fresh",
+            source_memory_ids: ["mem-001"],
+            source_episode_ids: [],
+            last_built_at: "2026-04-19T09:00:00Z",
+            last_verified_at: "2026-04-19T09:00:00Z",
+            updated_at: "2026-04-19T09:00:00Z",
+          },
+        ];
+      }
+
       if (command === "review_memory_candidate") {
         return null;
       }
@@ -127,6 +145,12 @@ describe("Memory workspace", () => {
       expect(screen.getByText("npm run test:run")).toBeTruthy();
       expect(screen.getByRole("heading", { name: "Memory Candidates" })).toBeTruthy();
       expect(screen.getByText("Review pending memory")).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Project Wiki" })).toBeTruthy();
+      expect(screen.getByText("Commands")).toBeTruthy();
+      expect(screen.getByText("Source of truth")).toBeTruthy();
+      expect(screen.getByText("Generated projection")).toBeTruthy();
+      expect(screen.getByText("Needs review")).toBeTruthy();
+      expect(screen.getByText("1 memory source")).toBeTruthy();
     });
 
     expect(screen.queryByRole("button", { name: "Memory Inbox" })).toBeNull();

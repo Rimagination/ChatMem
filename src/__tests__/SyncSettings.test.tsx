@@ -125,4 +125,41 @@ describe("Sync settings", () => {
       expect(screen.getByText("Verification successful")).toBeTruthy();
     });
   });
+
+  it("runs a real WebDAV sync after credentials are entered", async () => {
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    fireEvent.click(await screen.findByLabelText("Conversation data sync method:"));
+    fireEvent.change(screen.getByLabelText("Protocol"), {
+      target: { value: "https" },
+    });
+    fireEvent.change(screen.getByLabelText("Server and path"), {
+      target: { value: "example.com/webdav" },
+    });
+    fireEvent.change(screen.getByLabelText("Username"), {
+      target: { value: "liang@example.com" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "local-secret" },
+    });
+
+    mockInvoke.mockResolvedValueOnce({
+      uploadedCount: 2,
+      remoteUrl: "https://example.com/webdav/chatmem/",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sync now" }));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("sync_webdav_now", {
+        webdavScheme: "https",
+        webdavHost: "example.com",
+        webdavPath: "webdav",
+        remotePath: "chatmem",
+        username: "liang@example.com",
+        password: "local-secret",
+      });
+      expect(screen.getByText("Synced 2 files to WebDAV")).toBeTruthy();
+    });
+  });
 });

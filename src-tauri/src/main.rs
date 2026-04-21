@@ -12,6 +12,7 @@ use chatmem::chatmem_memory::{
     checkpoints::{CheckpointRecord, CreateCheckpointInput},
     models::{
         ApprovedMemoryResponse, EpisodeResponse, HandoffPacketResponse, MemoryCandidateResponse,
+        WikiPageResponse,
     },
     runs::{list_artifacts as load_artifacts, list_runs as load_runs, ArtifactRecord, RunRecord},
     store::{MemoryStore, ReviewAction},
@@ -75,6 +76,42 @@ struct FileChangeResponse {
     change_type: String,
     timestamp: String,
     message_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebDavSyncResponse {
+    uploaded_count: usize,
+    remote_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebDavManifest {
+    schema_version: u8,
+    app_version: String,
+    synced_at: String,
+    conversations: Vec<WebDavManifestEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebDavManifestEntry {
+    source_agent: String,
+    id: String,
+    project_dir: String,
+    updated_at: String,
+    remote_file: String,
+}
+
+struct WebDavConversationUpload {
+    agent: String,
+    id: String,
+    project_dir: String,
+    updated_at: String,
+    file_name: String,
+    remote_file: String,
+    body: Vec<u8>,
 }
 
 fn get_adapter(agent: &str) -> Result<Box<dyn AgentAdapter>, String> {
@@ -332,6 +369,141 @@ fn build_webdav_probe_url(
     reqwest::Url::parse(&url).map_err(|error| format!("Invalid WebDAV URL: {error}"))
 }
 
+fn push_url_segments(
+    url: &mut reqwest::Url,
+    segments: impl IntoIterator<Item = String>,
+    collection: bool,
+) -> Result<(), String> {
+    let mut path_segments = url
+        .path_segments_mut()
+        .map_err(|_| "Invalid WebDAV URL cannot be used as a base".to_string())?;
+    path_segments.pop_if_empty();
+    for segment in segments {
+        let trimmed = segment.trim().trim_matches('/');
+        if !trimmed.is_empty() {
+            path_segments.push(trimmed);
+        }
+    }
+    if collection {
+        path_segments.push("");
+    }
+    Ok(())
+}
+
+fn build_webdav_remote_collection_url(
+    scheme: &str,
+    host: &str,
+    webdav_path: &str,
+    remote_path: &str,
+) -> Result<reqwest::Url, String> {
+    let remote_path = remote_path.trim().trim_matches('/');
+    if remote_path.is_empty() {
+        return Err("Missing remote folder".to_string());
+    }
+
+    let mut url = build_webdav_probe_url(scheme, host, webdav_path)?;
+    push_url_segments(
+        &mut url,
+        remote_path
+            .split('/')
+            .map(|segment| segment.to_string())
+            .collect::<Vec<_>>(),
+        true,
+    )?;
+    Ok(url)
+}
+
+fn build_webdav_child_url(
+    collection_url: &reqwest::Url,
+    segments: &[String],
+    collection: bool,
+) -> Result<reqwest::Url, String> {
+    let mut url = collection_url.clone();
+    push_url_segments(&mut url, segments.iter().cloned(), collection)?;
+    Ok(url)
+}
+
+fn safe_remote_file_name(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string();
+
+    if sanitized.is_empty() {
+        "conversation".to_string()
+    } else {
+        sanitized
+    }
+}
+
+async fn ensure_webdav_collection(
+    client: &reqwest::Client,
+    url: &reqwest::Url,
+    username: &str,
+    password: &str,
+) -> Result<(), String> {
+    let propfind = reqwest::Method::from_bytes(b"PROPFIND").map_err(|error| error.to_string())?;
+    let response = client
+        .request(propfind, url.clone())
+        .basic_auth(username, Some(password))
+        .header("Depth", "0")
+        .send()
+        .await
+        .map_err(|error| format!("Cannot reach WebDAV folder {url}: {error}"))?;
+
+    if response.status().is_success() {
+        return Ok(());
+    }
+
+    if response.status() != reqwest::StatusCode::NOT_FOUND {
+        return Err(format!("Server returned HTTP {} for {url}", response.status()));
+    }
+
+    let response = client
+        .request(reqwest::Method::from_bytes(b"MKCOL").map_err(|error| error.to_string())?, url.clone())
+        .basic_auth(username, Some(password))
+        .send()
+        .await
+        .map_err(|error| format!("Cannot create WebDAV folder {url}: {error}"))?;
+
+    if response.status().is_success() || response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+        Ok(())
+    } else {
+        Err(format!("Server returned HTTP {} while creating {url}", response.status()))
+    }
+}
+
+async fn put_webdav_json(
+    client: &reqwest::Client,
+    url: &reqwest::Url,
+    username: &str,
+    password: &str,
+    body: Vec<u8>,
+) -> Result<(), String> {
+    let response = client
+        .put(url.clone())
+        .basic_auth(username, Some(password))
+        .header("Content-Type", "application/json; charset=utf-8")
+        .body(body)
+        .send()
+        .await
+        .map_err(|error| format!("Cannot upload {url}: {error}"))?;
+
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("Server returned HTTP {} while uploading {url}", response.status()))
+    }
+}
+
 #[command]
 async fn get_agent_card() -> Result<AgentCard, String> {
     Ok(AgentCard::chatmem_default())
@@ -374,6 +546,118 @@ async fn verify_webdav_server(
     } else {
         Err(format!("Server returned HTTP {status} for {url}"))
     }
+}
+
+#[command]
+async fn sync_webdav_now(
+    webdav_scheme: String,
+    webdav_host: String,
+    webdav_path: String,
+    remote_path: String,
+    username: String,
+    password: String,
+) -> Result<WebDavSyncResponse, String> {
+    let username = username.trim().to_string();
+    if username.is_empty() || password.trim().is_empty() {
+        return Err("Missing WebDAV username or password".to_string());
+    }
+
+    let mut uploads = Vec::new();
+
+    for agent in ["claude", "codex", "gemini"] {
+        let adapter = get_adapter(agent)?;
+        if !adapter.is_available() {
+            continue;
+        }
+
+        let summaries = adapter.list_conversations().map_err(|error| error.to_string())?;
+        for summary in summaries {
+            let mut conversation = adapter
+                .read_conversation(&summary.id)
+                .map_err(|error| error.to_string())?;
+            conversation.project_dir = normalize_project_dir(&conversation.project_dir);
+            let id = conversation.id.clone();
+            let project_dir = conversation.project_dir.clone();
+            let updated_at = conversation.updated_at.to_rfc3339();
+            let file_name = format!("{}.json", safe_remote_file_name(&id));
+            let remote_file = format!("conversations/{agent}/{file_name}");
+            let storage_path = resolve_storage_path(agent, &id);
+            let resume_command = build_resume_command(agent, &id);
+            let payload = convert_conversation(conversation, storage_path, resume_command);
+            let body = serde_json::to_vec_pretty(&payload).map_err(|error| error.to_string())?;
+
+            uploads.push(WebDavConversationUpload {
+                agent: agent.to_string(),
+                id,
+                project_dir,
+                updated_at,
+                file_name,
+                remote_file,
+                body,
+            });
+        }
+    }
+
+    let remote_url = build_webdav_remote_collection_url(
+        &webdav_scheme,
+        &webdav_host,
+        &webdav_path,
+        &remote_path,
+    )?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    ensure_webdav_collection(&client, &remote_url, &username, &password).await?;
+
+    let conversations_url =
+        build_webdav_child_url(&remote_url, &["conversations".to_string()], true)?;
+    ensure_webdav_collection(&client, &conversations_url, &username, &password).await?;
+
+    let mut manifest_entries = Vec::new();
+    let mut uploaded_count = 0usize;
+
+    for agent in ["claude", "codex", "gemini"] {
+        let agent_url = build_webdav_child_url(&conversations_url, &[agent.to_string()], true)?;
+        ensure_webdav_collection(&client, &agent_url, &username, &password).await?;
+
+        for upload in uploads.iter().filter(|upload| upload.agent == agent) {
+            let file_url = build_webdav_child_url(&agent_url, &[upload.file_name.clone()], false)?;
+            put_webdav_json(
+                &client,
+                &file_url,
+                &username,
+                &password,
+                upload.body.clone(),
+            )
+            .await?;
+            uploaded_count += 1;
+            manifest_entries.push(WebDavManifestEntry {
+                source_agent: upload.agent.clone(),
+                id: upload.id.clone(),
+                project_dir: upload.project_dir.clone(),
+                updated_at: upload.updated_at.clone(),
+                remote_file: upload.remote_file.clone(),
+            });
+        }
+    }
+
+    let manifest = WebDavManifest {
+        schema_version: 1,
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        synced_at: chrono::Utc::now().to_rfc3339(),
+        conversations: manifest_entries,
+    };
+    let manifest_url = build_webdav_child_url(&remote_url, &["manifest.json".to_string()], false)?;
+    let manifest_body = serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?;
+    put_webdav_json(&client, &manifest_url, &username, &password, manifest_body).await?;
+    uploaded_count += 1;
+
+    Ok(WebDavSyncResponse {
+        uploaded_count,
+        remote_url: remote_url.to_string(),
+    })
 }
 
 #[command]
@@ -539,6 +823,18 @@ async fn list_episodes(repo_root: String) -> Result<Vec<EpisodeResponse>, String
 }
 
 #[command]
+async fn list_wiki_pages(repo_root: String) -> Result<Vec<WikiPageResponse>, String> {
+    let store = open_memory_store()?;
+    store.list_wiki_pages(&repo_root).map_err(|e| e.to_string())
+}
+
+#[command]
+async fn rebuild_repo_wiki(repo_root: String) -> Result<Vec<WikiPageResponse>, String> {
+    let store = open_memory_store()?;
+    store.rebuild_repo_wiki(&repo_root).map_err(|e| e.to_string())
+}
+
+#[command]
 async fn list_handoffs(repo_root: String) -> Result<Vec<HandoffPacketResponse>, String> {
     let store = open_memory_store()?;
     store.list_handoffs(&repo_root).map_err(|e| e.to_string())
@@ -634,11 +930,14 @@ fn main() {
             check_agent_available,
             get_agent_card,
             verify_webdav_server,
+            sync_webdav_now,
             list_repo_memories,
             list_memory_candidates,
             review_memory_candidate,
             reverify_memory,
             list_episodes,
+            list_wiki_pages,
+            rebuild_repo_wiki,
             list_handoffs,
             list_checkpoints,
             list_runs,
@@ -654,8 +953,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_resume_command, build_webdav_probe_url, conversation_matches_query,
-        normalize_project_dir, AgentKind, Conversation,
+        build_resume_command, build_webdav_probe_url, build_webdav_remote_collection_url,
+        conversation_matches_query, normalize_project_dir, AgentKind, Conversation,
     };
     use agentswap_core::types::{Message, Role, ToolCall, ToolStatus};
     use chrono::Utc;
@@ -679,6 +978,14 @@ mod tests {
     #[test]
     fn builds_webdav_probe_url_from_host_and_path() {
         let url = build_webdav_probe_url("https", "example.com", "dav/chatmem").unwrap();
+
+        assert_eq!(url.as_str(), "https://example.com/dav/chatmem/");
+    }
+
+    #[test]
+    fn builds_webdav_remote_collection_url_from_base_and_remote_folder() {
+        let url =
+            build_webdav_remote_collection_url("https", "example.com", "dav", "chatmem").unwrap();
 
         assert_eq!(url.as_str(), "https://example.com/dav/chatmem/");
     }

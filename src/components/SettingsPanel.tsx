@@ -21,11 +21,21 @@ export type SettingsSyncCopy = {
   verifySuccessLabel: string;
   verifyMissingFieldsLabel: string;
   verifyFailedPrefix: string;
+  syncNowLabel: string;
+  syncingNowLabel: string;
+  syncSuccessPrefix: string;
+  syncSuccessSuffix: string;
+  syncFailedPrefix: string;
 };
 
 export type WebDavVerificationInput = {
   syncSettings: SyncSettings;
   password: string;
+};
+
+export type WebDavSyncResult = {
+  uploadedCount: number;
+  remoteUrl: string;
 };
 
 type SettingsPanelProps = {
@@ -50,6 +60,7 @@ type SettingsPanelProps = {
   onAutoCheckChange: (nextValue: boolean) => void;
   onSyncSettingsChange: (patch: Partial<SyncSettings>) => void;
   onVerifyWebDavServer: (input: WebDavVerificationInput) => Promise<void>;
+  onSyncWebDavNow: (input: WebDavVerificationInput) => Promise<WebDavSyncResult>;
   onCheckUpdates: () => void;
   onInstallUpdate: () => void;
 };
@@ -58,6 +69,12 @@ type WebDavVerificationState =
   | { kind: "idle" }
   | { kind: "checking" }
   | { kind: "success" }
+  | { kind: "error"; message: string };
+
+type WebDavSyncState =
+  | { kind: "idle" }
+  | { kind: "syncing" }
+  | { kind: "success"; uploadedCount: number; remoteUrl: string }
   | { kind: "error"; message: string };
 
 function joinServerPath(syncSettings: SyncSettings) {
@@ -98,12 +115,16 @@ export default function SettingsPanel({
   onAutoCheckChange,
   onSyncSettingsChange,
   onVerifyWebDavServer,
+  onSyncWebDavNow,
   onCheckUpdates,
   onInstallUpdate,
 }: SettingsPanelProps) {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [webDavVerification, setWebDavVerification] = useState<WebDavVerificationState>({
+    kind: "idle",
+  });
+  const [webDavSync, setWebDavSync] = useState<WebDavSyncState>({
     kind: "idle",
   });
   const fileSyncEnabled = syncSettings.provider === "webdav";
@@ -115,11 +136,13 @@ export default function SettingsPanel({
 
   const handleSyncSettingsChange = (patch: Partial<SyncSettings>) => {
     setWebDavVerification({ kind: "idle" });
+    setWebDavSync({ kind: "idle" });
     onSyncSettingsChange(patch);
   };
 
   const handlePasswordChange = (nextPassword: string) => {
     setWebDavVerification({ kind: "idle" });
+    setWebDavSync({ kind: "idle" });
     setPassword(nextPassword);
   };
 
@@ -138,6 +161,29 @@ export default function SettingsPanel({
       setWebDavVerification({
         kind: "error",
         message: `${syncCopy.verifyFailedPrefix}: ${message}`,
+      });
+    }
+  };
+
+  const handleSyncWebDavNow = async () => {
+    if (!canVerifyWebDav) {
+      setWebDavSync({ kind: "error", message: syncCopy.verifyMissingFieldsLabel });
+      return;
+    }
+
+    setWebDavSync({ kind: "syncing" });
+    try {
+      const result = await onSyncWebDavNow({ syncSettings, password });
+      setWebDavSync({
+        kind: "success",
+        uploadedCount: result.uploadedCount,
+        remoteUrl: result.remoteUrl,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setWebDavSync({
+        kind: "error",
+        message: `${syncCopy.syncFailedPrefix}: ${message}`,
       });
     }
   };
@@ -261,11 +307,19 @@ export default function SettingsPanel({
                   type="button"
                   className="btn btn-secondary"
                   onClick={() => void handleVerifyWebDavServer()}
-                  disabled={webDavVerification.kind === "checking"}
+                  disabled={webDavVerification.kind === "checking" || webDavSync.kind === "syncing"}
                 >
                   {webDavVerification.kind === "checking"
                     ? syncCopy.verifyingServerLabel
                     : syncCopy.verifyServerLabel}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => void handleSyncWebDavNow()}
+                  disabled={webDavVerification.kind === "checking" || webDavSync.kind === "syncing"}
+                >
+                  {webDavSync.kind === "syncing" ? syncCopy.syncingNowLabel : syncCopy.syncNowLabel}
                 </button>
               </div>
 
@@ -275,6 +329,17 @@ export default function SettingsPanel({
 
               {webDavVerification.kind === "error" ? (
                 <p className="settings-notice is-danger">{webDavVerification.message}</p>
+              ) : null}
+
+              {webDavSync.kind === "success" ? (
+                <p className="settings-notice is-success">
+                  {syncCopy.syncSuccessPrefix} {webDavSync.uploadedCount}{" "}
+                  {syncCopy.syncSuccessSuffix}
+                </p>
+              ) : null}
+
+              {webDavSync.kind === "error" ? (
+                <p className="settings-notice is-danger">{webDavSync.message}</p>
               ) : null}
             </div>
           ) : null}

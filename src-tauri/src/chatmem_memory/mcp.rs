@@ -12,7 +12,7 @@ use super::{
     models::{
         BuildHandoffPacketInput, CreateMemoryCandidateInput, CreateMemoryCandidateResult,
         GetRepoMemoryInput, ListMemoryCandidatesInput, ListMemoryCandidatesPayload,
-        RepoMemoryPayload, SearchHistoryPayload, SearchRepoHistoryInput,
+        ListWikiPagesPayload, RepoMemoryPayload, SearchHistoryPayload, SearchRepoHistoryInput,
     },
     runs::{self, ArtifactRecord, RunRecord},
     search,
@@ -96,6 +96,8 @@ impl ChatMemMcpService {
             .with_route((Self::list_active_runs_tool_attr(), Self::list_active_runs))
             .with_route((Self::list_run_artifacts_tool_attr(), Self::list_run_artifacts))
             .with_route((Self::resume_from_checkpoint_tool_attr(), Self::resume_from_checkpoint))
+            .with_route((Self::list_repo_wiki_pages_tool_attr(), Self::list_repo_wiki_pages))
+            .with_route((Self::rebuild_repo_wiki_tool_attr(), Self::rebuild_repo_wiki))
     }
 
     pub fn debug_tool_names(&self) -> Vec<String> {
@@ -106,7 +108,7 @@ impl ChatMemMcpService {
             .collect()
     }
 
-    #[tool(name = "get_repo_memory", description = "Return compact repository startup memory for an agent")]
+    #[tool(name = "get_repo_memory", description = "Return compact approved repository startup memory for an agent")]
     async fn get_repo_memory(
         &self,
         Parameters(input): Parameters<GetRepoMemoryInput>,
@@ -117,7 +119,7 @@ impl ChatMemMcpService {
             .map_err(|error| internal_error(error.to_string()))
     }
 
-    #[tool(name = "search_repo_history", description = "Search prior repository work and memory")]
+    #[tool(name = "search_repo_history", description = "Search prior repository work, approved memory, and generated wiki projections")]
     async fn search_repo_history(
         &self,
         Parameters(input): Parameters<SearchRepoHistoryInput>,
@@ -215,6 +217,29 @@ impl ChatMemMcpService {
         sync_repo_state_before_run_queries(&input.repo_root);
         runs::list_artifacts(&input.repo_root)
             .map(|artifacts| Json(ListRunArtifactsPayload { artifacts }))
+            .map_err(|error| internal_error(error.to_string()))
+    }
+
+    #[tool(name = "list_repo_wiki_pages", description = "List generated repository wiki projection pages; approved memory remains the source of truth")]
+    async fn list_repo_wiki_pages(
+        &self,
+        Parameters(input): Parameters<RepoRootInput>,
+    ) -> Result<Json<ListWikiPagesPayload>, McpError> {
+        self.store
+            .list_wiki_pages(&input.repo_root)
+            .map(|pages| Json(ListWikiPagesPayload { pages }))
+            .map_err(|error| internal_error(error.to_string()))
+    }
+
+    #[tool(name = "rebuild_repo_wiki", description = "Rebuild generated repository wiki projection pages from approved memory and episodes")]
+    async fn rebuild_repo_wiki(
+        &self,
+        Parameters(input): Parameters<RepoRootInput>,
+    ) -> Result<Json<ListWikiPagesPayload>, McpError> {
+        let _ = sync::sync_repo_conversations(&self.store, &input.repo_root);
+        self.store
+            .rebuild_repo_wiki(&input.repo_root)
+            .map(|pages| Json(ListWikiPagesPayload { pages }))
             .map_err(|error| internal_error(error.to_string()))
     }
 
@@ -320,6 +345,8 @@ mod tests {
             ChatMemMcpService::list_active_runs_tool_attr().name,
             ChatMemMcpService::list_run_artifacts_tool_attr().name,
             ChatMemMcpService::resume_from_checkpoint_tool_attr().name,
+            ChatMemMcpService::list_repo_wiki_pages_tool_attr().name,
+            ChatMemMcpService::rebuild_repo_wiki_tool_attr().name,
         ]
         .into_iter()
         .map(|name| name.to_string())
@@ -430,5 +457,25 @@ mod tests {
         assert!(runs.runs.is_empty());
         assert!(artifacts.artifacts.is_empty());
         assert_eq!(run_sync_call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn wiki_tools_rebuild_and_return_repo_pages() {
+        let service = ChatMemMcpService::new(new_store());
+        let repo_root = "d:/vsp/agentswap-gui".to_string();
+
+        let Json(rebuilt) = service
+            .rebuild_repo_wiki(Parameters(RepoRootInput {
+                repo_root: repo_root.clone(),
+            }))
+            .await
+            .unwrap();
+        assert!(rebuilt.pages.iter().any(|page| page.slug == "project-overview"));
+
+        let Json(listed) = service
+            .list_repo_wiki_pages(Parameters(RepoRootInput { repo_root }))
+            .await
+            .unwrap();
+        assert!(listed.pages.iter().any(|page| page.slug == "project-overview"));
     }
 }

@@ -6,6 +6,7 @@ import ConversationDetail from "./components/ConversationDetail";
 import MigrateModal from "./components/MigrateModal";
 import SettingsPanel, {
   type SettingsSyncCopy,
+  type WebDavSyncResult,
   type WebDavVerificationInput,
 } from "./components/SettingsPanel";
 import HandoffComposerModal from "./components/HandoffComposerModal";
@@ -29,6 +30,7 @@ import {
   createHandoffPacket,
   listMemoryCandidates,
   listRepoMemories,
+  rebuildRepoWiki,
   markHandoffConsumed,
   reverifyMemory,
   reviewMemoryCandidate,
@@ -42,6 +44,7 @@ import type {
   HandoffTargetProfileOption,
   MemoryCandidate,
   RunRecord,
+  WikiPage,
 } from "./chatmem-memory/types";
 
 interface ConversationSummary {
@@ -281,6 +284,42 @@ function getProjectLabel(projectDir: string) {
   return segments[segments.length - 1] || projectDir;
 }
 
+function getWikiPreview(body: string) {
+  return body
+    .replace(/^#\s+[^\n]+\n*/u, "")
+    .replace(/\n{2,}/g, "\n")
+    .trim()
+    .slice(0, 180);
+}
+
+function getWikiSourceLabel(page: WikiPage, locale: Locale) {
+  const memoryCount = page.source_memory_ids.length;
+  const episodeCount = page.source_episode_ids.length;
+  const parts: string[] = [];
+
+  if (memoryCount > 0) {
+    parts.push(
+      locale === "en"
+        ? `${memoryCount} memory source${memoryCount === 1 ? "" : "s"}`
+        : `${memoryCount} \u6761\u8bb0\u5fc6\u6765\u6e90`,
+    );
+  }
+
+  if (episodeCount > 0) {
+    parts.push(
+      locale === "en"
+        ? `${episodeCount} episode source${episodeCount === 1 ? "" : "s"}`
+        : `${episodeCount} \u6761\u9636\u6bb5\u6765\u6e90`,
+    );
+  }
+
+  if (parts.length === 0) {
+    return locale === "en" ? "No linked sources" : "\u6682\u65e0\u5173\u8054\u6765\u6e90";
+  }
+
+  return parts.join(" / ");
+}
+
 function normalizeConversationProject<T extends { project_dir: string }>(conversation: T): T {
   const projectDir = normalizeProjectPath(conversation.project_dir);
   if (projectDir === conversation.project_dir) {
@@ -512,6 +551,11 @@ function getSyncCopy(locale: Locale): SettingsSyncCopy {
       verifySuccessLabel: "Verification successful",
       verifyMissingFieldsLabel: "Fill in the server, username, and password first.",
       verifyFailedPrefix: "Verification failed",
+      syncNowLabel: "Sync now",
+      syncingNowLabel: "Syncing...",
+      syncSuccessPrefix: "Synced",
+      syncSuccessSuffix: "files to WebDAV",
+      syncFailedPrefix: "Sync failed",
     };
   }
 
@@ -533,6 +577,11 @@ function getSyncCopy(locale: Locale): SettingsSyncCopy {
     verifySuccessLabel: "\u9a8c\u8bc1\u6210\u529f",
     verifyMissingFieldsLabel: "\u8bf7\u5148\u586b\u5199\u7f51\u5740\u3001\u7528\u6237\u540d\u548c\u5bc6\u7801",
     verifyFailedPrefix: "\u9a8c\u8bc1\u5931\u8d25",
+    syncNowLabel: "\u7acb\u5373\u540c\u6b65",
+    syncingNowLabel: "\u6b63\u5728\u540c\u6b65...",
+    syncSuccessPrefix: "\u5df2\u540c\u6b65",
+    syncSuccessSuffix: "\u4e2a\u6587\u4ef6\u5230 WebDAV",
+    syncFailedPrefix: "\u540c\u6b65\u5931\u8d25",
   };
 }
 
@@ -614,6 +663,7 @@ function App() {
   const [advancedHelpOpen, setAdvancedHelpOpen] = useState(false);
   const [repoMemories, setRepoMemories] = useState<ApprovedMemory[]>([]);
   const [memoryCandidates, setMemoryCandidates] = useState<MemoryCandidate[]>([]);
+  const [wikiPages, setWikiPages] = useState<WikiPage[]>([]);
   const [episodes] = useState<EpisodeRecord[]>([]);
   const [runs] = useState<RunRecord[]>([]);
   const [artifacts] = useState<ArtifactRecord[]>([]);
@@ -734,6 +784,7 @@ function App() {
     if (!activeRepoRoot) {
       setRepoMemories([]);
       setMemoryCandidates([]);
+      setWikiPages([]);
       return;
     }
 
@@ -742,15 +793,17 @@ function App() {
     const loadProjectMemory = async () => {
       setMemoryLoading(true);
       try {
-        const [nextMemories, nextCandidates] = await Promise.all([
+        const [nextMemories, nextCandidates, nextWikiPages] = await Promise.all([
           listRepoMemories(activeRepoRoot),
           listMemoryCandidates(activeRepoRoot, "pending_review"),
+          rebuildRepoWiki(activeRepoRoot),
         ]);
         if (cancelled) {
           return;
         }
         setRepoMemories(nextMemories);
         setMemoryCandidates(nextCandidates);
+        setWikiPages(nextWikiPages);
       } catch (error) {
         console.error("Failed to load project memory:", error);
       } finally {
@@ -893,6 +946,20 @@ function App() {
     });
   };
 
+  const handleSyncWebDavNow = async ({
+    syncSettings,
+    password,
+  }: WebDavVerificationInput): Promise<WebDavSyncResult> => {
+    return invoke<WebDavSyncResult>("sync_webdav_now", {
+      webdavScheme: syncSettings.webdavScheme,
+      webdavHost: syncSettings.webdavHost,
+      webdavPath: syncSettings.webdavPath,
+      remotePath: syncSettings.remotePath,
+      username: syncSettings.username,
+      password,
+    });
+  };
+
   const handleApproveCandidate = async (candidate: MemoryCandidate) => {
     if (!activeRepoRoot) {
       return;
@@ -906,12 +973,14 @@ function App() {
         editedTitle: candidate.summary,
         editedUsageHint: candidate.why_it_matters,
       });
-      const [nextCandidates, nextMemories] = await Promise.all([
+      const [nextCandidates, nextMemories, nextWikiPages] = await Promise.all([
         listMemoryCandidates(activeRepoRoot, "pending_review"),
         listRepoMemories(activeRepoRoot),
+        rebuildRepoWiki(activeRepoRoot),
       ]);
       setMemoryCandidates(nextCandidates);
       setRepoMemories(nextMemories);
+      setWikiPages(nextWikiPages);
     } catch (error) {
       console.error("Failed to approve memory candidate:", error);
     } finally {
@@ -1059,7 +1128,12 @@ function App() {
         memoryId,
         verifiedBy: selectedAgent,
       });
-      setRepoMemories(await listRepoMemories(activeRepoRoot));
+      const [nextMemories, nextWikiPages] = await Promise.all([
+        listRepoMemories(activeRepoRoot),
+        rebuildRepoWiki(activeRepoRoot),
+      ]);
+      setRepoMemories(nextMemories);
+      setWikiPages(nextWikiPages);
     } catch (error) {
       console.error("Failed to re-verify memory:", error);
     } finally {
@@ -2239,8 +2313,24 @@ function App() {
 
   const renderMemoryPanel = () => {
     const memoryTitle = locale === "en" ? "Project Memory" : "\u9879\u76ee\u8bb0\u5fc6";
+    const wikiTitle = locale === "en" ? "Project Wiki" : "\u9879\u76ee Wiki";
     const candidatesTitle =
       locale === "en" ? "Memory Candidates" : "\u8bb0\u5fc6\u5019\u9009";
+    const sourceOfTruthLabel = locale === "en" ? "Source of truth" : "\u6743\u5a01\u6765\u6e90";
+    const generatedProjectionLabel = locale === "en" ? "Generated projection" : "\u751f\u6210\u6295\u5f71";
+    const needsReviewLabel = locale === "en" ? "Needs review" : "\u5f85\u5ba1\u6838";
+    const memorySubtitle =
+      locale === "en"
+        ? "Approved facts and rules used directly by agents."
+        : "\u5df2\u6279\u51c6\u7684\u4e8b\u5b9e\u548c\u89c4\u5219\uff0cagent \u76f4\u63a5\u4f7f\u7528\u3002";
+    const wikiSubtitle =
+      locale === "en"
+        ? "Readable pages rebuilt from approved memory and episodes."
+        : "\u7531\u5df2\u6279\u51c6\u8bb0\u5fc6\u548c\u9636\u6bb5\u8bb0\u5f55\u91cd\u5efa\u7684\u53ef\u8bfb\u9875\u9762\u3002";
+    const candidatesSubtitle =
+      locale === "en"
+        ? "Possible durable memory waiting for a human decision."
+        : "\u53ef\u80fd\u503c\u5f97\u6c89\u6dc0\u7684\u8bb0\u5fc6\uff0c\u7b49\u5f85\u4eba\u5de5\u5224\u65ad\u3002";
     const emptyMemory =
       locale === "en"
         ? "No project memory has been generated yet."
@@ -2249,14 +2339,24 @@ function App() {
       locale === "en"
         ? "No pending memory candidates."
         : "\u6682\u65e0\u5f85\u5904\u7406\u7684\u8bb0\u5fc6\u5019\u9009\u3002";
+    const emptyWiki =
+      locale === "en"
+        ? "No wiki projection has been generated yet."
+        : "\u8fd8\u6ca1\u6709\u751f\u6210 Wiki \u6295\u5f71\u3002";
 
     return (
       <aside className="memory-side-panel" aria-label={memoryTitle}>
         <section className="memory-panel-section">
           <div className="memory-panel-header">
-            <h2>{memoryTitle}</h2>
+            <div className="memory-panel-heading">
+              <h2>{memoryTitle}</h2>
+              <span className="memory-section-badge memory-section-badge-source">
+                {sourceOfTruthLabel}
+              </span>
+            </div>
             <span className="library-count-pill">{repoMemories.length}</span>
           </div>
+          <p className="memory-panel-subtitle">{memorySubtitle}</p>
           {memoryLoading ? (
             <div className="loading-inline">
               <div className="spinner"></div>
@@ -2266,8 +2366,16 @@ function App() {
           ) : (
             <div className="memory-card-list">
               {repoMemories.slice(0, 6).map((memory) => (
-                <article key={memory.memory_id} className="memory-card">
-                  <strong>{memory.title}</strong>
+                <article key={memory.memory_id} className="memory-card memory-card-source">
+                  <div className="memory-card-header">
+                    <div>
+                      <strong>{memory.title}</strong>
+                      <div className="memory-card-kind">{memory.kind}</div>
+                    </div>
+                    <span className="memory-card-status">
+                      {memory.freshness_status || memory.status}
+                    </span>
+                  </div>
                   <p>{memory.value}</p>
                   {memory.usage_hint ? <span>{memory.usage_hint}</span> : null}
                 </article>
@@ -2278,16 +2386,63 @@ function App() {
 
         <section className="memory-panel-section">
           <div className="memory-panel-header">
-            <h2>{candidatesTitle}</h2>
+            <div className="memory-panel-heading">
+              <h2>{wikiTitle}</h2>
+              <span className="memory-section-badge memory-section-badge-projection">
+                {generatedProjectionLabel}
+              </span>
+            </div>
+            <span className="library-count-pill">{wikiPages.length}</span>
+          </div>
+          <p className="memory-panel-subtitle">{wikiSubtitle}</p>
+          {memoryLoading ? (
+            <div className="loading-inline">
+              <div className="spinner"></div>
+            </div>
+          ) : wikiPages.length === 0 ? (
+            <div className="inline-empty-body">{emptyWiki}</div>
+          ) : (
+            <div className="memory-card-list">
+              {wikiPages.slice(0, 5).map((page) => (
+                <article key={page.page_id} className="memory-card memory-card-projection">
+                  <div className="memory-card-header">
+                    <div>
+                      <strong>{page.title}</strong>
+                      <div className="memory-card-kind">{page.status}</div>
+                    </div>
+                  </div>
+                  <p>{getWikiPreview(page.body)}</p>
+                  <span>{getWikiSourceLabel(page, locale)}</span>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="memory-panel-section">
+          <div className="memory-panel-header">
+            <div className="memory-panel-heading">
+              <h2>{candidatesTitle}</h2>
+              <span className="memory-section-badge memory-section-badge-review">
+                {needsReviewLabel}
+              </span>
+            </div>
             <span className="library-count-pill">{memoryCandidates.length}</span>
           </div>
+          <p className="memory-panel-subtitle">{candidatesSubtitle}</p>
           {memoryCandidates.length === 0 ? (
             <div className="inline-empty-body">{emptyCandidates}</div>
           ) : (
             <div className="memory-card-list">
               {memoryCandidates.slice(0, 4).map((candidate) => (
-                <article key={candidate.candidate_id} className="memory-card">
-                  <strong>{candidate.summary}</strong>
+                <article key={candidate.candidate_id} className="memory-card memory-card-review">
+                  <div className="memory-card-header">
+                    <div>
+                      <strong>{candidate.summary}</strong>
+                      <div className="memory-card-kind">{candidate.kind}</div>
+                    </div>
+                    <span className="memory-card-status">{candidate.status}</span>
+                  </div>
                   <p>{candidate.why_it_matters}</p>
                   <div className="task-actions">
                     <button
@@ -2732,6 +2887,7 @@ function App() {
           setAppSettings(nextSettings);
         }}
         onVerifyWebDavServer={handleVerifyWebDavServer}
+        onSyncWebDavNow={handleSyncWebDavNow}
         onCheckUpdates={async () => {
           setUpdateState({ kind: "checking" });
           try {

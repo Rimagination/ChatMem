@@ -185,6 +185,22 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS wiki_pages (
+            page_id TEXT PRIMARY KEY,
+            repo_id TEXT NOT NULL,
+            slug TEXT NOT NULL,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            status TEXT NOT NULL,
+            source_memory_ids_json TEXT NOT NULL DEFAULT '[]',
+            source_episode_ids_json TEXT NOT NULL DEFAULT '[]',
+            last_built_at TEXT NOT NULL,
+            last_verified_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(repo_id, slug)
+        );
+
         CREATE TABLE IF NOT EXISTS search_documents (
             doc_id TEXT PRIMARY KEY,
             repo_id TEXT NOT NULL,
@@ -382,7 +398,8 @@ mod tests {
                    'checkpoints',
                    'handoff_packets',
                    'evidence_refs',
-                   'search_documents'
+                   'search_documents',
+                   'wiki_pages'
                  )
                  ORDER BY name",
             )
@@ -409,6 +426,7 @@ mod tests {
                 "repos",
                 "search_documents",
                 "tool_calls",
+                "wiki_pages",
             ]
         );
 

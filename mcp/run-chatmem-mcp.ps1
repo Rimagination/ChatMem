@@ -14,9 +14,9 @@ function Resolve-ChatMemMcpBinary {
   }
 
   $candidates = @(
-    (Join-Path $repoRoot "src-tauri\target\release\chatmem-mcp.exe"),
+    (Join-Path $repoRoot "src-tauri\target\debug\chatmem-mcp.exe"),
     (Join-Path $repoRoot ".tauri-target-build\release\chatmem-mcp.exe"),
-    (Join-Path $repoRoot "src-tauri\target\debug\chatmem-mcp.exe")
+    (Join-Path $repoRoot "src-tauri\target\release\chatmem-mcp.exe")
   )
 
   foreach ($candidate in $candidates) {

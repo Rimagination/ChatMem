@@ -14,6 +14,7 @@ use super::{
     models::{
         ApprovedMemoryResponse, CreateMemoryCandidateInput, EpisodeResponse, EvidenceRef,
         HandoffPacketResponse, MemoryCandidateResponse, MemoryMergeSuggestion, SearchHistoryMatch,
+        WikiPageResponse,
     },
     repo_identity,
 };
@@ -676,6 +677,35 @@ impl MemoryStore {
         Ok(episodes)
     }
 
+    pub fn list_wiki_pages(&self, repo_root: &str) -> Result<Vec<WikiPageResponse>> {
+        let repo_id = self.ensure_repo(repo_root)?;
+        let repo_root = self.repo_root_for_id(&repo_id)?;
+        let conn = self.conn()?;
+        load_wiki_pages_from_conn(&conn, &repo_id, &repo_root)
+    }
+
+    pub fn rebuild_repo_wiki(&self, repo_root: &str) -> Result<Vec<WikiPageResponse>> {
+        let repo_id = self.ensure_repo(repo_root)?;
+        let repo_root = self.repo_root_for_id(&repo_id)?;
+        let memories = self
+            .list_repo_memories(&repo_root)?
+            .into_iter()
+            .filter(|memory| memory.status == "active")
+            .collect::<Vec<_>>();
+        let episodes = self.list_episodes(&repo_root)?;
+        let page_specs = build_wiki_page_specs(&repo_root, &memories, &episodes);
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+
+        for spec in page_specs {
+            upsert_wiki_page_tx(&tx, &repo_id, &spec)?;
+        }
+
+        tx.commit()?;
+        let conn = self.conn()?;
+        load_wiki_pages_from_conn(&conn, &repo_id, &repo_root)
+    }
+
     pub fn create_checkpoint(&self, input: &CreateCheckpointInput) -> Result<CheckpointRecord> {
         let repo_id = self.ensure_repo(&input.repo_root)?;
         let repo_root = self.repo_root_for_id(&repo_id)?;
@@ -1155,7 +1185,11 @@ impl MemoryStore {
                     summary: truncate_text(&body, 280),
                     why_matched: "Repository history search match".to_string(),
                     score: 1.0,
-                    evidence_refs: self.evidence_refs(evidence_owner_for_doc_type(&doc_type), &doc_ref_id)?,
+                    evidence_refs: load_evidence_refs_from_conn(
+                        &conn,
+                        evidence_owner_for_doc_type(&doc_type),
+                        &doc_ref_id,
+                    )?,
                 });
             }
         }
@@ -1186,7 +1220,11 @@ impl MemoryStore {
                     summary: truncate_text(&body, 280),
                     why_matched: "Repository history search fallback match".to_string(),
                     score: 0.5,
-                    evidence_refs: self.evidence_refs(evidence_owner_for_doc_type(&doc_type), &doc_ref_id)?,
+                    evidence_refs: load_evidence_refs_from_conn(
+                        &conn,
+                        evidence_owner_for_doc_type(&doc_type),
+                        &doc_ref_id,
+                    )?,
                 });
             }
         }
@@ -1204,6 +1242,7 @@ fn evidence_owner_for_doc_type(doc_type: &str) -> &'static str {
     match doc_type {
         "memory" => "memory",
         "episode" => "episode",
+        "wiki" => "wiki_page",
         _ => "conversation",
     }
 }
@@ -1291,6 +1330,304 @@ fn upsert_search_document_tx(
         params![doc_id, title, body],
     )?;
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct WikiPageSpec {
+    slug: String,
+    title: String,
+    body: String,
+    status: String,
+    source_memory_ids: Vec<String>,
+    source_episode_ids: Vec<String>,
+    last_verified_at: Option<String>,
+}
+
+fn load_wiki_pages_from_conn(
+    conn: &Connection,
+    repo_id: &str,
+    repo_root: &str,
+) -> Result<Vec<WikiPageResponse>> {
+    let mut stmt = conn.prepare(
+        "SELECT page_id, slug, title, body, status, source_memory_ids_json,
+                source_episode_ids_json, last_built_at, last_verified_at, updated_at
+         FROM wiki_pages
+         WHERE repo_id = ?1
+         ORDER BY title ASC",
+    )?;
+
+    let rows = stmt.query_map([repo_id], |row| {
+        let source_memory_ids_json: String = row.get(5)?;
+        let source_episode_ids_json: String = row.get(6)?;
+        Ok(WikiPageResponse {
+            page_id: row.get(0)?,
+            repo_root: repo_root.to_string(),
+            slug: row.get(1)?,
+            title: row.get(2)?,
+            body: row.get(3)?,
+            status: row.get(4)?,
+            source_memory_ids: parse_string_vec(&source_memory_ids_json),
+            source_episode_ids: parse_string_vec(&source_episode_ids_json),
+            last_built_at: row.get(7)?,
+            last_verified_at: row.get(8)?,
+            updated_at: row.get(9)?,
+        })
+    })?;
+
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+fn upsert_wiki_page_tx(conn: &Connection, repo_id: &str, spec: &WikiPageSpec) -> Result<()> {
+    let page_id = format!("wiki:{repo_id}:{}", spec.slug);
+    let now = chrono::Utc::now().to_rfc3339();
+    let source_memory_ids_json = serde_json::to_string(&spec.source_memory_ids)?;
+    let source_episode_ids_json = serde_json::to_string(&spec.source_episode_ids)?;
+
+    conn.execute(
+        "INSERT INTO wiki_pages (
+            page_id, repo_id, slug, title, body, status, source_memory_ids_json,
+            source_episode_ids_json, last_built_at, last_verified_at, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?9, ?9)
+         ON CONFLICT(repo_id, slug) DO UPDATE SET
+            title = excluded.title,
+            body = excluded.body,
+            status = excluded.status,
+            source_memory_ids_json = excluded.source_memory_ids_json,
+            source_episode_ids_json = excluded.source_episode_ids_json,
+            last_built_at = excluded.last_built_at,
+            last_verified_at = excluded.last_verified_at,
+            updated_at = excluded.updated_at",
+        params![
+            page_id,
+            repo_id,
+            spec.slug,
+            spec.title,
+            spec.body,
+            spec.status,
+            source_memory_ids_json,
+            source_episode_ids_json,
+            now,
+            spec.last_verified_at,
+        ],
+    )?;
+
+    upsert_search_document_tx(
+        conn,
+        &format!("wiki:{page_id}"),
+        repo_id,
+        "wiki",
+        &page_id,
+        &spec.title,
+        &spec.body,
+    )
+}
+
+fn build_wiki_page_specs(
+    repo_root: &str,
+    memories: &[ApprovedMemoryResponse],
+    episodes: &[EpisodeResponse],
+) -> Vec<WikiPageSpec> {
+    let commands = memories
+        .iter()
+        .filter(|memory| memory.kind == "command")
+        .cloned()
+        .collect::<Vec<_>>();
+    let gotchas = memories
+        .iter()
+        .filter(|memory| memory.kind == "gotcha")
+        .cloned()
+        .collect::<Vec<_>>();
+    let decisions = memories
+        .iter()
+        .filter(|memory| {
+            matches!(
+                memory.kind.as_str(),
+                "decision" | "convention" | "strategy" | "preference" | "architecture"
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    vec![
+        WikiPageSpec {
+            slug: "project-overview".to_string(),
+            title: "Project Overview".to_string(),
+            body: build_project_overview_wiki_body(repo_root, memories, episodes),
+            status: wiki_status(memories),
+            source_memory_ids: memories.iter().map(|memory| memory.memory_id.clone()).collect(),
+            source_episode_ids: episodes.iter().map(|episode| episode.episode_id.clone()).collect(),
+            last_verified_at: newest_memory_verification(memories),
+        },
+        build_memory_wiki_page(
+            "commands",
+            "Commands",
+            "Commands preserved from approved repository memory.",
+            &commands,
+        ),
+        build_memory_wiki_page(
+            "gotchas",
+            "Gotchas",
+            "Operational traps and constraints preserved from approved repository memory.",
+            &gotchas,
+        ),
+        build_memory_wiki_page(
+            "decisions-and-conventions",
+            "Decisions and Conventions",
+            "Stable decisions, conventions, strategies, and preferences.",
+            &decisions,
+        ),
+        WikiPageSpec {
+            slug: "recent-work".to_string(),
+            title: "Recent Work".to_string(),
+            body: build_recent_work_wiki_body(episodes),
+            status: if episodes.is_empty() { "empty" } else { "fresh" }.to_string(),
+            source_memory_ids: vec![],
+            source_episode_ids: episodes.iter().map(|episode| episode.episode_id.clone()).collect(),
+            last_verified_at: None,
+        },
+    ]
+}
+
+fn build_memory_wiki_page(
+    slug: &str,
+    title: &str,
+    intro: &str,
+    memories: &[ApprovedMemoryResponse],
+) -> WikiPageSpec {
+    let body = if memories.is_empty() {
+        format!("# {title}\n\n{intro}\n\nNo approved entries yet.\n")
+    } else {
+        format!(
+            "# {title}\n\n{intro}\n\n{}",
+            memories
+                .iter()
+                .map(format_memory_wiki_item)
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+
+    WikiPageSpec {
+        slug: slug.to_string(),
+        title: title.to_string(),
+        body,
+        status: wiki_status(memories),
+        source_memory_ids: memories.iter().map(|memory| memory.memory_id.clone()).collect(),
+        source_episode_ids: vec![],
+        last_verified_at: newest_memory_verification(memories),
+    }
+}
+
+fn build_project_overview_wiki_body(
+    repo_root: &str,
+    memories: &[ApprovedMemoryResponse],
+    episodes: &[EpisodeResponse],
+) -> String {
+    let mut body = format!(
+        "# Project Overview\n\nRepository: `{repo_root}`\n\nChatMem remains the source of truth. This page is a generated wiki projection for human and agent onboarding.\n\n"
+    );
+
+    body.push_str("## Key Memories\n\n");
+    if memories.is_empty() {
+        body.push_str("No approved memories yet.\n\n");
+    } else {
+        for memory in memories.iter().take(8) {
+            body.push_str(&format_memory_wiki_item(memory));
+            body.push('\n');
+        }
+    }
+
+    body.push_str("## Recent Work\n\n");
+    if episodes.is_empty() {
+        body.push_str("No captured episodes yet.\n");
+    } else {
+        for episode in episodes.iter().take(6) {
+            body.push_str(&format_episode_wiki_item(episode));
+            body.push('\n');
+        }
+    }
+
+    body
+}
+
+fn build_recent_work_wiki_body(episodes: &[EpisodeResponse]) -> String {
+    let mut body = "# Recent Work\n\nCondensed repository episodes captured from local agent conversations.\n\n".to_string();
+
+    if episodes.is_empty() {
+        body.push_str("No captured episodes yet.\n");
+    } else {
+        for episode in episodes.iter().take(12) {
+            body.push_str(&format_episode_wiki_item(episode));
+            body.push('\n');
+        }
+    }
+
+    body
+}
+
+fn format_memory_wiki_item(memory: &ApprovedMemoryResponse) -> String {
+    let mut item = format!(
+        "- **{}** (`{}` / `{}`): {}\n  - Usage: {}\n  - Source memory: `{}`",
+        memory.title,
+        memory.kind,
+        memory.freshness_status,
+        memory.value,
+        memory.usage_hint,
+        memory.memory_id
+    );
+
+    if let Some(verified_at) = memory.verified_at.as_deref().or(memory.last_verified_at.as_deref()) {
+        item.push_str(&format!("\n  - Last verified: {verified_at}"));
+    }
+
+    item
+}
+
+fn format_episode_wiki_item(episode: &EpisodeResponse) -> String {
+    format!(
+        "- **{}** (`{}`): {}\n  - Source episode: `{}`",
+        episode.title, episode.outcome, episode.summary, episode.episode_id
+    )
+}
+
+fn wiki_status(memories: &[ApprovedMemoryResponse]) -> String {
+    if memories.is_empty() {
+        return "empty".to_string();
+    }
+
+    if memories.iter().any(|memory| memory.freshness_status == "stale") {
+        return "stale".to_string();
+    }
+
+    if memories
+        .iter()
+        .any(|memory| memory.freshness_status == "needs_review")
+    {
+        return "needs_review".to_string();
+    }
+
+    if memories.iter().any(|memory| memory.freshness_status == "unknown") {
+        return "unknown".to_string();
+    }
+
+    "fresh".to_string()
+}
+
+fn newest_memory_verification(memories: &[ApprovedMemoryResponse]) -> Option<String> {
+    memories
+        .iter()
+        .filter_map(|memory| {
+            memory
+                .verified_at
+                .as_ref()
+                .or(memory.last_verified_at.as_ref())
+                .cloned()
+        })
+        .max()
+}
+
+fn parse_string_vec(json: &str) -> Vec<String> {
+    serde_json::from_str(json).unwrap_or_default()
 }
 
 fn summarize_conversation(conversation: &Conversation) -> String {
@@ -1453,6 +1790,101 @@ mod tests {
         let memories = store.list_repo_memories(repo_root).unwrap();
         assert_eq!(memories.len(), 1);
         assert_eq!(memories[0].value, "npm run test:run");
+    }
+
+    #[test]
+    fn rebuilding_repo_wiki_projects_memory_and_episodes_into_pages() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let command_candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "command".to_string(),
+                summary: "Run test suite".to_string(),
+                value: "npm run test:run".to_string(),
+                why_it_matters: "Use before shipping UI changes".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.92,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        store
+            .review_candidate(
+                &command_candidate_id,
+                ReviewAction::Approve {
+                    title: "Primary frontend verification".into(),
+                    usage_hint: "Use before handing off frontend work".into(),
+                },
+            )
+            .unwrap();
+
+        let repo_id = store.ensure_repo(repo_root).unwrap();
+        let conn = store.conn().unwrap();
+        conn.execute(
+            "INSERT INTO episodes (
+                episode_id, repo_id, title, summary, outcome, created_at, source_conversation_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                "episode:codex:conv-001",
+                repo_id,
+                "Memory architecture discussion",
+                "Decided to keep ChatMem as source of truth and generate a wiki projection.",
+                "captured",
+                "2026-04-21T10:00:00Z",
+                "codex:conv-001",
+            ],
+        )
+        .unwrap();
+
+        let pages = store.rebuild_repo_wiki(repo_root).unwrap();
+
+        let commands = pages
+            .iter()
+            .find(|page| page.slug == "commands")
+            .expect("commands page should be generated");
+        assert!(commands.body.contains("npm run test:run"));
+        assert_eq!(commands.source_memory_ids.len(), 1);
+
+        let recent_work = pages
+            .iter()
+            .find(|page| page.slug == "recent-work")
+            .expect("recent-work page should be generated");
+        assert!(recent_work.body.contains("Memory architecture discussion"));
+        assert_eq!(recent_work.source_episode_ids.len(), 1);
+    }
+
+    #[test]
+    fn search_history_returns_wiki_projection_matches() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "gotcha".to_string(),
+                summary: "Remember wiki projection".to_string(),
+                value: "The wiki is a projection, not the source of truth.".to_string(),
+                why_it_matters: "Prevents stale wiki pages from overriding approved memory.".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.91,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        store
+            .review_candidate(
+                &candidate_id,
+                ReviewAction::Approve {
+                    title: "Wiki projection boundary".into(),
+                    usage_hint: "Keep database memory authoritative".into(),
+                },
+            )
+            .unwrap();
+
+        store.rebuild_repo_wiki(repo_root).unwrap();
+        let matches = store.search_history(repo_root, "projection", 5).unwrap();
+
+        assert!(matches.iter().any(|item| item.r#type == "wiki"));
     }
 
     #[test]
