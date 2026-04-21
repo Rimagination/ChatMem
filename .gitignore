@@ -6,6 +6,7 @@ dist-portable/
 output/
 src-tauri/target/
 .worktrees/
+.superpowers/
 __pycache__/
 *.log
 npm-debug.log*
