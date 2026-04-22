@@ -12,6 +12,7 @@ import SettingsPanel, {
 import HandoffComposerModal from "./components/HandoffComposerModal";
 import LibraryPanel from "./components/LibraryPanel";
 import MemoryInboxPanel from "./components/MemoryInboxPanel";
+import ProjectIndexStatus from "./components/ProjectIndexStatus";
 import RepoMemoryPanel from "./components/RepoMemoryPanel";
 import { useI18n } from "./i18n/I18nProvider";
 import type { Locale } from "./i18n/types";
@@ -30,10 +31,12 @@ import brandIcon from "../src-tauri/icons/icon.png";
 import {
   createCheckpoint,
   createHandoffPacket,
+  getRepoMemoryHealth,
   listMemoryCandidates,
   listRepoMemories,
-  rebuildRepoWiki,
   markHandoffConsumed,
+  rebuildRepoWiki,
+  scanRepoConversations,
   reverifyMemory,
   reviewMemoryCandidate,
 } from "./chatmem-memory/api";
@@ -45,6 +48,7 @@ import type {
   HandoffPacket,
   HandoffTargetProfileOption,
   MemoryCandidate,
+  RepoMemoryHealth,
   RunRecord,
   WikiPage,
 } from "./chatmem-memory/types";
@@ -660,6 +664,9 @@ function App() {
   const [listLoading, setListLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [memoryLoading, setMemoryLoading] = useState(false);
+  const [repoMemoryHealth, setRepoMemoryHealth] = useState<RepoMemoryHealth | null>(null);
+  const [repoHealthLoading, setRepoHealthLoading] = useState(false);
+  const [repoScanRunning, setRepoScanRunning] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [copyState, setCopyState] = useState<CopyState>({ target: null, status: "idle" });
   const [appSettings, setAppSettings] = useState<AppSettings>(() => loadSettings());
@@ -792,6 +799,8 @@ function App() {
       setRepoMemories([]);
       setMemoryCandidates([]);
       setWikiPages([]);
+      setRepoMemoryHealth(null);
+      setRepoHealthLoading(false);
       setMemoryDrawerOpen(false);
       return;
     }
@@ -800,11 +809,13 @@ function App() {
 
     const loadProjectMemory = async () => {
       setMemoryLoading(true);
+      setRepoHealthLoading(true);
       try {
-        const [nextMemories, nextCandidates, nextWikiPages] = await Promise.all([
+        const [nextMemories, nextCandidates, nextWikiPages, nextHealth] = await Promise.all([
           listRepoMemories(activeRepoRoot),
           listMemoryCandidates(activeRepoRoot, "pending_review"),
           rebuildRepoWiki(activeRepoRoot),
+          getRepoMemoryHealth(activeRepoRoot),
         ]);
         if (cancelled) {
           return;
@@ -812,11 +823,13 @@ function App() {
         setRepoMemories(nextMemories);
         setMemoryCandidates(nextCandidates);
         setWikiPages(nextWikiPages);
+        setRepoMemoryHealth(nextHealth);
       } catch (error) {
         console.error("Failed to load project memory:", error);
       } finally {
         if (!cancelled) {
           setMemoryLoading(false);
+          setRepoHealthLoading(false);
         }
       }
     };
@@ -827,6 +840,20 @@ function App() {
       cancelled = true;
     };
   }, [activeRepoRoot]);
+
+  const handleScanRepoConversations = async () => {
+    if (!activeRepoRoot) return;
+    setRepoScanRunning(true);
+    try {
+      await scanRepoConversations(activeRepoRoot);
+      const nextHealth = await getRepoMemoryHealth(activeRepoRoot);
+      setRepoMemoryHealth(nextHealth);
+    } catch (error) {
+      console.error("Failed to scan repo conversations:", error);
+    } finally {
+      setRepoScanRunning(false);
+    }
+  };
 
   const loadConversations = async (query = searchQuery, agent = selectedAgent) => {
     setListLoading(true);
@@ -2573,6 +2600,16 @@ function App() {
             </span>
           </div>
         </div>
+
+        {activeRepoRoot ? (
+          <ProjectIndexStatus
+            health={repoMemoryHealth}
+            loading={repoHealthLoading}
+            scanning={repoScanRunning}
+            locale={locale}
+            onScan={() => void handleScanRepoConversations()}
+          />
+        ) : null}
 
         <div className="conversation-content-grid">
           <ConversationDetail conversation={selectedConversation} />

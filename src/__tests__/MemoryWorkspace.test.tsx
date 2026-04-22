@@ -136,6 +136,45 @@ describe("Memory workspace", () => {
         ];
       }
 
+      if (command === "get_repo_memory_health") {
+        return {
+          repo_root: "D:/VSP/agentswap-gui",
+          canonical_repo_root: "D:/VSP/agentswap-gui",
+          approved_memory_count: 1,
+          pending_candidate_count: 1,
+          search_document_count: 4,
+          indexed_chunk_count: 8,
+          inherited_repo_roots: [],
+          conversation_counts_by_agent: [
+            { source_agent: "claude", conversation_count: 1 },
+          ],
+          repo_aliases: [],
+          warnings: [],
+        };
+      }
+
+      if (command === "scan_repo_conversations") {
+        return {
+          repo_root: "D:/VSP/agentswap-gui",
+          scanned_conversation_count: 1,
+          updated_embedding_count: 1,
+          repo_diagnostics: {
+            repo_root: "D:/VSP/agentswap-gui",
+            canonical_repo_root: "D:/VSP/agentswap-gui",
+            approved_memory_count: 1,
+            pending_candidate_count: 1,
+            search_document_count: 4,
+            indexed_chunk_count: 8,
+            inherited_repo_roots: [],
+            conversation_counts_by_agent: [
+              { source_agent: "claude", conversation_count: 1 },
+            ],
+            repo_aliases: [],
+            warnings: [],
+          },
+        };
+      }
+
       if (command === "review_memory_candidate") {
         return null;
       }
@@ -211,6 +250,28 @@ describe("Memory workspace", () => {
         editedTitle: "Primary verification",
         editedValue: "npm run test:run\n\nUpdate: Do not auto-approve candidate writes",
         editedUsageHint: "Use before handoff\n\nUpdate: Human review is required",
+      });
+    });
+  });
+
+  it("shows local history status and rescans the active repo", async () => {
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("get_repo_memory_health", {
+        repoRoot: "D:/VSP/agentswap-gui",
+      });
+    });
+
+    expect(await screen.findByText("Local history")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Rescan local history" }));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("scan_repo_conversations", {
+        repoRoot: "D:/VSP/agentswap-gui",
       });
     });
   });
