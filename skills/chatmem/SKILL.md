@@ -28,10 +28,10 @@ Do not use it for general web search, unrelated memory, or one-off notes that wi
 ## MCP-First Workflow
 
 1. Identify the repo root from the current workspace, user prompt, or ChatMem continuation prompt.
-2. Call `get_repo_memory` for the repo before substantial work.
-3. If the goal is continuation, inspect the freshest checkpoint or handoff returned by ChatMem before searching raw history.
-4. Call `search_repo_history` only for specific gaps: prior decisions, commands, key files, errors, or earlier attempts. It uses hybrid keyword/vector search, so concise semantic queries such as "cloud backup sync" or "release signing" are acceptable.
-5. Use the smallest useful context. Prefer approved memory, generated wiki pages, checkpoints, handoffs, and targeted search results over replaying raw conversation logs.
+2. Call `get_project_context` for substantial repo work when available. Use `intent="startup"` for compact startup context, `intent="recall"` when the user asks whether something was discussed before, and `intent="continue_work"` when resuming.
+3. Treat approved memory as durable project guidance. Treat history evidence as local evidence that may be stale or unapproved.
+4. If `get_project_context` is unavailable, fall back to `get_repo_memory` and then call `search_repo_history` for specific gaps: prior decisions, commands, key files, errors, earlier attempts, or recall questions.
+5. Use the smallest useful context. Prefer approved memory, generated wiki pages, checkpoints, handoffs, targeted history evidence, and pending candidate summaries over replaying raw conversation logs.
 6. Use `list_repo_wiki_pages` or `rebuild_repo_wiki` when the user asks for a readable project wiki, commands, gotchas, or recent-work pages. Treat those pages as generated projections, not editable source material.
 7. Use `list_entity_graph` when a task depends on related systems, symbols, protocols, agents, or release concepts.
 8. Use `list_memory_conflicts` before approving a surprising candidate, especially when it negates an existing command or convention.
@@ -86,6 +86,8 @@ The desktop settings screen owns WebDAV credentials and cloud upload. MCP tools 
 ## Retrieval Rule
 
 Search history is indexed as FTS plus vectors. Local `chatmem-local-hash-v1` vectors are always kept as a fallback. When `CHATMEM_EMBEDDING_PROVIDER=openai-compatible` and the matching base URL/model/dimensions/API key environment variables are present, search can use real provider embeddings stored side-by-side with the local fallback. Call `rebuild_repo_embeddings` after changing embedding provider settings. Treat vector hits as retrieval candidates, not final truth: prefer approved memories and evidence refs for durable facts, and verify stale or surprising matches before acting.
+
+For recall questions, never answer from `get_repo_memory` alone. If approved memory does not contain the answer, search history and clearly label matches as history evidence rather than approved memory.
 
 ## Extraction And Conflict Rule
 

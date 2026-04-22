@@ -47,6 +47,9 @@ describe("chatmem integration manifests", () => {
     expect(skillDoc).toContain("search_repo_history");
     expect(skillDoc).toContain("create_memory_candidate");
     expect(skillDoc).toContain("build_handoff_packet");
+    expect(skillDoc).toContain("get_project_context");
+    expect(skillDoc).toContain("history evidence");
+    expect(skillDoc).toContain("approved memory");
     expect(skillDoc.toLowerCase()).toContain("checkpoint");
     expect(skillDoc).toContain("@chatmem");
     expect(skillDoc).toContain("desktop app");
