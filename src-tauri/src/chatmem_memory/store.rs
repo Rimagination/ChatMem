@@ -1008,7 +1008,7 @@ impl MemoryStore {
         } else {
             trimmed_intent.to_lowercase()
         };
-        let result_limit = limit.unwrap_or(5).max(1);
+        let result_limit = limit.unwrap_or(5).clamp(1, 20);
         let memory_payload =
             crate::chatmem_memory::search::compact_repo_memory(self, repo_root, Some(query))?;
         let repo_diagnostics = self.repo_memory_health(repo_root)?;
@@ -3352,6 +3352,7 @@ fn should_search_history(intent: &str, query: &str) -> bool {
 
     let lowered_query = query.to_lowercase();
     [
+        "recall",
         "remember",
         "discuss",
         "history",
@@ -3376,18 +3377,49 @@ fn candidate_matches_query(candidate: &MemoryCandidateResponse, query: &str) -> 
         "{} {} {}",
         candidate.summary, candidate.value, candidate.why_it_matters
     ));
+    let candidate_tokens = normalized_candidate
+        .split_whitespace()
+        .map(ToString::to_string)
+        .collect::<HashSet<_>>();
 
     let tokens = normalized_query
         .split_whitespace()
         .filter(|token| token.len() >= 3)
+        .filter(|token| !is_broad_query_token(token))
         .collect::<Vec<_>>();
     if tokens.is_empty() {
-        return true;
+        return false;
     }
 
-    tokens
-        .into_iter()
-        .any(|token| normalized_candidate.contains(token))
+    tokens.into_iter().any(|token| {
+        candidate_tokens.contains(token)
+            || (token.len() >= 7 && normalized_candidate.contains(token))
+    })
+}
+
+fn is_broad_query_token(token: &str) -> bool {
+    matches!(
+        token,
+        "the"
+            | "what"
+            | "when"
+            | "where"
+            | "why"
+            | "how"
+            | "did"
+            | "does"
+            | "do"
+            | "we"
+            | "our"
+            | "before"
+            | "after"
+            | "memory"
+            | "memories"
+            | "history"
+            | "discuss"
+            | "discussion"
+            | "evidence"
+    )
 }
 
 fn token_overlap(left: &str, right: &str) -> f64 {
@@ -3735,6 +3767,121 @@ mod tests {
             .relevant_history
             .iter()
             .any(|item| item.summary.contains("not approved memory")));
+    }
+
+    #[test]
+    fn project_context_unknown_intent_uses_recall_query_keyword() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let now = Utc::now();
+        let conversation = Conversation {
+            id: "conv-project-context-recall-keyword".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir: repo_root.to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("Signing recall discussion".to_string()),
+            messages: vec![Message {
+                id: Uuid::new_v4(),
+                timestamp: now,
+                role: Role::Assistant,
+                content: "Signing decision: TAURI_PRIVATE_KEY must be configured before release."
+                    .to_string(),
+                tool_calls: vec![],
+                metadata: HashMap::new(),
+            }],
+            file_changes: vec![],
+        };
+        store
+            .upsert_conversation_snapshot("codex", &conversation, None)
+            .unwrap();
+
+        let context = store
+            .get_project_context(
+                repo_root,
+                "recall the signing decision",
+                Some("startup"),
+                Some(5),
+            )
+            .unwrap();
+
+        assert!(context
+            .relevant_history
+            .iter()
+            .any(|item| item.summary.contains("TAURI_PRIVATE_KEY")));
+    }
+
+    #[test]
+    fn project_context_candidate_filter_avoids_broad_token_crowding_at_limit_one() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "policy".to_string(),
+                summary: "Policy: history evidence is not approved policy memory".to_string(),
+                value: "Use policy review to approve project memory.".to_string(),
+                why_it_matters: "Specific policy should win over broad memory references."
+                    .to_string(),
+                evidence_refs: vec![],
+                confidence: 0.9,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+        store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "note".to_string(),
+                summary: "General memory note".to_string(),
+                value: "Memory memory memory".to_string(),
+                why_it_matters: "This should not match a specific decision query.".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.7,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        let context = store
+            .get_project_context(
+                repo_root,
+                "what did we discuss before about memory policy",
+                Some("recall"),
+                Some(1),
+            )
+            .unwrap();
+
+        assert_eq!(context.pending_candidates.len(), 1);
+        assert!(context.pending_candidates[0]
+            .summary
+            .to_lowercase()
+            .contains("policy"));
+    }
+
+    #[test]
+    fn project_context_clamps_large_limit_for_pending_candidates() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        for index in 0..25 {
+            store
+                .create_candidate(&CreateMemoryCandidateInput {
+                    repo_root: repo_root.to_string(),
+                    kind: "policy".to_string(),
+                    summary: format!("Policy candidate {index}"),
+                    value: format!("policy-value-{index}"),
+                    why_it_matters: "Policy candidates should be capped in project context."
+                        .to_string(),
+                    evidence_refs: vec![],
+                    confidence: 0.8,
+                    proposed_by: "codex".to_string(),
+                })
+                .unwrap();
+        }
+
+        let context = store
+            .get_project_context(repo_root, "policy", Some("recall"), Some(999))
+            .unwrap();
+
+        assert_eq!(context.pending_candidates.len(), 20);
     }
 
     #[test]
