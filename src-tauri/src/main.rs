@@ -13,7 +13,7 @@ use chatmem::chatmem_memory::{
     models::{
         ApprovedMemoryResponse, EmbeddingRebuildReport, EntityGraphPayload, EpisodeResponse,
         HandoffPacketResponse, MemoryCandidateResponse, MemoryConflictResponse,
-        RepoMemoryHealthResponse, RepoScanReport, WikiPageResponse,
+        ProjectContextPayload, RepoMemoryHealthResponse, RepoScanReport, WikiPageResponse,
     },
     runs::{list_artifacts as load_artifacts, list_runs as load_runs, ArtifactRecord, RunRecord},
     store::{MemoryStore, ReviewAction},
@@ -784,6 +784,19 @@ async fn get_repo_memory_health(repo_root: String) -> Result<RepoMemoryHealthRes
 }
 
 #[command]
+async fn get_project_context(
+    repo_root: String,
+    query: String,
+    intent: Option<String>,
+    limit: Option<usize>,
+) -> Result<ProjectContextPayload, String> {
+    let store = open_memory_store()?;
+    store
+        .get_project_context(&repo_root, &query, intent.as_deref(), limit)
+        .map_err(|error| error.to_string())
+}
+
+#[command]
 async fn scan_repo_conversations(repo_root: String) -> Result<RepoScanReport, String> {
     let store = open_memory_store()?;
     sync_scan_repo_conversations(&store, &repo_root).map_err(|e| e.to_string())
@@ -986,6 +999,7 @@ fn main() {
             sync_webdav_now,
             list_repo_memories,
             get_repo_memory_health,
+            get_project_context,
             scan_repo_conversations,
             list_memory_candidates,
             list_memory_conflicts,

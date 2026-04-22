@@ -12,9 +12,10 @@ use super::{
     models::{
         BuildHandoffPacketInput, CreateMemoryCandidateInput, CreateMemoryCandidateResult,
         CreateMemoryMergeProposalInput, CreateMemoryMergeProposalResult, EmbeddingRebuildReport,
-        EntityGraphPayload, GetRepoMemoryInput, ListMemoryCandidatesInput,
+        EntityGraphPayload, GetProjectContextInput, GetRepoMemoryInput, ListMemoryCandidatesInput,
         ListMemoryCandidatesPayload, ListWikiPagesPayload, MemoryConflictResponse,
-        RepoMemoryHealthResponse, RepoMemoryPayload, SearchHistoryPayload, SearchRepoHistoryInput,
+        ProjectContextPayload, RepoMemoryHealthResponse, RepoMemoryPayload, SearchHistoryPayload,
+        SearchRepoHistoryInput,
     },
     runs::{self, ArtifactRecord, RunRecord},
     search,
@@ -107,6 +108,7 @@ impl ChatMemMcpService {
     fn build_tool_router() -> ToolRouter<Self> {
         ToolRouter::new()
             .with_route((Self::get_repo_memory_tool_attr(), Self::get_repo_memory))
+            .with_route((Self::get_project_context_tool_attr(), Self::get_project_context))
             .with_route((Self::get_repo_memory_health_tool_attr(), Self::get_repo_memory_health))
             .with_route((Self::search_repo_history_tool_attr(), Self::search_repo_history))
             .with_route((Self::create_memory_candidate_tool_attr(), Self::create_memory_candidate))
@@ -139,6 +141,23 @@ impl ChatMemMcpService {
     ) -> Result<Json<RepoMemoryPayload>, McpError> {
         let _ = sync::sync_repo_conversations(&self.store, &input.repo_root);
         search::build_repo_memory_payload(&self.store, &input.repo_root, input.task_hint.as_deref())
+            .map(Json)
+            .map_err(|error| internal_error(error.to_string()))
+    }
+
+    #[tool(name = "get_project_context", description = "Return approved memory plus recall-aware local history evidence for a repository query")]
+    async fn get_project_context(
+        &self,
+        Parameters(input): Parameters<GetProjectContextInput>,
+    ) -> Result<Json<ProjectContextPayload>, McpError> {
+        let _ = sync::sync_repo_conversations(&self.store, &input.repo_root);
+        self.store
+            .get_project_context(
+                &input.repo_root,
+                &input.query,
+                input.intent.as_deref(),
+                input.limit,
+            )
             .map(Json)
             .map_err(|error| internal_error(error.to_string()))
     }
@@ -430,6 +449,7 @@ mod tests {
             .collect::<BTreeSet<_>>();
         let expected_names = [
             ChatMemMcpService::get_repo_memory_tool_attr().name,
+            ChatMemMcpService::get_project_context_tool_attr().name,
             ChatMemMcpService::get_repo_memory_health_tool_attr().name,
             ChatMemMcpService::search_repo_history_tool_attr().name,
             ChatMemMcpService::create_memory_candidate_tool_attr().name,
