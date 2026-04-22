@@ -1741,6 +1741,9 @@ fn collect_fts_search_candidates(
     limit: usize,
     candidates: &mut HashMap<String, SearchCandidate>,
 ) -> Result<()> {
+    let Some(fts_query) = build_fts_match_query(query) else {
+        return Ok(());
+    };
     let fts_result = conn.prepare(
         "SELECT sd.doc_id, sd.doc_type, sd.doc_ref_id, sd.title, sd.body, sd.updated_at
          FROM search_documents_fts
@@ -1754,7 +1757,7 @@ fn collect_fts_search_candidates(
         return Ok(());
     };
 
-    let rows = stmt.query_map(params![repo_id, query, limit as i64], |row| {
+    let rows = stmt.query_map(params![repo_id, fts_query, limit as i64], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
@@ -1778,6 +1781,21 @@ fn collect_fts_search_candidates(
     }
 
     Ok(())
+}
+
+fn build_fts_match_query(query: &str) -> Option<String> {
+    let terms = query
+        .split_whitespace()
+        .map(|term| term.trim())
+        .filter(|term| !term.is_empty())
+        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .collect::<Vec<_>>();
+
+    if terms.is_empty() {
+        None
+    } else {
+        Some(terms.join(" "))
+    }
 }
 
 fn collect_like_search_candidates(
@@ -3154,6 +3172,42 @@ mod tests {
         let matches = store.search_history(repo_root, "projection", 5).unwrap();
 
         assert!(matches.iter().any(|item| item.r#type == "wiki"));
+    }
+
+    #[test]
+    fn search_history_accepts_hyphenated_query_terms() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "gotcha".to_string(),
+                summary: "Remember codex-smoke-release".to_string(),
+                value: "codex-smoke-release queries should not be parsed as raw FTS syntax."
+                    .to_string(),
+                why_it_matters: "Repository names, package versions, and ids often contain hyphens."
+                    .to_string(),
+                evidence_refs: vec![],
+                confidence: 0.91,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        store
+            .review_candidate(
+                &candidate_id,
+                ReviewAction::Approve {
+                    title: "codex-smoke-release search".into(),
+                    usage_hint: "Use when validating MCP search query handling.".into(),
+                },
+            )
+            .unwrap();
+
+        let matches = store.search_history(repo_root, "codex-smoke-release", 5).unwrap();
+
+        assert!(matches
+            .iter()
+            .any(|item| item.title == "codex-smoke-release search"));
     }
 
     #[test]
