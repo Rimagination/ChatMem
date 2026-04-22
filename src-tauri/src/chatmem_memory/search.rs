@@ -36,6 +36,14 @@ pub fn build_repo_memory_payload(
     })
 }
 
+pub fn compact_repo_memory(
+    store: &MemoryStore,
+    repo_root: &str,
+    task_hint: Option<&str>,
+) -> Result<RepoMemoryPayload> {
+    build_repo_memory_payload(store, repo_root, task_hint)
+}
+
 fn prioritize_memories(
     approved: Vec<ApprovedMemoryResponse>,
     task_hint: Option<&str>,

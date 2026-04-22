@@ -264,6 +264,26 @@ pub struct SearchRepoHistoryInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GetProjectContextInput {
+    pub repo_root: String,
+    pub query: String,
+    pub intent: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProjectContextPayload {
+    pub repo_summary: String,
+    pub intent: String,
+    pub approved_memories: Vec<ApprovedMemoryResponse>,
+    pub priority_gotchas: Vec<ApprovedMemoryResponse>,
+    pub recent_handoff: Option<HandoffPacketResponse>,
+    pub relevant_history: Vec<SearchHistoryMatch>,
+    pub pending_candidates: Vec<MemoryCandidateResponse>,
+    pub repo_diagnostics: RepoMemoryHealthResponse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CreateMemoryCandidateInput {
     pub repo_root: String,
     pub kind: String,

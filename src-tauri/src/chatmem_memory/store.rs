@@ -18,8 +18,8 @@ use super::{
         CreateMemoryMergeProposalInput,
         EntityGraphPayload, EntityLinkResponse, EmbeddingRebuildReport, EntityNodeResponse,
         EpisodeResponse, EvidenceRef, HandoffPacketResponse, MemoryCandidateResponse,
-        MemoryConflictResponse, MemoryMergeSuggestion, RepoAliasResponse, RepoMemoryHealthResponse,
-        SearchHistoryMatch, WikiPageResponse,
+        MemoryConflictResponse, MemoryMergeSuggestion, ProjectContextPayload,
+        RepoAliasResponse, RepoMemoryHealthResponse, SearchHistoryMatch, WikiPageResponse,
     },
     repo_identity,
 };
@@ -992,6 +992,47 @@ impl MemoryStore {
             repo_aliases,
             conversation_counts_by_agent,
             warnings,
+        })
+    }
+
+    pub fn get_project_context(
+        &self,
+        repo_root: &str,
+        query: &str,
+        intent: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<ProjectContextPayload> {
+        let trimmed_intent = intent.unwrap_or("auto").trim();
+        let intent = if trimmed_intent.is_empty() {
+            "auto".to_string()
+        } else {
+            trimmed_intent.to_lowercase()
+        };
+        let result_limit = limit.unwrap_or(5).max(1);
+        let memory_payload =
+            crate::chatmem_memory::search::compact_repo_memory(self, repo_root, Some(query))?;
+        let repo_diagnostics = self.repo_memory_health(repo_root)?;
+        let relevant_history = if should_search_history(&intent, query) {
+            self.search_history(repo_root, query, result_limit)?
+        } else {
+            vec![]
+        };
+        let pending_candidates = self
+            .list_candidates_with_status(repo_root, Some("pending_review"))?
+            .into_iter()
+            .filter(|candidate| candidate_matches_query(candidate, query))
+            .take(result_limit)
+            .collect::<Vec<_>>();
+
+        Ok(ProjectContextPayload {
+            repo_summary: format!("Project context for {repo_root}"),
+            intent,
+            approved_memories: memory_payload.approved_memories,
+            priority_gotchas: memory_payload.priority_gotchas,
+            recent_handoff: memory_payload.recent_handoff,
+            relevant_history,
+            pending_candidates,
+            repo_diagnostics,
         })
     }
 
@@ -3298,6 +3339,58 @@ fn normalize_text(text: &str) -> String {
         .join(" ")
 }
 
+fn should_search_history(intent: &str, query: &str) -> bool {
+    match intent.trim().to_lowercase().as_str() {
+        "recall" | "continue_work" | "debug" | "release" | "memory_review" => return true,
+        "auto" | "" => {}
+        _ => return false,
+    }
+
+    let normalized_query = normalize_text(query);
+    if normalized_query.is_empty() {
+        return false;
+    }
+
+    let lowered_query = query.to_lowercase();
+    [
+        "remember",
+        "discuss",
+        "history",
+        "before",
+        "previous",
+        "earlier",
+        "之前",
+        "讨论",
+        "记得",
+    ]
+    .iter()
+    .any(|term| lowered_query.contains(term))
+}
+
+fn candidate_matches_query(candidate: &MemoryCandidateResponse, query: &str) -> bool {
+    let normalized_query = normalize_text(query);
+    if normalized_query.is_empty() {
+        return true;
+    }
+
+    let normalized_candidate = normalize_text(&format!(
+        "{} {} {}",
+        candidate.summary, candidate.value, candidate.why_it_matters
+    ));
+
+    let tokens = normalized_query
+        .split_whitespace()
+        .filter(|token| token.len() >= 3)
+        .collect::<Vec<_>>();
+    if tokens.is_empty() {
+        return true;
+    }
+
+    tokens
+        .into_iter()
+        .any(|token| normalized_candidate.contains(token))
+}
+
 fn token_overlap(left: &str, right: &str) -> f64 {
     let left_tokens = normalize_text(left)
         .split_whitespace()
@@ -3529,6 +3622,77 @@ mod tests {
                 && alias.alias_kind == "ancestor"
                 && (alias.confidence - 0.72).abs() < 1e-6
         }));
+    }
+
+    #[test]
+    fn project_context_recall_returns_history_when_memory_is_empty() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let now = Utc::now();
+        let conversation = Conversation {
+            id: "conv-project-context-recall".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir: repo_root.to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("History evidence labeling discussion".to_string()),
+            messages: vec![Message {
+                id: Uuid::new_v4(),
+                timestamp: now,
+                role: Role::Assistant,
+                content:
+                    "We decided that history evidence must be labeled as not approved memory."
+                        .to_string(),
+                tool_calls: vec![],
+                metadata: HashMap::new(),
+            }],
+            file_changes: vec![],
+        };
+        store
+            .upsert_conversation_snapshot("codex", &conversation, None)
+            .unwrap();
+
+        let context = store
+            .get_project_context(
+                repo_root,
+                "did we discuss history evidence labeling",
+                Some("recall"),
+                Some(5),
+            )
+            .unwrap();
+
+        assert!(context.approved_memories.is_empty());
+        assert!(context
+            .relevant_history
+            .iter()
+            .any(|item| item.summary.contains("not approved memory")));
+    }
+
+    #[test]
+    fn project_context_includes_related_pending_candidates_as_unapproved() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "policy".to_string(),
+                summary: "History evidence is not policy".to_string(),
+                value: "History evidence can support decisions but is not approved policy."
+                    .to_string(),
+                why_it_matters: "Avoid treating historical transcript evidence as policy memory."
+                    .to_string(),
+                evidence_refs: vec![],
+                confidence: 0.88,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        let context = store
+            .get_project_context(repo_root, "history evidence policy", Some("recall"), Some(5))
+            .unwrap();
+
+        assert_eq!(context.pending_candidates.len(), 1);
+        assert_eq!(context.pending_candidates[0].status, "pending_review");
     }
 
     #[test]
