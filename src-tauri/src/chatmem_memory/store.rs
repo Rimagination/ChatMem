@@ -9,6 +9,7 @@ use agentswap_core::types::{ChangeType, Conversation, Role, ToolStatus};
 
 use super::{
     checkpoints::{CheckpointRecord, CreateCheckpointInput},
+    chunks,
     db,
     embedding,
     handoff,
@@ -120,6 +121,27 @@ impl MemoryStore {
         tx.execute("DELETE FROM tool_calls WHERE message_id IN (SELECT message_id FROM messages WHERE conversation_id = ?1)", [conversation_id.clone()])?;
         tx.execute("DELETE FROM messages WHERE conversation_id = ?1", [conversation_id.clone()])?;
         tx.execute("DELETE FROM file_changes WHERE conversation_id = ?1", [conversation_id.clone()])?;
+        tx.execute(
+            "DELETE FROM conversation_chunks WHERE conversation_id = ?1",
+            [conversation_id.clone()],
+        )?;
+        tx.execute(
+            "DELETE FROM search_documents_fts
+             WHERE doc_id IN (
+                SELECT doc_id FROM search_documents
+                WHERE repo_id = ?1
+                  AND doc_type = 'chunk'
+                  AND doc_ref_id LIKE ?2
+             )",
+            params![repo_id.clone(), format!("{conversation_id}:%")],
+        )?;
+        tx.execute(
+            "DELETE FROM search_documents
+             WHERE repo_id = ?1
+               AND doc_type = 'chunk'
+               AND doc_ref_id LIKE ?2",
+            params![repo_id.clone(), format!("{conversation_id}:%")],
+        )?;
 
         for message in &conversation.messages {
             let message_id = format!("{conversation_id}:{}", message.id);
@@ -200,6 +222,42 @@ impl MemoryStore {
             &title,
             &search_body,
         )?;
+        let chunk_rows = chunks::build_conversation_chunks(&conversation_id, conversation);
+        let chunk_now = chrono::Utc::now().to_rfc3339();
+        for chunk in chunk_rows {
+            let chunk_ref_id = format!("{conversation_id}:{}", chunk.chunk_id_suffix);
+            let chunk_id = format!("chunk:{chunk_ref_id}");
+            let message_ids_json = serde_json::to_string(&chunk.message_ids)?;
+            let chunk_title = chunk.title;
+            let chunk_body = chunk.body;
+            tx.execute(
+                "INSERT INTO conversation_chunks (
+                    chunk_id, repo_id, conversation_id, chunk_type, title, body,
+                    message_ids_json, ordinal, token_estimate, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+                params![
+                    &chunk_id,
+                    &repo_id,
+                    &conversation_id,
+                    chunk.chunk_type,
+                    &chunk_title,
+                    &chunk_body,
+                    message_ids_json,
+                    chunk.ordinal as i64,
+                    chunk.token_estimate as i64,
+                    &chunk_now,
+                ],
+            )?;
+            upsert_search_document_tx(
+                &tx,
+                &chunk_id,
+                &repo_id,
+                "chunk",
+                &chunk_ref_id,
+                &chunk_title,
+                &chunk_body,
+            )?;
+        }
 
         let episode_id = format!("episode:{conversation_id}");
         let episode_summary = summarize_conversation(conversation);
@@ -1800,17 +1858,22 @@ fn search_history_in_repo_id_with_embedding_config(
     let mut matches = Vec::new();
     for candidate in scored.into_iter().take(limit) {
         let why_matched = candidate.match_reason();
+        let evidence_refs = if candidate.doc_type == "chunk" {
+            load_chunk_evidence_refs_from_conn(conn, &candidate.doc_ref_id)?
+        } else {
+            load_evidence_refs_from_conn(
+                conn,
+                evidence_owner_for_doc_type(&candidate.doc_type),
+                &candidate.doc_ref_id,
+            )?
+        };
         matches.push(SearchHistoryMatch {
             r#type: candidate.doc_type.clone(),
             title: candidate.title,
             summary: truncate_text(&candidate.body, 280),
             why_matched,
             score: candidate.score,
-            evidence_refs: load_evidence_refs_from_conn(
-                conn,
-                evidence_owner_for_doc_type(&candidate.doc_type),
-                &candidate.doc_ref_id,
-            )?,
+            evidence_refs,
         });
     }
 
@@ -1865,6 +1928,7 @@ fn evidence_owner_for_doc_type(doc_type: &str) -> &'static str {
     match doc_type {
         "memory" => "memory",
         "episode" => "episode",
+        "chunk" => "chunk",
         "wiki" => "wiki_page",
         _ => "conversation",
     }
@@ -2217,6 +2281,44 @@ fn load_evidence_refs_from_conn(conn: &Connection, owner_type: &str, owner_id: &
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+fn load_chunk_evidence_refs_from_conn(conn: &Connection, chunk_ref_id: &str) -> Result<Vec<EvidenceRef>> {
+    let chunk_id = format!("chunk:{chunk_ref_id}");
+    let row = conn
+        .query_row(
+            "SELECT conversation_id, message_ids_json, body
+             FROM conversation_chunks
+             WHERE chunk_id = ?1",
+            [chunk_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+
+    let Some((conversation_id, message_ids_json, body)) = row else {
+        return Ok(vec![]);
+    };
+
+    let message_ids = serde_json::from_str::<Vec<String>>(&message_ids_json).unwrap_or_default();
+    let message_id = message_ids
+        .into_iter()
+        .next()
+        .map(|id| format!("{conversation_id}:{id}"));
+
+    Ok(vec![EvidenceRef {
+        evidence_id: None,
+        conversation_id: Some(conversation_id),
+        message_id,
+        tool_call_id: None,
+        file_change_id: None,
+        excerpt: truncate_text(&body, 240),
+    }])
 }
 
 fn replace_evidence_refs_tx(
@@ -3489,6 +3591,56 @@ mod tests {
         assert!(matches
             .iter()
             .any(|item| item.title == "codex-smoke-release search"));
+    }
+
+    #[test]
+    fn conversation_snapshot_indexes_late_message_chunks() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let now = Utc::now();
+        let mut messages = Vec::new();
+        for index in 0..16 {
+            messages.push(Message {
+                id: Uuid::from_u128(0x7000_0000_0000_0000_0000_0000_0000_0000 + index as u128),
+                timestamp: now,
+                role: Role::User,
+                content: format!("Ordinary setup message {index}"),
+                tool_calls: vec![],
+                metadata: HashMap::new(),
+            });
+        }
+        messages.push(Message {
+            id: Uuid::from_u128(0x8000_0000_0000_0000_0000_0000_0000_0001),
+            timestamp: now,
+            role: Role::Assistant,
+            content: "Late recall marker: configure TAURI_PRIVATE_KEY before release packaging."
+                .to_string(),
+            tool_calls: vec![],
+            metadata: HashMap::new(),
+        });
+
+        let conversation = Conversation {
+            id: "conv-late-chunk-recall".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir: repo_root.to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("Chunk recall regression test".to_string()),
+            messages,
+            file_changes: vec![],
+        };
+
+        store
+            .upsert_conversation_snapshot("codex", &conversation, None)
+            .unwrap();
+
+        let matches = store
+            .search_history(repo_root, "TAURI_PRIVATE_KEY release packaging", 5)
+            .unwrap();
+
+        assert!(matches.iter().any(|item| {
+            item.r#type == "chunk" && item.summary.contains("TAURI_PRIVATE_KEY")
+        }));
     }
 
     #[test]
