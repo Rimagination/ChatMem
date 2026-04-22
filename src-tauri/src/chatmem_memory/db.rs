@@ -185,6 +185,40 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS memory_conflicts (
+            conflict_id TEXT PRIMARY KEY,
+            repo_id TEXT NOT NULL,
+            candidate_id TEXT NOT NULL,
+            memory_id TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            resolved_at TEXT,
+            UNIQUE(candidate_id, memory_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS memory_entities (
+            entity_id TEXT PRIMARY KEY,
+            repo_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            normalized_name TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(repo_id, normalized_name)
+        );
+
+        CREATE TABLE IF NOT EXISTS memory_entity_links (
+            link_id TEXT PRIMARY KEY,
+            repo_id TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            owner_type TEXT NOT NULL,
+            owner_id TEXT NOT NULL,
+            relationship TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(repo_id, entity_id, owner_type, owner_id, relationship)
+        );
+
         CREATE TABLE IF NOT EXISTS wiki_pages (
             page_id TEXT PRIMARY KEY,
             repo_id TEXT NOT NULL,
@@ -210,6 +244,24 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             body TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS document_embeddings (
+            doc_id TEXT PRIMARY KEY,
+            repo_id TEXT NOT NULL,
+            embedding_model TEXT NOT NULL,
+            dimensions INTEGER NOT NULL,
+            vector_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_document_embeddings_repo_model
+        ON document_embeddings(repo_id, embedding_model, dimensions);
+
+        CREATE INDEX IF NOT EXISTS idx_memory_conflicts_repo_status
+        ON memory_conflicts(repo_id, status);
+
+        CREATE INDEX IF NOT EXISTS idx_memory_entity_links_repo_owner
+        ON memory_entity_links(repo_id, owner_type, owner_id);
 
         CREATE VIRTUAL TABLE IF NOT EXISTS search_documents_fts USING fts5(
             doc_id UNINDEXED,
@@ -398,6 +450,10 @@ mod tests {
                    'checkpoints',
                    'handoff_packets',
                    'evidence_refs',
+                   'document_embeddings',
+                   'memory_conflicts',
+                   'memory_entities',
+                   'memory_entity_links',
                    'search_documents',
                    'wiki_pages'
                  )
@@ -417,11 +473,15 @@ mod tests {
                 "approved_memories",
                 "checkpoints",
                 "conversations",
+                "document_embeddings",
                 "episodes",
                 "evidence_refs",
                 "file_changes",
                 "handoff_packets",
                 "memory_candidates",
+                "memory_conflicts",
+                "memory_entities",
+                "memory_entity_links",
                 "messages",
                 "repos",
                 "search_documents",

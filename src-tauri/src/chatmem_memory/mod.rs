@@ -1,6 +1,8 @@
 pub mod a2a;
 pub mod checkpoints;
 pub mod db;
+pub mod embedding;
+pub mod eval;
 pub mod handoff;
 pub mod mcp;
 pub mod models;

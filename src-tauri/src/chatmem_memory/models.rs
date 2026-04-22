@@ -49,6 +49,17 @@ pub struct MemoryMergeSuggestion {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryConflictResponse {
+    pub conflict_id: String,
+    pub candidate_id: String,
+    pub memory_id: String,
+    pub memory_title: String,
+    pub reason: String,
+    pub status: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MemoryCandidateResponse {
     pub candidate_id: String,
     pub kind: String,
@@ -62,6 +73,8 @@ pub struct MemoryCandidateResponse {
     pub evidence_refs: Vec<EvidenceRef>,
     #[serde(default)]
     pub merge_suggestion: Option<MemoryMergeSuggestion>,
+    #[serde(default)]
+    pub conflict_suggestion: Option<MemoryConflictResponse>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -116,6 +129,30 @@ pub struct SearchHistoryMatch {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SearchHistoryPayload {
     pub matches: Vec<SearchHistoryMatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EntityNodeResponse {
+    pub entity_id: String,
+    pub name: String,
+    pub kind: String,
+    pub mention_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EntityLinkResponse {
+    pub entity_id: String,
+    pub entity_name: String,
+    pub owner_type: String,
+    pub owner_id: String,
+    pub relationship: String,
+    pub source_title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EntityGraphPayload {
+    pub entities: Vec<EntityNodeResponse>,
+    pub links: Vec<EntityLinkResponse>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

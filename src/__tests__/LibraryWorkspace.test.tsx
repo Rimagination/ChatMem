@@ -189,20 +189,27 @@ describe("Library workspace", () => {
     });
   });
 
-  it("surfaces project memory beside the selected conversation", async () => {
+  it("surfaces project memory through the drawer", async () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Library workspace"))[0]);
 
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: "Library workspace" })).toBeTruthy();
-      expect(screen.getByRole("heading", { name: "Project Memory" })).toBeTruthy();
-      expect(screen.getByText("Test command memory")).toBeTruthy();
-      expect(screen.getByText("Use before packaging")).toBeTruthy();
       expect(screen.getByRole("button", { name: "Copy location" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Copy resume command" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Memory" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Migrate" })).toBeTruthy();
       expect(screen.queryByRole("button", { name: "History" })).toBeNull();
     });
+
+    expect(screen.queryByRole("complementary", { name: "Project Memory" })).toBeNull();
+    expect(screen.queryByText("Test command memory")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Memory" }));
+
+    expect(await screen.findByRole("complementary", { name: "Project Memory" })).toBeTruthy();
+    expect(screen.getByText("Test command memory")).toBeTruthy();
+    expect(screen.getByText("Use before packaging")).toBeTruthy();
   });
 });

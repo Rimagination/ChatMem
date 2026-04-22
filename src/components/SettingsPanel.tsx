@@ -25,6 +25,7 @@ export type SettingsSyncCopy = {
   syncingNowLabel: string;
   syncSuccessPrefix: string;
   syncSuccessSuffix: string;
+  syncTargetLabel: string;
   syncFailedPrefix: string;
 };
 
@@ -332,10 +333,15 @@ export default function SettingsPanel({
               ) : null}
 
               {webDavSync.kind === "success" ? (
-                <p className="settings-notice is-success">
-                  {syncCopy.syncSuccessPrefix} {webDavSync.uploadedCount}{" "}
-                  {syncCopy.syncSuccessSuffix}
-                </p>
+                <div className="settings-notice is-success">
+                  <p>
+                    {syncCopy.syncSuccessPrefix} {webDavSync.uploadedCount}{" "}
+                    {syncCopy.syncSuccessSuffix}
+                  </p>
+                  <p className="settings-notice-detail">
+                    {syncCopy.syncTargetLabel}: {webDavSync.remoteUrl}
+                  </p>
+                </div>
               ) : null}
 
               {webDavSync.kind === "error" ? (

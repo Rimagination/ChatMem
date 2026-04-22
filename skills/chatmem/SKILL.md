@@ -30,11 +30,13 @@ Do not use it for general web search, unrelated memory, or one-off notes that wi
 1. Identify the repo root from the current workspace, user prompt, or ChatMem continuation prompt.
 2. Call `get_repo_memory` for the repo before substantial work.
 3. If the goal is continuation, inspect the freshest checkpoint or handoff returned by ChatMem before searching raw history.
-4. Call `search_repo_history` only for specific gaps: prior decisions, commands, key files, errors, or earlier attempts.
+4. Call `search_repo_history` only for specific gaps: prior decisions, commands, key files, errors, or earlier attempts. It uses hybrid keyword/vector search, so concise semantic queries such as "cloud backup sync" or "release signing" are acceptable.
 5. Use the smallest useful context. Prefer approved memory, generated wiki pages, checkpoints, handoffs, and targeted search results over replaying raw conversation logs.
 6. Use `list_repo_wiki_pages` or `rebuild_repo_wiki` when the user asks for a readable project wiki, commands, gotchas, or recent-work pages. Treat those pages as generated projections, not editable source material.
-7. When a stable fact should survive this thread, call `create_memory_candidate` with concise text and evidence.
-8. Before another agent continues the task, call `build_handoff_packet` instead of asking the user to copy the full conversation.
+7. Use `list_entity_graph` when a task depends on related systems, symbols, protocols, agents, or release concepts.
+8. Use `list_memory_conflicts` before approving a surprising candidate, especially when it negates an existing command or convention.
+9. When a stable fact should survive this thread, call `create_memory_candidate` with concise text and evidence.
+10. Before another agent continues the task, call `build_handoff_packet` instead of asking the user to copy the full conversation.
 
 ## Continuation Prompts
 
@@ -72,6 +74,14 @@ Bad candidates:
 ## WebDAV Sync Rule
 
 The desktop settings screen owns WebDAV credentials and cloud upload. MCP tools do not silently write to the user's cloud storage. When a user expects files to appear in their netdisk, the app must run the explicit WebDAV sync action, which creates the remote `chatmem` folder and uploads JSON conversation snapshots plus a manifest.
+
+## Retrieval Rule
+
+Search history is indexed as FTS plus local `chatmem-local-hash-v1` vectors. Treat vector hits as retrieval candidates, not final truth: prefer approved memories and evidence refs for durable facts, and verify stale or surprising matches before acting.
+
+## Extraction And Conflict Rule
+
+ChatMem may auto-create pending candidates only from explicit durable-memory wording such as "Remember:", "Rule:", "Gotcha:", "Always", or "Do not". Auto-extracted candidates are not approved automatically. Conflicts are review signals attached to candidates when new wording appears to negate an active approved memory.
 
 ## Handoff Rules
 

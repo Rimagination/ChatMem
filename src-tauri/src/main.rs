@@ -11,8 +11,8 @@ use chatmem::chatmem_memory::{
     a2a::AgentCard,
     checkpoints::{CheckpointRecord, CreateCheckpointInput},
     models::{
-        ApprovedMemoryResponse, EpisodeResponse, HandoffPacketResponse, MemoryCandidateResponse,
-        WikiPageResponse,
+        ApprovedMemoryResponse, EntityGraphPayload, EpisodeResponse, HandoffPacketResponse,
+        MemoryCandidateResponse, MemoryConflictResponse, WikiPageResponse,
     },
     runs::{list_artifacts as load_artifacts, list_runs as load_runs, ArtifactRecord, RunRecord},
     store::{MemoryStore, ReviewAction},
@@ -783,6 +783,25 @@ async fn list_memory_candidates(
 }
 
 #[command]
+async fn list_memory_conflicts(
+    repo_root: String,
+    status: Option<String>,
+) -> Result<Vec<MemoryConflictResponse>, String> {
+    let store = open_memory_store()?;
+    store
+        .list_memory_conflicts(&repo_root, status.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[command]
+async fn list_entity_graph(repo_root: String, limit: Option<usize>) -> Result<EntityGraphPayload, String> {
+    let store = open_memory_store()?;
+    store
+        .list_entity_graph(&repo_root, limit.unwrap_or(25))
+        .map_err(|e| e.to_string())
+}
+
+#[command]
 async fn review_memory_candidate(
     candidate_id: String,
     action: String,
@@ -933,6 +952,8 @@ fn main() {
             sync_webdav_now,
             list_repo_memories,
             list_memory_candidates,
+            list_memory_conflicts,
+            list_entity_graph,
             review_memory_candidate,
             reverify_memory,
             list_episodes,

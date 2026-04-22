@@ -10,10 +10,12 @@ use agentswap_core::types::{ChangeType, Conversation, Role, ToolStatus};
 use super::{
     checkpoints::{CheckpointRecord, CreateCheckpointInput},
     db,
+    embedding,
     handoff,
     models::{
-        ApprovedMemoryResponse, CreateMemoryCandidateInput, EpisodeResponse, EvidenceRef,
-        HandoffPacketResponse, MemoryCandidateResponse, MemoryMergeSuggestion, SearchHistoryMatch,
+        ApprovedMemoryResponse, CreateMemoryCandidateInput, EntityGraphPayload, EntityLinkResponse,
+        EntityNodeResponse, EpisodeResponse, EvidenceRef, HandoffPacketResponse,
+        MemoryCandidateResponse, MemoryConflictResponse, MemoryMergeSuggestion, SearchHistoryMatch,
         WikiPageResponse,
     },
     repo_identity,
@@ -237,6 +239,12 @@ impl MemoryStore {
                 chrono::Utc::now().to_rfc3339(),
             ],
         )?;
+        extract_memory_candidates_from_conversation_tx(
+            &tx,
+            &repo_id,
+            &conversation_id,
+            conversation,
+        )?;
 
         tx.commit()?;
 
@@ -269,6 +277,15 @@ impl MemoryStore {
         )?;
 
         replace_evidence_refs_tx(&tx, "candidate", &candidate_id, &input.evidence_refs)?;
+        record_candidate_conflicts_tx(
+            &tx,
+            &repo_id,
+            &candidate_id,
+            &input.kind,
+            &input.summary,
+            &input.value,
+            &input.why_it_matters,
+        )?;
         tx.commit()?;
 
         Ok(candidate_id)
@@ -443,6 +460,82 @@ impl MemoryStore {
         self.suggest_memory_merges_by_repo_id(&repo_id)
     }
 
+    pub fn list_memory_conflicts(
+        &self,
+        repo_root: &str,
+        status: Option<&str>,
+    ) -> Result<Vec<MemoryConflictResponse>> {
+        let repo_id = self.ensure_repo(repo_root)?;
+        self.list_memory_conflicts_by_repo_id(&repo_id, status)
+    }
+
+    pub fn list_entity_graph(&self, repo_root: &str, limit: usize) -> Result<EntityGraphPayload> {
+        let repo_id = self.ensure_repo(repo_root)?;
+        let conn = self.conn()?;
+        let limit = limit.max(1);
+
+        let mut entity_stmt = conn.prepare(
+            "SELECT e.entity_id, e.name, e.kind, COUNT(l.link_id) AS mention_count
+             FROM memory_entities e
+             LEFT JOIN memory_entity_links l ON l.entity_id = e.entity_id
+             WHERE e.repo_id = ?1
+             GROUP BY e.entity_id, e.name, e.kind
+             ORDER BY mention_count DESC, e.updated_at DESC
+             LIMIT ?2",
+        )?;
+        let entities = entity_stmt
+            .query_map(params![repo_id.clone(), limit as i64], |row| {
+                Ok(EntityNodeResponse {
+                    entity_id: row.get(0)?,
+                    name: row.get(1)?,
+                    kind: row.get(2)?,
+                    mention_count: row.get::<_, i64>(3)? as usize,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let entity_ids = entities
+            .iter()
+            .map(|entity| entity.entity_id.clone())
+            .collect::<HashSet<_>>();
+
+        let mut link_stmt = conn.prepare(
+            "SELECT l.entity_id, e.name, l.owner_type, l.owner_id, l.relationship,
+                    COALESCE(sd.title, l.owner_id) AS source_title
+             FROM memory_entity_links l
+             JOIN memory_entities e ON e.entity_id = l.entity_id
+             LEFT JOIN search_documents sd
+               ON sd.repo_id = l.repo_id
+              AND sd.doc_ref_id = l.owner_id
+              AND (
+                    (l.owner_type = 'memory' AND sd.doc_type = 'memory')
+                 OR (l.owner_type = 'episode' AND sd.doc_type = 'episode')
+                 OR (l.owner_type = 'wiki_page' AND sd.doc_type = 'wiki')
+                 OR (l.owner_type = 'conversation' AND sd.doc_type = 'conversation')
+              )
+             WHERE l.repo_id = ?1
+             ORDER BY l.created_at DESC
+             LIMIT ?2",
+        )?;
+        let links = link_stmt
+            .query_map(params![repo_id, (limit * 4) as i64], |row| {
+                Ok(EntityLinkResponse {
+                    entity_id: row.get(0)?,
+                    entity_name: row.get(1)?,
+                    owner_type: row.get(2)?,
+                    owner_id: row.get(3)?,
+                    relationship: row.get(4)?,
+                    source_title: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|link| entity_ids.contains(&link.entity_id))
+            .collect::<Vec<_>>();
+
+        Ok(EntityGraphPayload { entities, links })
+    }
+
     pub fn list_repo_memories(&self, repo_root: &str) -> Result<Vec<ApprovedMemoryResponse>> {
         let repo_id = self.ensure_repo(repo_root)?;
         let conn = self.conn()?;
@@ -532,6 +625,7 @@ impl MemoryStore {
                     created_at: row.get(8)?,
                     evidence_refs: vec![],
                     merge_suggestion: None,
+                    conflict_suggestion: None,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?
@@ -549,6 +643,7 @@ impl MemoryStore {
                     created_at: row.get(8)?,
                     evidence_refs: vec![],
                     merge_suggestion: None,
+                    conflict_suggestion: None,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?
@@ -559,10 +654,17 @@ impl MemoryStore {
             .into_iter()
             .map(|suggestion| (suggestion.candidate_id.clone(), suggestion))
             .collect::<HashMap<_, _>>();
+        let conflict_suggestions = self
+            .list_memory_conflicts_by_repo_id(repo_id, Some("open"))?
+            .into_iter()
+            .map(|conflict| (conflict.candidate_id.clone(), conflict))
+            .collect::<HashMap<_, _>>();
         let mut candidates = rows;
         for candidate in &mut candidates {
             candidate.evidence_refs = self.evidence_refs("candidate", &candidate.candidate_id)?;
             candidate.merge_suggestion = merge_suggestions.get(&candidate.candidate_id).cloned();
+            candidate.conflict_suggestion =
+                conflict_suggestions.get(&candidate.candidate_id).cloned();
         }
         Ok(candidates)
     }
@@ -644,6 +746,56 @@ impl MemoryStore {
         }
 
         Ok(suggestions)
+    }
+
+    fn list_memory_conflicts_by_repo_id(
+        &self,
+        repo_id: &str,
+        status: Option<&str>,
+    ) -> Result<Vec<MemoryConflictResponse>> {
+        let conn = self.conn()?;
+        let mut sql = String::from(
+            "SELECT mc.conflict_id, mc.candidate_id, mc.memory_id, am.title,
+                    mc.reason, mc.status, mc.created_at
+             FROM memory_conflicts mc
+             JOIN approved_memories am ON am.memory_id = mc.memory_id
+             WHERE mc.repo_id = ?1",
+        );
+        if status.is_some() {
+            sql.push_str(" AND mc.status = ?2");
+        }
+        sql.push_str(" ORDER BY mc.created_at DESC");
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = if let Some(status) = status {
+            stmt.query_map(params![repo_id, status], |row| {
+                Ok(MemoryConflictResponse {
+                    conflict_id: row.get(0)?,
+                    candidate_id: row.get(1)?,
+                    memory_id: row.get(2)?,
+                    memory_title: row.get(3)?,
+                    reason: row.get(4)?,
+                    status: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+        } else {
+            stmt.query_map(params![repo_id], |row| {
+                Ok(MemoryConflictResponse {
+                    conflict_id: row.get(0)?,
+                    candidate_id: row.get(1)?,
+                    memory_id: row.get(2)?,
+                    memory_title: row.get(3)?,
+                    reason: row.get(4)?,
+                    status: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+        };
+
+        Ok(rows)
     }
 
     pub fn list_episodes(&self, repo_root: &str) -> Result<Vec<EpisodeResponse>> {
@@ -1154,79 +1306,56 @@ impl MemoryStore {
     }
 
     pub fn search_history(&self, repo_root: &str, query: &str, limit: usize) -> Result<Vec<SearchHistoryMatch>> {
-        let repo_id = self.ensure_repo(repo_root)?;
-        let conn = self.conn()?;
-        let mut matches = Vec::new();
-
-        let fts_result = conn.prepare(
-            "SELECT sd.doc_type, sd.doc_ref_id, sd.title, sd.body
-             FROM search_documents_fts
-             JOIN search_documents sd ON sd.doc_id = search_documents_fts.doc_id
-             WHERE sd.repo_id = ?1 AND search_documents_fts MATCH ?2
-             ORDER BY bm25(search_documents_fts)
-             LIMIT ?3",
-        );
-
-        if let Ok(mut stmt) = fts_result {
-            let rows = stmt.query_map(params![repo_id.clone(), query, limit as i64], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                ))
-            })?;
-
-            for row in rows {
-                let (doc_type, doc_ref_id, title, body) = row?;
-                matches.push(SearchHistoryMatch {
-                    r#type: doc_type.clone(),
-                    title,
-                    summary: truncate_text(&body, 280),
-                    why_matched: "Repository history search match".to_string(),
-                    score: 1.0,
-                    evidence_refs: load_evidence_refs_from_conn(
-                        &conn,
-                        evidence_owner_for_doc_type(&doc_type),
-                        &doc_ref_id,
-                    )?,
-                });
-            }
+        if query.trim().is_empty() || limit == 0 {
+            return Ok(vec![]);
         }
 
-        if matches.is_empty() {
-            let like = format!("%{}%", query.to_lowercase());
-            let mut stmt = conn.prepare(
-                "SELECT doc_type, doc_ref_id, title, body
-                 FROM search_documents
-                 WHERE repo_id = ?1 AND lower(title || ' ' || body) LIKE ?2
-                 ORDER BY updated_at DESC
-                 LIMIT ?3",
-            )?;
-            let rows = stmt.query_map(params![repo_id, like, limit as i64], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                ))
-            })?;
+        let repo_id = self.ensure_repo(repo_root)?;
+        let conn = self.conn()?;
+        backfill_missing_document_embeddings(&conn, &repo_id)?;
 
-            for row in rows {
-                let (doc_type, doc_ref_id, title, body) = row?;
-                matches.push(SearchHistoryMatch {
-                    r#type: doc_type.clone(),
-                    title,
-                    summary: truncate_text(&body, 280),
-                    why_matched: "Repository history search fallback match".to_string(),
-                    score: 0.5,
-                    evidence_refs: load_evidence_refs_from_conn(
-                        &conn,
-                        evidence_owner_for_doc_type(&doc_type),
-                        &doc_ref_id,
-                    )?,
-                });
-            }
+        let candidate_limit = (limit * 4).max(16);
+        let mut candidates = HashMap::new();
+
+        collect_fts_search_candidates(&conn, &repo_id, query, candidate_limit, &mut candidates)?;
+        collect_like_search_candidates(&conn, &repo_id, query, candidate_limit, &mut candidates)?;
+        collect_vector_search_candidates(&conn, &repo_id, query, candidate_limit, &mut candidates)?;
+
+        let mut scored = candidates
+            .into_values()
+            .filter_map(|mut candidate| {
+                if !candidate.has_retrieval_signal() {
+                    return None;
+                }
+
+                candidate.score = score_search_candidate(&candidate, query);
+                Some(candidate)
+            })
+            .collect::<Vec<_>>();
+
+        scored.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| right.updated_at.cmp(&left.updated_at))
+        });
+
+        let mut matches = Vec::new();
+        for candidate in scored.into_iter().take(limit) {
+            let why_matched = candidate.match_reason();
+            matches.push(SearchHistoryMatch {
+                r#type: candidate.doc_type.clone(),
+                title: candidate.title,
+                summary: truncate_text(&candidate.body, 280),
+                why_matched,
+                score: candidate.score,
+                evidence_refs: load_evidence_refs_from_conn(
+                    &conn,
+                    evidence_owner_for_doc_type(&candidate.doc_type),
+                    &candidate.doc_ref_id,
+                )?,
+            });
         }
 
         Ok(matches)
@@ -1245,6 +1374,287 @@ fn evidence_owner_for_doc_type(doc_type: &str) -> &'static str {
         "wiki" => "wiki_page",
         _ => "conversation",
     }
+}
+
+const VECTOR_MATCH_THRESHOLD: f64 = 0.18;
+
+#[derive(Debug, Clone)]
+struct SearchCandidate {
+    doc_type: String,
+    doc_ref_id: String,
+    title: String,
+    body: String,
+    updated_at: String,
+    keyword_rank: Option<usize>,
+    like_match: bool,
+    vector_score: Option<f64>,
+    score: f64,
+}
+
+impl SearchCandidate {
+    fn has_retrieval_signal(&self) -> bool {
+        self.keyword_rank.is_some()
+            || self.like_match
+            || self.vector_score.unwrap_or(0.0) >= VECTOR_MATCH_THRESHOLD
+    }
+
+    fn match_reason(&self) -> String {
+        let vector_score = self.vector_score.unwrap_or(0.0);
+        if self.keyword_rank.is_some() && vector_score >= VECTOR_MATCH_THRESHOLD {
+            "hybrid repository history match (keyword + vector rerank)".to_string()
+        } else if vector_score >= VECTOR_MATCH_THRESHOLD {
+            "vector similarity match from local embeddings".to_string()
+        } else if self.keyword_rank.is_some() {
+            "keyword repository history match".to_string()
+        } else {
+            "repository history substring fallback match".to_string()
+        }
+    }
+}
+
+fn collect_fts_search_candidates(
+    conn: &Connection,
+    repo_id: &str,
+    query: &str,
+    limit: usize,
+    candidates: &mut HashMap<String, SearchCandidate>,
+) -> Result<()> {
+    let fts_result = conn.prepare(
+        "SELECT sd.doc_id, sd.doc_type, sd.doc_ref_id, sd.title, sd.body, sd.updated_at
+         FROM search_documents_fts
+         JOIN search_documents sd ON sd.doc_id = search_documents_fts.doc_id
+         WHERE sd.repo_id = ?1 AND search_documents_fts MATCH ?2
+         ORDER BY bm25(search_documents_fts)
+         LIMIT ?3",
+    );
+
+    let Ok(mut stmt) = fts_result else {
+        return Ok(());
+    };
+
+    let rows = stmt.query_map(params![repo_id, query, limit as i64], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+        ))
+    });
+
+    let Ok(rows) = rows else {
+        return Ok(());
+    };
+
+    for (rank, row) in rows.enumerate() {
+        let (doc_id, doc_type, doc_ref_id, title, body, updated_at) = row?;
+        let candidate = search_candidate_entry(
+            candidates, doc_id, doc_type, doc_ref_id, title, body, updated_at,
+        );
+        candidate.keyword_rank = Some(candidate.keyword_rank.map_or(rank, |existing| existing.min(rank)));
+    }
+
+    Ok(())
+}
+
+fn collect_like_search_candidates(
+    conn: &Connection,
+    repo_id: &str,
+    query: &str,
+    limit: usize,
+    candidates: &mut HashMap<String, SearchCandidate>,
+) -> Result<()> {
+    let like = format!("%{}%", query.to_lowercase());
+    let mut stmt = conn.prepare(
+        "SELECT doc_id, doc_type, doc_ref_id, title, body, updated_at
+         FROM search_documents
+         WHERE repo_id = ?1 AND lower(title || ' ' || body) LIKE ?2
+         ORDER BY updated_at DESC
+         LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(params![repo_id, like, limit as i64], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+        ))
+    })?;
+
+    for row in rows {
+        let (doc_id, doc_type, doc_ref_id, title, body, updated_at) = row?;
+        let candidate = search_candidate_entry(
+            candidates, doc_id, doc_type, doc_ref_id, title, body, updated_at,
+        );
+        candidate.like_match = true;
+    }
+
+    Ok(())
+}
+
+fn collect_vector_search_candidates(
+    conn: &Connection,
+    repo_id: &str,
+    query: &str,
+    limit: usize,
+    candidates: &mut HashMap<String, SearchCandidate>,
+) -> Result<()> {
+    let query_vector = embedding::embed_query(query);
+    if query_vector.iter().all(|value| *value == 0.0) {
+        return Ok(());
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT sd.doc_id, sd.doc_type, sd.doc_ref_id, sd.title, sd.body, sd.updated_at, de.vector_json
+         FROM document_embeddings de
+         JOIN search_documents sd ON sd.doc_id = de.doc_id
+         WHERE sd.repo_id = ?1
+           AND de.repo_id = ?1
+           AND de.embedding_model = ?2
+           AND de.dimensions = ?3",
+    )?;
+
+    let rows = stmt.query_map(
+        params![
+            repo_id,
+            embedding::LOCAL_EMBEDDING_MODEL,
+            embedding::LOCAL_EMBEDDING_DIMENSIONS as i64,
+        ],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        },
+    )?;
+
+    let mut scored_rows = Vec::new();
+    for row in rows {
+        let (doc_id, doc_type, doc_ref_id, title, body, updated_at, vector_json) = row?;
+        let document_vector = serde_json::from_str::<Vec<f32>>(&vector_json).unwrap_or_default();
+        let vector_score = embedding::cosine_similarity(&query_vector, &document_vector);
+        if vector_score >= VECTOR_MATCH_THRESHOLD {
+            scored_rows.push((
+                vector_score,
+                doc_id,
+                doc_type,
+                doc_ref_id,
+                title,
+                body,
+                updated_at,
+            ));
+        }
+    }
+
+    scored_rows.sort_by(|left, right| {
+        right
+            .0
+            .partial_cmp(&left.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    for (vector_score, doc_id, doc_type, doc_ref_id, title, body, updated_at) in
+        scored_rows.into_iter().take(limit)
+    {
+        let candidate = search_candidate_entry(
+            candidates, doc_id, doc_type, doc_ref_id, title, body, updated_at,
+        );
+        candidate.vector_score = Some(candidate.vector_score.unwrap_or(0.0).max(vector_score));
+    }
+
+    Ok(())
+}
+
+fn search_candidate_entry<'a>(
+    candidates: &'a mut HashMap<String, SearchCandidate>,
+    doc_id: String,
+    doc_type: String,
+    doc_ref_id: String,
+    title: String,
+    body: String,
+    updated_at: String,
+) -> &'a mut SearchCandidate {
+    let key = doc_id.clone();
+    candidates.entry(key).or_insert_with(|| SearchCandidate {
+        doc_type,
+        doc_ref_id,
+        title,
+        body,
+        updated_at,
+        keyword_rank: None,
+        like_match: false,
+        vector_score: None,
+        score: 0.0,
+    })
+}
+
+fn score_search_candidate(candidate: &SearchCandidate, query: &str) -> f64 {
+    let keyword_score = candidate
+        .keyword_rank
+        .map(|rank| 1.0 / (rank as f64 + 1.0))
+        .unwrap_or(0.0);
+    let like_score = if candidate.like_match { 0.45 } else { 0.0 };
+    let vector_score = candidate.vector_score.unwrap_or(0.0).max(0.0);
+    let coverage = token_overlap(query, &format!("{} {}", candidate.title, candidate.body));
+    let type_bonus = match candidate.doc_type.as_str() {
+        "memory" => 0.08,
+        "wiki" => 0.05,
+        "episode" => 0.03,
+        _ => 0.0,
+    };
+
+    (keyword_score * 0.48)
+        + (like_score * 0.18)
+        + (vector_score * 0.42)
+        + (coverage * 0.12)
+        + type_bonus
+}
+
+fn backfill_missing_document_embeddings(conn: &Connection, repo_id: &str) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT sd.doc_id, sd.title, sd.body
+         FROM search_documents sd
+         LEFT JOIN document_embeddings de ON de.doc_id = sd.doc_id
+         WHERE sd.repo_id = ?1
+           AND (
+               de.doc_id IS NULL
+               OR de.embedding_model != ?2
+               OR de.dimensions != ?3
+               OR de.updated_at < sd.updated_at
+           )",
+    )?;
+
+    let rows = stmt.query_map(
+        params![
+            repo_id,
+            embedding::LOCAL_EMBEDDING_MODEL,
+            embedding::LOCAL_EMBEDDING_DIMENSIONS as i64,
+        ],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        },
+    )?;
+
+    let missing = rows.collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+
+    for (doc_id, title, body) in missing {
+        upsert_document_embedding_tx(conn, &doc_id, repo_id, &title, &body)?;
+    }
+
+    Ok(())
 }
 
 fn load_evidence_refs_from_conn(conn: &Connection, owner_type: &str, owner_id: &str) -> Result<Vec<EvidenceRef>> {
@@ -1329,7 +1739,452 @@ fn upsert_search_document_tx(
         "INSERT INTO search_documents_fts (doc_id, title, body) VALUES (?1, ?2, ?3)",
         params![doc_id, title, body],
     )?;
+    upsert_document_embedding_tx(conn, doc_id, repo_id, title, body)?;
+    replace_entity_links_for_document_tx(conn, repo_id, doc_type, doc_ref_id, title, body)?;
     Ok(())
+}
+
+fn upsert_document_embedding_tx(
+    conn: &Connection,
+    doc_id: &str,
+    repo_id: &str,
+    title: &str,
+    body: &str,
+) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let vector = embedding::embed_search_document(title, body);
+    let vector_json = serde_json::to_string(&vector)?;
+    conn.execute(
+        "INSERT INTO document_embeddings (
+            doc_id, repo_id, embedding_model, dimensions, vector_json, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(doc_id) DO UPDATE SET
+            repo_id = excluded.repo_id,
+            embedding_model = excluded.embedding_model,
+            dimensions = excluded.dimensions,
+            vector_json = excluded.vector_json,
+            updated_at = excluded.updated_at",
+        params![
+            doc_id,
+            repo_id,
+            embedding::LOCAL_EMBEDDING_MODEL,
+            embedding::LOCAL_EMBEDDING_DIMENSIONS as i64,
+            vector_json,
+            now,
+        ],
+    )?;
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct ExtractedEntity {
+    name: String,
+    normalized_name: String,
+    kind: String,
+}
+
+fn replace_entity_links_for_document_tx(
+    conn: &Connection,
+    repo_id: &str,
+    doc_type: &str,
+    doc_ref_id: &str,
+    title: &str,
+    body: &str,
+) -> Result<()> {
+    let owner_type = evidence_owner_for_doc_type(doc_type);
+    conn.execute(
+        "DELETE FROM memory_entity_links
+         WHERE repo_id = ?1 AND owner_type = ?2 AND owner_id = ?3",
+        params![repo_id, owner_type, doc_ref_id],
+    )?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    for entity in extract_document_entities(title, body) {
+        let entity_id = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_URL,
+            format!("chatmem:entity:{repo_id}:{}", entity.normalized_name).as_bytes(),
+        )
+        .to_string();
+        conn.execute(
+            "INSERT INTO memory_entities (
+                entity_id, repo_id, name, normalized_name, kind, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+             ON CONFLICT(repo_id, normalized_name) DO UPDATE SET
+                name = excluded.name,
+                kind = excluded.kind,
+                updated_at = excluded.updated_at",
+            params![
+                entity_id,
+                repo_id,
+                entity.name,
+                entity.normalized_name,
+                entity.kind,
+                now,
+            ],
+        )?;
+
+        let link_id = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_URL,
+            format!("chatmem:entity-link:{repo_id}:{owner_type}:{doc_ref_id}:{entity_id}:mentions")
+                .as_bytes(),
+        )
+        .to_string();
+        conn.execute(
+            "INSERT OR IGNORE INTO memory_entity_links (
+                link_id, repo_id, entity_id, owner_type, owner_id, relationship, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 'mentions', ?6)",
+            params![link_id, repo_id, entity_id, owner_type, doc_ref_id, now],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn extract_document_entities(title: &str, body: &str) -> Vec<ExtractedEntity> {
+    let mut entities = Vec::new();
+    let mut seen = HashSet::new();
+    let text = format!("{title}\n{body}");
+
+    for (name, kind) in known_entity_terms(&text) {
+        push_entity(&mut entities, &mut seen, name, kind);
+    }
+
+    for raw in text.split_whitespace() {
+        let Some(name) = clean_entity_token(raw) else {
+            continue;
+        };
+        if !is_entity_candidate(&name) {
+            continue;
+        }
+        let kind = infer_entity_kind(&name);
+        push_entity(&mut entities, &mut seen, &name, &kind);
+        if entities.len() >= 16 {
+            break;
+        }
+    }
+
+    entities
+}
+
+fn known_entity_terms(text: &str) -> Vec<(&'static str, &'static str)> {
+    let lower = text.to_lowercase();
+    let known = [
+        ("chatmem", "project", "ChatMem"),
+        ("webdav", "protocol", "WebDAV"),
+        ("mcp", "protocol", "MCP"),
+        ("tauri", "framework", "Tauri"),
+        ("codex", "agent", "Codex"),
+        ("claude", "agent", "Claude"),
+        ("gemini", "agent", "Gemini"),
+        ("sqlite", "database", "SQLite"),
+        ("fts5", "index", "FTS5"),
+        ("github actions", "ci", "GitHub Actions"),
+        ("tauri_private_key", "symbol", "TAURI_PRIVATE_KEY"),
+    ];
+
+    known
+        .iter()
+        .filter_map(|(needle, kind, name)| lower.contains(needle).then_some((*name, *kind)))
+        .collect()
+}
+
+fn push_entity(
+    entities: &mut Vec<ExtractedEntity>,
+    seen: &mut HashSet<String>,
+    name: &str,
+    kind: &str,
+) {
+    let normalized_name = normalize_entity_name(name);
+    if normalized_name.is_empty() || !seen.insert(normalized_name.clone()) {
+        return;
+    }
+
+    entities.push(ExtractedEntity {
+        name: name.to_string(),
+        normalized_name,
+        kind: kind.to_string(),
+    });
+}
+
+fn clean_entity_token(raw: &str) -> Option<String> {
+    let cleaned = raw
+        .trim_matches(|ch: char| !(ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '.'))
+        .trim_matches('.')
+        .to_string();
+
+    if cleaned.len() >= 3 {
+        Some(cleaned)
+    } else {
+        None
+    }
+}
+
+fn is_entity_candidate(token: &str) -> bool {
+    let lower = token.to_lowercase();
+    if matches!(
+        lower.as_str(),
+        "the" | "and" | "for" | "with" | "from" | "this" | "that" | "when" | "before"
+    ) {
+        return false;
+    }
+
+    let has_upper = token.chars().any(|ch| ch.is_ascii_uppercase());
+    let has_lower = token.chars().any(|ch| ch.is_ascii_lowercase());
+    let has_digit = token.chars().any(|ch| ch.is_ascii_digit());
+    let has_symbol = token.contains('_') || token.contains('-') || token.contains('.');
+    let all_caps = token
+        .chars()
+        .filter(|ch| ch.is_ascii_alphabetic())
+        .all(|ch| ch.is_ascii_uppercase());
+
+    (has_symbol && (has_upper || has_digit))
+        || (all_caps && has_upper && token.len() >= 3)
+        || (has_upper && has_lower && token.chars().next().is_some_and(|ch| ch.is_ascii_uppercase()))
+}
+
+fn infer_entity_kind(name: &str) -> String {
+    if name.contains('_') || name.chars().all(|ch| ch.is_ascii_uppercase() || !ch.is_ascii_alphabetic()) {
+        "symbol".to_string()
+    } else if name.contains('.') || name.contains('-') {
+        "artifact".to_string()
+    } else {
+        "term".to_string()
+    }
+}
+
+fn normalize_entity_name(name: &str) -> String {
+    normalize_text(name)
+}
+
+#[derive(Debug, Clone)]
+struct AutoMemoryCandidateDraft {
+    kind: String,
+    summary: String,
+    value: String,
+    why_it_matters: String,
+}
+
+fn extract_memory_candidates_from_conversation_tx(
+    conn: &Connection,
+    repo_id: &str,
+    conversation_id: &str,
+    conversation: &Conversation,
+) -> Result<()> {
+    let mut seen_values = HashSet::new();
+    for message in &conversation.messages {
+        let message_id = format!("{conversation_id}:{}", message.id);
+        for draft in auto_memory_candidate_drafts(&message.content) {
+            let normalized_value = normalize_text(&draft.value);
+            if normalized_value.is_empty() || !seen_values.insert(normalized_value.clone()) {
+                continue;
+            }
+            if auto_candidate_exists_tx(conn, repo_id, &normalized_value)? {
+                continue;
+            }
+
+            let candidate_id = uuid::Uuid::new_v4().to_string();
+            let now = chrono::Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO memory_candidates (
+                    candidate_id, repo_id, kind, summary, value, why_it_matters,
+                    confidence, proposed_by, status, created_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0.62, 'auto_extractor', 'pending_review', ?7)",
+                params![
+                    candidate_id,
+                    repo_id,
+                    draft.kind,
+                    draft.summary,
+                    draft.value,
+                    draft.why_it_matters,
+                    now,
+                ],
+            )?;
+
+            replace_evidence_refs_tx(
+                conn,
+                "candidate",
+                &candidate_id,
+                &[EvidenceRef {
+                    evidence_id: None,
+                    conversation_id: Some(conversation_id.to_string()),
+                    message_id: Some(message_id.clone()),
+                    tool_call_id: None,
+                    file_change_id: None,
+                    excerpt: truncate_text(&message.content, 240),
+                }],
+            )?;
+            record_candidate_conflicts_tx(
+                conn,
+                repo_id,
+                &candidate_id,
+                &draft.kind,
+                &draft.summary,
+                &draft.value,
+                &draft.why_it_matters,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn auto_memory_candidate_drafts(content: &str) -> Vec<AutoMemoryCandidateDraft> {
+    content
+        .lines()
+        .filter_map(auto_memory_candidate_from_line)
+        .collect()
+}
+
+fn auto_memory_candidate_from_line(line: &str) -> Option<AutoMemoryCandidateDraft> {
+    let trimmed = line
+        .trim()
+        .trim_start_matches(|ch| ch == '-' || ch == '*' || ch == ' ')
+        .trim();
+    if trimmed.len() < 12 {
+        return None;
+    }
+
+    let lower = trimmed.to_lowercase();
+    let (kind, value) = if let Some(value) = strip_marker(trimmed, &lower, "remember:") {
+        ("preference", value)
+    } else if let Some(value) = strip_marker(trimmed, &lower, "remember that ") {
+        ("preference", value)
+    } else if let Some(value) = strip_marker(trimmed, &lower, "rule:") {
+        ("convention", value)
+    } else if let Some(value) = strip_marker(trimmed, &lower, "gotcha:") {
+        ("gotcha", value)
+    } else if let Some(value) = strip_marker(trimmed, &lower, "note:") {
+        ("gotcha", value)
+    } else if let Some(value) = strip_marker(trimmed, &lower, "\u{8bb0}\u{4f4f}:") {
+        ("preference", value)
+    } else if let Some(value) = strip_marker(trimmed, &lower, "\u{89c4}\u{5219}:") {
+        ("convention", value)
+    } else if let Some(value) = strip_marker(trimmed, &lower, "\u{6ce8}\u{610f}:") {
+        ("gotcha", value)
+    } else if lower.starts_with("always ")
+        || lower.starts_with("must ")
+        || lower.starts_with("do not ")
+        || lower.starts_with("never ")
+    {
+        ("gotcha", trimmed)
+    } else {
+        return None;
+    };
+
+    let value = truncate_text(value.trim(), 500);
+    if value.len() < 8 {
+        return None;
+    }
+
+    Some(AutoMemoryCandidateDraft {
+        kind: kind.to_string(),
+        summary: truncate_text(&value, 96),
+        value,
+        why_it_matters: "Automatically extracted from explicit durable-memory wording."
+            .to_string(),
+    })
+}
+
+fn strip_marker<'a>(trimmed: &'a str, lower: &str, marker: &str) -> Option<&'a str> {
+    lower
+        .starts_with(marker)
+        .then_some(trimmed.get(marker.len()..).unwrap_or_default())
+}
+
+fn auto_candidate_exists_tx(conn: &Connection, repo_id: &str, normalized_value: &str) -> Result<bool> {
+    let mut stmt = conn.prepare(
+        "SELECT value
+         FROM memory_candidates
+         WHERE repo_id = ?1",
+    )?;
+    let rows = stmt.query_map([repo_id], |row| row.get::<_, String>(0))?;
+    for row in rows {
+        if normalize_text(&row?) == normalized_value {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+fn record_candidate_conflicts_tx(
+    conn: &Connection,
+    repo_id: &str,
+    candidate_id: &str,
+    kind: &str,
+    summary: &str,
+    value: &str,
+    why_it_matters: &str,
+) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT memory_id, title, value, usage_hint
+         FROM approved_memories
+         WHERE repo_id = ?1 AND status = 'active' AND kind = ?2",
+    )?;
+    let rows = stmt.query_map(params![repo_id, kind], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    let memories = rows.collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+
+    for (memory_id, title, memory_value, usage_hint) in memories {
+        let similarity = merge_similarity(summary, value, why_it_matters, &title, &memory_value, &usage_hint)
+            .max(token_overlap(value, &memory_value));
+        if similarity < 0.42 || !has_negation_flip(value, &memory_value) {
+            continue;
+        }
+
+        let conflict_id = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_URL,
+            format!("chatmem:conflict:{candidate_id}:{memory_id}").as_bytes(),
+        )
+        .to_string();
+        let reason = format!(
+            "This candidate appears to contradict approved memory '{title}' (overlap {:.2}); review before approving either version.",
+            similarity
+        );
+        conn.execute(
+            "INSERT INTO memory_conflicts (
+                conflict_id, repo_id, candidate_id, memory_id, reason, status, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 'open', ?6)
+             ON CONFLICT(candidate_id, memory_id) DO UPDATE SET
+                reason = excluded.reason,
+                status = 'open'",
+            params![
+                conflict_id,
+                repo_id,
+                candidate_id,
+                memory_id,
+                reason,
+                chrono::Utc::now().to_rfc3339(),
+            ],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn has_negation_flip(left: &str, right: &str) -> bool {
+    has_negation(left) != has_negation(right)
+}
+
+fn has_negation(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("do not ")
+        || lower.contains("don't ")
+        || lower.contains("never ")
+        || lower.contains("not ")
+        || lower.contains("avoid ")
+        || lower.contains("without ")
+        || lower.contains("instead of ")
+        || lower.contains("no longer ")
+        || lower.contains("\u{4e0d}\u{8981}")
+        || lower.contains("\u{7981}\u{6b62}")
 }
 
 #[derive(Debug, Clone)]
@@ -1752,8 +2607,12 @@ mod tests {
         checkpoints::CreateCheckpointInput,
         models::CreateMemoryCandidateInput,
     };
+    use agentswap_core::types::{AgentKind, Conversation, Message, Role};
+    use chrono::Utc;
     use rusqlite::params;
+    use std::collections::HashMap;
     use std::{thread, time::Duration};
+    use uuid::Uuid;
 
     fn new_store() -> MemoryStore {
         let path = std::env::temp_dir().join(format!("chatmem-store-test-{}.sqlite", uuid::Uuid::new_v4()));
@@ -1885,6 +2744,232 @@ mod tests {
         let matches = store.search_history(repo_root, "projection", 5).unwrap();
 
         assert!(matches.iter().any(|item| item.r#type == "wiki"));
+    }
+
+    #[test]
+    fn approving_memory_indexes_a_local_embedding_vector() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "strategy".to_string(),
+                summary: "Remote snapshot flow".to_string(),
+                value: "WebDAV sync uploads manifest snapshots to the configured remote path.".to_string(),
+                why_it_matters: "Agents need searchable cloud persistence context.".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.89,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        store
+            .review_candidate(
+                &candidate_id,
+                ReviewAction::Approve {
+                    title: "Remote snapshot flow".into(),
+                    usage_hint: "Use when investigating persistence or backup behavior.".into(),
+                },
+            )
+            .unwrap();
+
+        let conn = store.conn().unwrap();
+        let count = conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM document_embeddings de
+                 JOIN search_documents sd ON sd.doc_id = de.doc_id
+                 WHERE sd.doc_type = 'memory'
+                   AND sd.title = 'Remote snapshot flow'
+                   AND de.embedding_model = 'chatmem-local-hash-v1'
+                   AND de.dimensions > 0",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn search_history_uses_vector_similarity_when_keywords_miss() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "strategy".to_string(),
+                summary: "Remote snapshot flow".to_string(),
+                value: "WebDAV sync uploads manifest snapshots to the configured remote path.".to_string(),
+                why_it_matters: "Agents need searchable persistence context.".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.89,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        store
+            .review_candidate(
+                &candidate_id,
+                ReviewAction::Approve {
+                    title: "Remote snapshot flow".into(),
+                    usage_hint: "Use when investigating persistence behavior.".into(),
+                },
+            )
+            .unwrap();
+
+        let matches = store.search_history(repo_root, "cloud drive backup", 5).unwrap();
+
+        let matched = matches
+            .iter()
+            .find(|item| item.title == "Remote snapshot flow")
+            .expect("semantic vector search should find the WebDAV memory");
+
+        assert_eq!(matched.r#type, "memory");
+        assert!(
+            matched.why_matched.contains("vector") || matched.why_matched.contains("hybrid"),
+            "unexpected match reason: {}",
+            matched.why_matched
+        );
+    }
+
+    #[test]
+    fn approving_memory_updates_the_entity_graph() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "strategy".to_string(),
+                summary: "Tauri updater sync".to_string(),
+                value: "WebDAV sync and the Tauri updater both rely on TAURI_PRIVATE_KEY during release packaging.".to_string(),
+                why_it_matters: "Future release agents need to see connected project entities.".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.87,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        store
+            .review_candidate(
+                &candidate_id,
+                ReviewAction::Approve {
+                    title: "Tauri updater sync".into(),
+                    usage_hint: "Use for release and sync investigations.".into(),
+                },
+            )
+            .unwrap();
+
+        let graph = store.list_entity_graph(repo_root, 10).unwrap();
+        let names = graph
+            .entities
+            .iter()
+            .map(|entity| entity.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&"WebDAV"));
+        assert!(names.contains(&"Tauri"));
+        assert!(names.contains(&"TAURI_PRIVATE_KEY"));
+        assert!(graph.links.iter().any(|link| link.owner_type == "memory"));
+    }
+
+    #[test]
+    fn conversation_snapshot_auto_extracts_explicit_memory_candidates() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let now = Utc::now();
+        let conversation = Conversation {
+            id: "conv-auto-memory".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir: repo_root.to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("Explicit memory extraction".to_string()),
+            messages: vec![Message {
+                id: Uuid::new_v4(),
+                timestamp: now,
+                role: Role::User,
+                content: "Remember: Always run npm run test:run before release.".to_string(),
+                tool_calls: vec![],
+                metadata: HashMap::new(),
+            }],
+            file_changes: vec![],
+        };
+
+        store
+            .upsert_conversation_snapshot("codex", &conversation, None)
+            .unwrap();
+
+        let candidates = store
+            .list_candidates_with_status(repo_root, Some("pending_review"))
+            .unwrap();
+        let extracted = candidates
+            .iter()
+            .find(|candidate| candidate.proposed_by == "auto_extractor")
+            .expect("expected explicit memory wording to create a pending candidate");
+
+        assert!(extracted.value.contains("npm run test:run"));
+        assert_eq!(extracted.status, "pending_review");
+        assert!(!extracted.evidence_refs.is_empty());
+    }
+
+    #[test]
+    fn conflicting_candidate_is_linked_to_approved_memory() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let approved_candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "command".to_string(),
+                summary: "Use npm test before release".to_string(),
+                value: "Use npm run test:run before release.".to_string(),
+                why_it_matters: "Primary release verification command.".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.93,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        store
+            .review_candidate(
+                &approved_candidate_id,
+                ReviewAction::Approve {
+                    title: "Primary release test command".into(),
+                    usage_hint: "Run before release packaging.".into(),
+                },
+            )
+            .unwrap();
+
+        let conflicting_candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "command".to_string(),
+                summary: "Do not use npm test before release".to_string(),
+                value: "Do not use npm run test:run before release.".to_string(),
+                why_it_matters: "This reverses the earlier release command.".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.71,
+                proposed_by: "claude".to_string(),
+            })
+            .unwrap();
+
+        let conflicts = store.list_memory_conflicts(repo_root, Some("open")).unwrap();
+        let conflict = conflicts
+            .iter()
+            .find(|item| item.candidate_id == conflicting_candidate_id)
+            .expect("expected negated overlapping candidate to be flagged");
+
+        assert_eq!(conflict.memory_title, "Primary release test command");
+        assert!(conflict.reason.contains("contradict"));
+
+        let candidates = store
+            .list_candidates_with_status(repo_root, Some("pending_review"))
+            .unwrap();
+        let candidate = candidates
+            .iter()
+            .find(|item| item.candidate_id == conflicting_candidate_id)
+            .unwrap();
+        assert!(candidate.conflict_suggestion.is_some());
     }
 
     #[test]

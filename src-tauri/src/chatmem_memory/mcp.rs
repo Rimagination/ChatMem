@@ -11,8 +11,9 @@ use super::{
     checkpoints::{CheckpointRecord, CreateCheckpointInput},
     models::{
         BuildHandoffPacketInput, CreateMemoryCandidateInput, CreateMemoryCandidateResult,
-        GetRepoMemoryInput, ListMemoryCandidatesInput, ListMemoryCandidatesPayload,
-        ListWikiPagesPayload, RepoMemoryPayload, SearchHistoryPayload, SearchRepoHistoryInput,
+        EntityGraphPayload, GetRepoMemoryInput, ListMemoryCandidatesInput,
+        ListMemoryCandidatesPayload, ListWikiPagesPayload, MemoryConflictResponse,
+        RepoMemoryPayload, SearchHistoryPayload, SearchRepoHistoryInput,
     },
     runs::{self, ArtifactRecord, RunRecord},
     search,
@@ -71,6 +72,23 @@ struct ListRunArtifactsPayload {
     pub artifacts: Vec<ArtifactRecord>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct ListMemoryConflictsInput {
+    pub repo_root: String,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct ListMemoryConflictsPayload {
+    pub conflicts: Vec<MemoryConflictResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct ListEntityGraphInput {
+    pub repo_root: String,
+    pub limit: Option<usize>,
+}
+
 #[derive(Clone)]
 pub struct ChatMemMcpService {
     store: MemoryStore,
@@ -98,6 +116,8 @@ impl ChatMemMcpService {
             .with_route((Self::resume_from_checkpoint_tool_attr(), Self::resume_from_checkpoint))
             .with_route((Self::list_repo_wiki_pages_tool_attr(), Self::list_repo_wiki_pages))
             .with_route((Self::rebuild_repo_wiki_tool_attr(), Self::rebuild_repo_wiki))
+            .with_route((Self::list_memory_conflicts_tool_attr(), Self::list_memory_conflicts))
+            .with_route((Self::list_entity_graph_tool_attr(), Self::list_entity_graph))
     }
 
     pub fn debug_tool_names(&self) -> Vec<String> {
@@ -119,7 +139,7 @@ impl ChatMemMcpService {
             .map_err(|error| internal_error(error.to_string()))
     }
 
-    #[tool(name = "search_repo_history", description = "Search prior repository work, approved memory, and generated wiki projections")]
+    #[tool(name = "search_repo_history", description = "Hybrid keyword/vector search over prior repository work, approved memory, and generated wiki projections")]
     async fn search_repo_history(
         &self,
         Parameters(input): Parameters<SearchRepoHistoryInput>,
@@ -170,6 +190,17 @@ impl ChatMemMcpService {
         self.store
             .list_candidates_with_status(&input.repo_root, input.status.as_deref())
             .map(|candidates| Json(ListMemoryCandidatesPayload { candidates }))
+            .map_err(|error| internal_error(error.to_string()))
+    }
+
+    #[tool(name = "list_memory_conflicts", description = "List open or filtered memory candidate conflicts that need review")]
+    async fn list_memory_conflicts(
+        &self,
+        Parameters(input): Parameters<ListMemoryConflictsInput>,
+    ) -> Result<Json<ListMemoryConflictsPayload>, McpError> {
+        self.store
+            .list_memory_conflicts(&input.repo_root, input.status.as_deref())
+            .map(|conflicts| Json(ListMemoryConflictsPayload { conflicts }))
             .map_err(|error| internal_error(error.to_string()))
     }
 
@@ -240,6 +271,18 @@ impl ChatMemMcpService {
         self.store
             .rebuild_repo_wiki(&input.repo_root)
             .map(|pages| Json(ListWikiPagesPayload { pages }))
+            .map_err(|error| internal_error(error.to_string()))
+    }
+
+    #[tool(name = "list_entity_graph", description = "List lightweight repository entity graph nodes and links extracted from memory/search documents")]
+    async fn list_entity_graph(
+        &self,
+        Parameters(input): Parameters<ListEntityGraphInput>,
+    ) -> Result<Json<EntityGraphPayload>, McpError> {
+        let limit = input.limit.unwrap_or(25);
+        self.store
+            .list_entity_graph(&input.repo_root, limit)
+            .map(Json)
             .map_err(|error| internal_error(error.to_string()))
     }
 
@@ -347,6 +390,8 @@ mod tests {
             ChatMemMcpService::resume_from_checkpoint_tool_attr().name,
             ChatMemMcpService::list_repo_wiki_pages_tool_attr().name,
             ChatMemMcpService::rebuild_repo_wiki_tool_attr().name,
+            ChatMemMcpService::list_memory_conflicts_tool_attr().name,
+            ChatMemMcpService::list_entity_graph_tool_attr().name,
         ]
         .into_iter()
         .map(|name| name.to_string())

@@ -1,8 +1,10 @@
 import type { MemoryCandidate } from "../chatmem-memory/types";
+import type { Locale } from "../i18n/types";
 
 type MemoryInboxPanelProps = {
   candidates: MemoryCandidate[];
   loading: boolean;
+  locale: Locale;
   onApprove: (candidate: MemoryCandidate) => void;
   onReject: (candidateId: string) => void;
 };
@@ -10,19 +12,47 @@ type MemoryInboxPanelProps = {
 export default function MemoryInboxPanel({
   candidates,
   loading,
+  locale,
   onApprove,
   onReject,
 }: MemoryInboxPanelProps) {
+  const isEnglish = locale === "en";
+  const copy = {
+    empty: isEnglish
+      ? "No pending memory candidates for this repository."
+      : "\u8fd9\u4e2a\u4ed3\u5e93\u6682\u65e0\u5f85\u5ba1\u6838\u8bb0\u5fc6\u5019\u9009\u3002",
+    heading: isEnglish ? "Memory Inbox" : "\u8bb0\u5fc6\u6536\u4ef6\u7bb1",
+    subtitle: isEnglish
+      ? "Agent-proposed repository memory waiting for human review."
+      : "Agent \u63d0\u8bae\u7684\u4ed3\u5e93\u8bb0\u5fc6\uff0c\u7b49\u5f85\u4eba\u5de5\u5ba1\u6838\u3002",
+    proposedBy: isEnglish ? "Proposed by" : "\u63d0\u8bae\u8005",
+    noEvidence: isEnglish ? "No linked evidence yet" : "\u6682\u65e0\u5173\u8054\u8bc1\u636e",
+    oneEvidence: isEnglish ? "1 linked evidence reference" : "1 \u6761\u5173\u8054\u8bc1\u636e",
+    evidenceReady: isEnglish ? "Evidence ready" : "\u8bc1\u636e\u5c31\u7eea",
+    needsEvidence: isEnglish ? "Needs evidence" : "\u9700\u8981\u8bc1\u636e",
+    conflictReview: isEnglish ? "Conflict review" : "\u51b2\u7a81\u5ba1\u6838",
+    mergeReview: isEnglish ? "Merge-aware review" : "\u5408\u5e76\u5ba1\u6838",
+    netNew: isEnglish ? "Net new candidate" : "\u65b0\u589e\u5019\u9009",
+    possibleConflict: isEnglish ? "Possible conflict with" : "\u53ef\u80fd\u4e0e",
+    conflictSuffix: isEnglish ? "." : "\u51b2\u7a81\u3002",
+    possibleMerge: isEnglish ? "Potential merge with" : "\u53ef\u4e0e",
+    mergeSuffix: isEnglish ? "." : "\u5408\u5e76\u3002",
+    approve: isEnglish ? "Approve" : "\u6279\u51c6",
+    reject: isEnglish ? "Reject" : "\u62d2\u7edd",
+  };
+
   const renderEvidenceCue = (candidate: MemoryCandidate) => {
     if (candidate.evidence_refs.length === 0) {
-      return "No linked evidence yet";
+      return copy.noEvidence;
     }
 
     if (candidate.evidence_refs.length === 1) {
-      return "1 linked evidence reference";
+      return copy.oneEvidence;
     }
 
-    return `${candidate.evidence_refs.length} linked evidence references`;
+    return isEnglish
+      ? `${candidate.evidence_refs.length} linked evidence references`
+      : `${candidate.evidence_refs.length} \u6761\u5173\u8054\u8bc1\u636e`;
   };
 
   if (loading) {
@@ -40,7 +70,7 @@ export default function MemoryInboxPanel({
       <section className="memory-panel">
         <div className="empty-state">
           <div className="empty-state-icon">I</div>
-          <div className="empty-state-text">No pending memory candidates for this repository.</div>
+          <div className="empty-state-text">{copy.empty}</div>
         </div>
       </section>
     );
@@ -49,8 +79,8 @@ export default function MemoryInboxPanel({
   return (
     <section className="memory-panel">
       <div className="memory-panel-header">
-        <h3>Memory Inbox</h3>
-        <p>Agent-proposed repository memory waiting for human review.</p>
+        <h3>{copy.heading}</h3>
+        <p>{copy.subtitle}</p>
       </div>
       <div className="memory-card-list">
         {candidates.map((candidate) => (
@@ -65,13 +95,23 @@ export default function MemoryInboxPanel({
             <div className="memory-card-value">{candidate.value}</div>
             <p className="memory-card-copy">{candidate.why_it_matters}</p>
             <div className="memory-card-meta">
-              <span>Proposed by {candidate.proposed_by}</span>
+              <span>
+                {copy.proposedBy} {candidate.proposed_by}
+              </span>
               <span>{candidate.status}</span>
               <span>{renderEvidenceCue(candidate)}</span>
             </div>
+            {candidate.conflict_suggestion && (
+              <div className="memory-review-note memory-review-note-conflict">
+                {copy.possibleConflict} <strong>{candidate.conflict_suggestion.memory_title}</strong>
+                {copy.conflictSuffix}{" "}
+                {candidate.conflict_suggestion.reason}
+              </div>
+            )}
             {candidate.merge_suggestion && (
               <div className="memory-review-note">
-                Potential merge with <strong>{candidate.merge_suggestion.memory_title}</strong>.{" "}
+                {copy.possibleMerge} <strong>{candidate.merge_suggestion.memory_title}</strong>
+                {copy.mergeSuffix}{" "}
                 {candidate.merge_suggestion.reason}
               </div>
             )}
@@ -81,14 +121,22 @@ export default function MemoryInboxPanel({
                   candidate.evidence_refs.length > 0 ? "memory-review-pill-ready" : "memory-review-pill-needs"
                 }`}
               >
-                {candidate.evidence_refs.length > 0 ? "Evidence ready" : "Needs evidence"}
+                {candidate.evidence_refs.length > 0 ? copy.evidenceReady : copy.needsEvidence}
               </span>
               <span
                 className={`memory-review-pill ${
-                  candidate.merge_suggestion ? "memory-review-pill-merge" : "memory-review-pill-neutral"
+                  candidate.conflict_suggestion
+                    ? "memory-review-pill-conflict"
+                    : candidate.merge_suggestion
+                      ? "memory-review-pill-merge"
+                      : "memory-review-pill-neutral"
                 }`}
               >
-                {candidate.merge_suggestion ? "Merge-aware review" : "Net new candidate"}
+                {candidate.conflict_suggestion
+                  ? copy.conflictReview
+                  : candidate.merge_suggestion
+                    ? copy.mergeReview
+                    : copy.netNew}
               </span>
             </div>
             {candidate.evidence_refs.length > 0 && (
@@ -102,14 +150,14 @@ export default function MemoryInboxPanel({
             )}
             <div className="memory-card-actions">
               <button type="button" className="btn btn-primary" onClick={() => onApprove(candidate)}>
-                Approve
+                {copy.approve}
               </button>
               <button
                 type="button"
                 className="btn btn-secondary"
                 onClick={() => onReject(candidate.candidate_id)}
               >
-                Reject
+                {copy.reject}
               </button>
             </div>
           </article>

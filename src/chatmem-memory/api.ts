@@ -4,10 +4,12 @@ import type {
   ArtifactRecord,
   CheckpointCreateInput,
   CheckpointRecord,
+  EntityGraph,
   EpisodeRecord,
   HandoffConsumeInput,
   HandoffCreateInput,
   HandoffPacket,
+  MemoryConflict,
   MemoryCandidate,
   RunRecord,
   WikiPage,
@@ -19,6 +21,14 @@ export function listRepoMemories(repoRoot: string) {
 
 export function listMemoryCandidates(repoRoot: string, status?: string) {
   return invoke<MemoryCandidate[]>("list_memory_candidates", { repoRoot, status });
+}
+
+export function listMemoryConflicts(repoRoot: string, status?: string) {
+  return invoke<MemoryConflict[]>("list_memory_conflicts", { repoRoot, status });
+}
+
+export function listEntityGraph(repoRoot: string, limit?: number) {
+  return invoke<EntityGraph>("list_entity_graph", { repoRoot, limit });
 }
 
 export function reviewMemoryCandidate(payload: {

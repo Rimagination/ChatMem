@@ -32,6 +32,16 @@ export type MemoryMergeSuggestion = {
   reason: string;
 };
 
+export type MemoryConflict = {
+  conflict_id: string;
+  candidate_id: string;
+  memory_id: string;
+  memory_title: string;
+  reason: string;
+  status: string;
+  created_at: string;
+};
+
 export type MemoryCandidate = {
   candidate_id: string;
   kind: string;
@@ -44,6 +54,28 @@ export type MemoryCandidate = {
   created_at: string;
   evidence_refs: EvidenceRef[];
   merge_suggestion?: MemoryMergeSuggestion | null;
+  conflict_suggestion?: MemoryConflict | null;
+};
+
+export type EntityNode = {
+  entity_id: string;
+  name: string;
+  kind: string;
+  mention_count: number;
+};
+
+export type EntityLink = {
+  entity_id: string;
+  entity_name: string;
+  owner_type: string;
+  owner_id: string;
+  relationship: string;
+  source_title: string;
+};
+
+export type EntityGraph = {
+  entities: EntityNode[];
+  links: EntityLink[];
 };
 
 export type EpisodeRecord = {

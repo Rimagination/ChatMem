@@ -1,13 +1,13 @@
 interface:
   display_name: "ChatMem"
-  short_description: "Resume repository work with ChatMem memory, wiki projections, and handoffs"
-  default_prompt: "Use $chatmem to load approved repository memory, consult generated wiki projections when useful, continue from the latest checkpoint or handoff, and avoid replaying raw transcripts."
+  short_description: "Resume repository work with ChatMem memory, hybrid search, entity graph, and handoffs"
+  default_prompt: "Use $chatmem to load approved repository memory, use hybrid keyword/vector history search for targeted gaps, consult entity graph and generated wiki projections when useful, check memory conflicts before approval, continue from the latest checkpoint or handoff, and avoid replaying raw transcripts."
 
 dependencies:
   tools:
     - type: "mcp"
       value: "chatmem"
-      description: "Local ChatMem MCP server for approved repository memory, generated wiki projections, history, checkpoints, and handoffs"
+      description: "Local ChatMem MCP server for approved repository memory, hybrid keyword/vector history search, entity graph, conflict review, generated wiki projections, checkpoints, and handoffs"
 
 policy:
   allow_implicit_invocation: true

@@ -359,7 +359,7 @@ describe("App", () => {
     });
   });
 
-  it("shows conversation details, migration, copy actions, and memory in one workspace", async () => {
+  it("shows conversation details, migration, copy actions, and memory drawer in one workspace", async () => {
     localStorage.setItem(
       "chatmem.settings",
       JSON.stringify({ locale: "en", autoCheckUpdates: false }),
@@ -373,12 +373,19 @@ describe("App", () => {
       expect(screen.getByRole("heading", { name: "Debug session" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Copy location" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Copy resume command" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Memory" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Migrate" })).toBeTruthy();
-      expect(screen.getByRole("heading", { name: "Project Memory" })).toBeTruthy();
-      expect(screen.getByText("Use ChatMem for cross-agent continuation")).toBeTruthy();
       expect(screen.queryByRole("heading", { name: "Suggested Next Step" })).toBeNull();
       expect(screen.queryByRole("heading", { name: "Recent Transfers" })).toBeNull();
     });
+
+    expect(screen.queryByRole("complementary", { name: "Project Memory" })).toBeNull();
+    expect(screen.queryByText("Use ChatMem for cross-agent continuation")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Memory" }));
+
+    expect(await screen.findByRole("complementary", { name: "Project Memory" })).toBeTruthy();
+    expect(screen.getByText("Use ChatMem for cross-agent continuation")).toBeTruthy();
   });
 
   it("truncates very long workspace titles while keeping the full title available", async () => {

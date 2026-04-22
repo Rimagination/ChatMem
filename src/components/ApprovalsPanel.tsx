@@ -101,8 +101,20 @@ export default function ApprovalsPanel({
                 </div>
                 <div className="memory-card-meta">
                   <span>{evidenceSummary(candidate)}</span>
-                  <span>{candidate.merge_suggestion ? "Merge-aware review recommended" : "New memory review"}</span>
+                  <span>
+                    {candidate.conflict_suggestion
+                      ? "Conflict review recommended"
+                      : candidate.merge_suggestion
+                        ? "Merge-aware review recommended"
+                        : "New memory review"}
+                  </span>
                 </div>
+                {candidate.conflict_suggestion && (
+                  <div className="memory-review-note memory-review-note-conflict">
+                    Possible conflict with <strong>{candidate.conflict_suggestion.memory_title}</strong>.{" "}
+                    {candidate.conflict_suggestion.reason}
+                  </div>
+                )}
                 {candidate.merge_suggestion && (
                   <div className="memory-review-note">
                     Potential merge with <strong>{candidate.merge_suggestion.memory_title}</strong>.{" "}

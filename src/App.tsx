@@ -11,6 +11,8 @@ import SettingsPanel, {
 } from "./components/SettingsPanel";
 import HandoffComposerModal from "./components/HandoffComposerModal";
 import LibraryPanel from "./components/LibraryPanel";
+import MemoryInboxPanel from "./components/MemoryInboxPanel";
+import RepoMemoryPanel from "./components/RepoMemoryPanel";
 import { useI18n } from "./i18n/I18nProvider";
 import type { Locale } from "./i18n/types";
 import { loadSettings, updateSettings, type AppSettings } from "./settings/storage";
@@ -97,6 +99,7 @@ interface FileChange {
 type AgentType = "claude" | "codex" | "gemini";
 type TopPage = "continue" | "review" | "history" | "help";
 type HistoryView = "conversations" | "recovery" | "transfers" | "outputs";
+type MemoryDrawerTab = "inbox" | "approved" | "wiki";
 type MigrateMode = "copy" | "cut";
 type CopyTarget = "location" | "resume";
 type CopyState = {
@@ -555,6 +558,7 @@ function getSyncCopy(locale: Locale): SettingsSyncCopy {
       syncingNowLabel: "Syncing...",
       syncSuccessPrefix: "Synced",
       syncSuccessSuffix: "files to WebDAV",
+      syncTargetLabel: "Remote folder",
       syncFailedPrefix: "Sync failed",
     };
   }
@@ -581,6 +585,7 @@ function getSyncCopy(locale: Locale): SettingsSyncCopy {
     syncingNowLabel: "\u6b63\u5728\u540c\u6b65...",
     syncSuccessPrefix: "\u5df2\u540c\u6b65",
     syncSuccessSuffix: "\u4e2a\u6587\u4ef6\u5230 WebDAV",
+    syncTargetLabel: "\u8fdc\u7a0b\u76ee\u5f55",
     syncFailedPrefix: "\u540c\u6b65\u5931\u8d25",
   };
 }
@@ -650,6 +655,8 @@ function App() {
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [showMigrateModal, setShowMigrateModal] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [memoryDrawerOpen, setMemoryDrawerOpen] = useState(false);
+  const [memoryDrawerTab, setMemoryDrawerTab] = useState<MemoryDrawerTab>("inbox");
   const [listLoading, setListLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [memoryLoading, setMemoryLoading] = useState(false);
@@ -785,6 +792,7 @@ function App() {
       setRepoMemories([]);
       setMemoryCandidates([]);
       setWikiPages([]);
+      setMemoryDrawerOpen(false);
       return;
     }
 
@@ -2311,161 +2319,144 @@ function App() {
   ];
   void detachedLegacyPageRenderers;
 
-  const renderMemoryPanel = () => {
+  const renderMemoryDrawer = () => {
+    if (!memoryDrawerOpen || !activeRepoRoot) {
+      return null;
+    }
+
     const memoryTitle = locale === "en" ? "Project Memory" : "\u9879\u76ee\u8bb0\u5fc6";
-    const wikiTitle = locale === "en" ? "Project Wiki" : "\u9879\u76ee Wiki";
-    const candidatesTitle =
-      locale === "en" ? "Memory Candidates" : "\u8bb0\u5fc6\u5019\u9009";
-    const sourceOfTruthLabel = locale === "en" ? "Source of truth" : "\u6743\u5a01\u6765\u6e90";
-    const generatedProjectionLabel = locale === "en" ? "Generated projection" : "\u751f\u6210\u6295\u5f71";
-    const needsReviewLabel = locale === "en" ? "Needs review" : "\u5f85\u5ba1\u6838";
-    const memorySubtitle =
+    const drawerSubtitle =
       locale === "en"
-        ? "Approved facts and rules used directly by agents."
-        : "\u5df2\u6279\u51c6\u7684\u4e8b\u5b9e\u548c\u89c4\u5219\uff0cagent \u76f4\u63a5\u4f7f\u7528\u3002";
+        ? "Review only what needs attention, then tuck the rest away."
+        : "\u53ea\u5904\u7406\u9700\u8981\u5173\u6ce8\u7684\u4e8b\uff0c\u5176\u4f59\u8bb0\u5fc6\u6536\u8d77\u6765\u3002";
     const wikiSubtitle =
       locale === "en"
         ? "Readable pages rebuilt from approved memory and episodes."
         : "\u7531\u5df2\u6279\u51c6\u8bb0\u5fc6\u548c\u9636\u6bb5\u8bb0\u5f55\u91cd\u5efa\u7684\u53ef\u8bfb\u9875\u9762\u3002";
-    const candidatesSubtitle =
-      locale === "en"
-        ? "Possible durable memory waiting for a human decision."
-        : "\u53ef\u80fd\u503c\u5f97\u6c89\u6dc0\u7684\u8bb0\u5fc6\uff0c\u7b49\u5f85\u4eba\u5de5\u5224\u65ad\u3002";
-    const emptyMemory =
-      locale === "en"
-        ? "No project memory has been generated yet."
-        : "\u8fd9\u4e2a\u9879\u76ee\u8fd8\u6ca1\u6709\u751f\u6210\u8bb0\u5fc6\u3002";
-    const emptyCandidates =
-      locale === "en"
-        ? "No pending memory candidates."
-        : "\u6682\u65e0\u5f85\u5904\u7406\u7684\u8bb0\u5fc6\u5019\u9009\u3002";
     const emptyWiki =
       locale === "en"
         ? "No wiki projection has been generated yet."
         : "\u8fd8\u6ca1\u6709\u751f\u6210 Wiki \u6295\u5f71\u3002";
+    const tabs: Array<{ id: MemoryDrawerTab; label: string; count: number }> = [
+      {
+        id: "inbox",
+        label: locale === "en" ? "Inbox" : "\u6536\u4ef6\u7bb1",
+        count: memoryCandidates.length,
+      },
+      {
+        id: "approved",
+        label: locale === "en" ? "Approved" : "\u5df2\u6279\u51c6",
+        count: repoMemories.length,
+      },
+      { id: "wiki", label: locale === "en" ? "Wiki" : "Wiki", count: wikiPages.length },
+    ];
+
+    const renderWikiTab = () => (
+      <section className="memory-panel">
+        <div className="memory-panel-header">
+          <h3>{locale === "en" ? "Project Wiki" : "\u9879\u76ee Wiki"}</h3>
+          <p>{wikiSubtitle}</p>
+        </div>
+        {memoryLoading ? (
+          <div className="loading">
+            <div className="spinner"></div>
+          </div>
+        ) : wikiPages.length === 0 ? (
+          <div className="empty-state">
+            <div className="empty-state-icon">W</div>
+            <div className="empty-state-text">{emptyWiki}</div>
+          </div>
+        ) : (
+          <div className="memory-card-list">
+            {wikiPages.slice(0, 20).map((page) => (
+              <article key={page.page_id} className="memory-card memory-card-projection">
+                <div className="memory-card-header">
+                  <div>
+                    <strong>{page.title}</strong>
+                    <div className="memory-card-kind">{page.status}</div>
+                  </div>
+                </div>
+                <p>{getWikiPreview(page.body)}</p>
+                <span>{getWikiSourceLabel(page, locale)}</span>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+    );
+
+    const renderDrawerTab = () => {
+      if (memoryDrawerTab === "approved") {
+        return (
+          <RepoMemoryPanel
+            memories={repoMemories}
+            loading={memoryLoading}
+            locale={locale}
+            onReverify={(memoryId) => void handleReverifyMemory(memoryId)}
+          />
+        );
+      }
+
+      if (memoryDrawerTab === "wiki") {
+        return renderWikiTab();
+      }
+
+      return (
+        <MemoryInboxPanel
+          candidates={memoryCandidates}
+          loading={memoryLoading}
+          locale={locale}
+          onApprove={(candidate) => void handleApproveCandidate(candidate)}
+          onReject={(candidateId) => void handleRejectCandidate(candidateId)}
+        />
+      );
+    };
 
     return (
-      <aside className="memory-side-panel" aria-label={memoryTitle}>
-        <section className="memory-panel-section">
-          <div className="memory-panel-header">
-            <div className="memory-panel-heading">
+      <div className="memory-drawer-overlay" onMouseDown={() => setMemoryDrawerOpen(false)}>
+        <aside
+          className="memory-drawer"
+          role="complementary"
+          aria-label={memoryTitle}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <header className="memory-drawer-header">
+            <div>
+              <p className="page-eyebrow">{locale === "en" ? "Repository context" : "\u4ed3\u5e93\u4e0a\u4e0b\u6587"}</p>
               <h2>{memoryTitle}</h2>
-              <span className="memory-section-badge memory-section-badge-source">
-                {sourceOfTruthLabel}
-              </span>
+              <span>{drawerSubtitle}</span>
             </div>
-            <span className="library-count-pill">{repoMemories.length}</span>
-          </div>
-          <p className="memory-panel-subtitle">{memorySubtitle}</p>
-          {memoryLoading ? (
-            <div className="loading-inline">
-              <div className="spinner"></div>
-            </div>
-          ) : repoMemories.length === 0 ? (
-            <div className="inline-empty-body">{emptyMemory}</div>
-          ) : (
-            <div className="memory-card-list">
-              {repoMemories.slice(0, 6).map((memory) => (
-                <article key={memory.memory_id} className="memory-card memory-card-source">
-                  <div className="memory-card-header">
-                    <div>
-                      <strong>{memory.title}</strong>
-                      <div className="memory-card-kind">{memory.kind}</div>
-                    </div>
-                    <span className="memory-card-status">
-                      {memory.freshness_status || memory.status}
-                    </span>
-                  </div>
-                  <p>{memory.value}</p>
-                  {memory.usage_hint ? <span>{memory.usage_hint}</span> : null}
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label={locale === "en" ? "Close memory drawer" : "\u5173\u95ed\u8bb0\u5fc6\u62bd\u5c49"}
+              onClick={() => setMemoryDrawerOpen(false)}
+            >
+              <WindowButtonIcon type="close" />
+            </button>
+          </header>
 
-        <section className="memory-panel-section">
-          <div className="memory-panel-header">
-            <div className="memory-panel-heading">
-              <h2>{wikiTitle}</h2>
-              <span className="memory-section-badge memory-section-badge-projection">
-                {generatedProjectionLabel}
-              </span>
-            </div>
-            <span className="library-count-pill">{wikiPages.length}</span>
+          <div className="memory-drawer-tabs" role="tablist" aria-label={memoryTitle}>
+            {tabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={memoryDrawerTab === tab.id}
+                className={`memory-drawer-tab ${memoryDrawerTab === tab.id ? "active" : ""}`}
+                onClick={() => setMemoryDrawerTab(tab.id)}
+              >
+                <span>{tab.label}</span>
+                <span className="memory-drawer-tab-count">{tab.count}</span>
+              </button>
+            ))}
           </div>
-          <p className="memory-panel-subtitle">{wikiSubtitle}</p>
-          {memoryLoading ? (
-            <div className="loading-inline">
-              <div className="spinner"></div>
-            </div>
-          ) : wikiPages.length === 0 ? (
-            <div className="inline-empty-body">{emptyWiki}</div>
-          ) : (
-            <div className="memory-card-list">
-              {wikiPages.slice(0, 5).map((page) => (
-                <article key={page.page_id} className="memory-card memory-card-projection">
-                  <div className="memory-card-header">
-                    <div>
-                      <strong>{page.title}</strong>
-                      <div className="memory-card-kind">{page.status}</div>
-                    </div>
-                  </div>
-                  <p>{getWikiPreview(page.body)}</p>
-                  <span>{getWikiSourceLabel(page, locale)}</span>
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
 
-        <section className="memory-panel-section">
-          <div className="memory-panel-header">
-            <div className="memory-panel-heading">
-              <h2>{candidatesTitle}</h2>
-              <span className="memory-section-badge memory-section-badge-review">
-                {needsReviewLabel}
-              </span>
-            </div>
-            <span className="library-count-pill">{memoryCandidates.length}</span>
+          <div className="memory-drawer-body" role="tabpanel">
+            {renderDrawerTab()}
           </div>
-          <p className="memory-panel-subtitle">{candidatesSubtitle}</p>
-          {memoryCandidates.length === 0 ? (
-            <div className="inline-empty-body">{emptyCandidates}</div>
-          ) : (
-            <div className="memory-card-list">
-              {memoryCandidates.slice(0, 4).map((candidate) => (
-                <article key={candidate.candidate_id} className="memory-card memory-card-review">
-                  <div className="memory-card-header">
-                    <div>
-                      <strong>{candidate.summary}</strong>
-                      <div className="memory-card-kind">{candidate.kind}</div>
-                    </div>
-                    <span className="memory-card-status">{candidate.status}</span>
-                  </div>
-                  <p>{candidate.why_it_matters}</p>
-                  <div className="task-actions">
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      onClick={() => void handleApproveCandidate(candidate)}
-                    >
-                      {shell.confirmKeep}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      onClick={() => void handleRejectCandidate(candidate.candidate_id)}
-                    >
-                      {shell.rejectKeep}
-                    </button>
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
-      </aside>
+        </aside>
+      </div>
     );
   };
 
@@ -2483,6 +2474,8 @@ function App() {
     const conversationTitle =
       normalizeConversationTitle(selectedConversation.summary) || selectedConversation.id;
     const visibleConversationTitle = truncateWorkspaceTitle(conversationTitle);
+    const memoryAttentionCount = memoryCandidates.length;
+    const memoryButtonLabel = locale === "en" ? "Memory" : "\u8bb0\u5fc6";
 
     return (
       <div className="conversation-workspace">
@@ -2493,6 +2486,21 @@ function App() {
             <span title={selectedConversation.project_dir}>{selectedConversation.project_dir}</span>
           </div>
           <div className="conversation-toolbar-actions">
+            <button
+              type="button"
+              className={`btn btn-secondary memory-drawer-trigger ${
+                memoryAttentionCount > 0 ? "has-memory-alert" : ""
+              }`}
+              onClick={() => {
+                setMemoryDrawerTab(memoryAttentionCount > 0 ? "inbox" : "approved");
+                setMemoryDrawerOpen(true);
+              }}
+            >
+              <span>{memoryButtonLabel}</span>
+              {memoryAttentionCount > 0 ? (
+                <span className="memory-drawer-trigger-badge">{memoryAttentionCount}</span>
+              ) : null}
+            </button>
             <button
               type="button"
               className="btn btn-primary"
@@ -2537,7 +2545,6 @@ function App() {
 
         <div className="conversation-content-grid">
           <ConversationDetail conversation={selectedConversation} />
-          {renderMemoryPanel()}
         </div>
       </div>
     );
@@ -2806,6 +2813,8 @@ function App() {
           <section className="workspace-surface">{renderWorkspace()}</section>
         </main>
       </div>
+
+      {renderMemoryDrawer()}
 
       {updateState.kind === "available" && (
         <div className="update-toast" role="status" aria-live="polite">

@@ -160,6 +160,7 @@ describe("Sync settings", () => {
         password: "local-secret",
       });
       expect(screen.getByText("Synced 2 files to WebDAV")).toBeTruthy();
+      expect(screen.getByText("Remote folder: https://example.com/webdav/chatmem/")).toBeTruthy();
     });
   });
 });

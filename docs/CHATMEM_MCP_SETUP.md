@@ -79,7 +79,9 @@ The ChatMem skill lives at:
 The skill does not replace MCP. It only teaches the agent to:
 
 - call `get_repo_memory` before substantial repo work
-- search targeted history with `search_repo_history`
+- search targeted history with `search_repo_history`, which now uses hybrid keyword/vector retrieval
+- inspect related concepts with `list_entity_graph`
+- review contradictory pending candidates with `list_memory_conflicts`
 - create durable candidates with `create_memory_candidate`
 - use checkpoints and handoff packets instead of raw transcript transfer
 - avoid assuming ChatMem appears as an `@chatmem` chat mention
@@ -90,8 +92,10 @@ The core MCP tools include:
 
 - `get_repo_memory`
 - `search_repo_history`
+- `list_entity_graph`
 - `create_memory_candidate`
 - `list_memory_candidates`
+- `list_memory_conflicts`
 - `build_handoff_packet`
 - `create_checkpoint`
 - `list_active_runs`

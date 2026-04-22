@@ -14,10 +14,14 @@ impl AgentCard {
     pub fn chatmem_default() -> Self {
         Self {
             name: "ChatMem".to_string(),
-            description: "local-first control plane for approved repository memory, generated wiki projections, runs, artifacts, and checkpoints"
+            description: "local-first control plane for approved repository memory, hybrid retrieval, generated wiki projections, runs, artifacts, and checkpoints"
                 .to_string(),
             skills: vec![
                 "memory".to_string(),
+                "auto-extraction".to_string(),
+                "conflict-review".to_string(),
+                "entity-graph".to_string(),
+                "hybrid-search".to_string(),
                 "wiki".to_string(),
                 "handoff".to_string(),
                 "runs".to_string(),
@@ -46,6 +50,10 @@ mod tests {
         assert_eq!(card.name, "ChatMem");
         assert!(card.skills.contains(&"handoff".to_string()));
         assert!(card.skills.contains(&"checkpoint".to_string()));
+        assert!(card.skills.contains(&"auto-extraction".to_string()));
+        assert!(card.skills.contains(&"conflict-review".to_string()));
+        assert!(card.skills.contains(&"entity-graph".to_string()));
+        assert!(card.skills.contains(&"hybrid-search".to_string()));
         assert!(card.skills.contains(&"wiki".to_string()));
         assert!(card.skills.contains(&"webdav-sync".to_string()));
         assert!(card.description.contains("local-first control plane"));

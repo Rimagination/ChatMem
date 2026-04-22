@@ -133,37 +133,43 @@ describe("Memory workspace", () => {
     });
   });
 
-  it("surfaces project memory and memory candidates beside the selected conversation", async () => {
+  it("keeps memory in a drawer with an inbox-style notification", async () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
 
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: "Memory workflow" })).toBeTruthy();
-      expect(screen.getByRole("heading", { name: "Project Memory" })).toBeTruthy();
-      expect(screen.getByText("Primary verification")).toBeTruthy();
-      expect(screen.getByText("npm run test:run")).toBeTruthy();
-      expect(screen.getByRole("heading", { name: "Memory Candidates" })).toBeTruthy();
-      expect(screen.getByText("Review pending memory")).toBeTruthy();
-      expect(screen.getByRole("heading", { name: "Project Wiki" })).toBeTruthy();
-      expect(screen.getByText("Commands")).toBeTruthy();
-      expect(screen.getByText("Source of truth")).toBeTruthy();
-      expect(screen.getByText("Generated projection")).toBeTruthy();
-      expect(screen.getByText("Needs review")).toBeTruthy();
-      expect(screen.getByText("1 memory source")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Memory 1" })).toBeTruthy();
     });
 
-    expect(screen.queryByRole("button", { name: "Memory Inbox" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Repo Memory" })).toBeNull();
+    expect(screen.queryByRole("complementary", { name: "Project Memory" })).toBeNull();
+    expect(screen.queryByText("Primary verification")).toBeNull();
+    expect(screen.queryByText("Review pending memory")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Memory 1" }));
+
+    expect(await screen.findByRole("complementary", { name: "Project Memory" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Inbox 1" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Approved 1" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Wiki 1" })).toBeTruthy();
+    expect(screen.getByText("Review pending memory")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Approved 1" }));
+    expect(screen.getByText("Primary verification")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Wiki 1" }));
+    expect(screen.getByText("Commands")).toBeTruthy();
   });
 
-  it("reviews a pending memory candidate from the side panel", async () => {
+  it("reviews a pending memory candidate from the drawer", async () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
+    fireEvent.click(await screen.findByRole("button", { name: "Memory 1" }));
     expect(await screen.findByText("Review pending memory")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("review_memory_candidate", {
