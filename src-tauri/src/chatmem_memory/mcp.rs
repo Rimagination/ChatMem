@@ -171,7 +171,7 @@ impl ChatMemMcpService {
         }))
     }
 
-    #[tool(name = "create_memory_candidate", description = "Create a pending repository memory candidate")]
+    #[tool(name = "create_memory_candidate", description = "Create a pending repository memory candidate. For Chinese-speaking users, write prose fields in Chinese while preserving exact commands, paths, function names, config keys, model names, and tool names.")]
     async fn create_memory_candidate(
         &self,
         Parameters(input): Parameters<CreateMemoryCandidateInput>,
@@ -189,7 +189,7 @@ impl ChatMemMcpService {
 
     #[tool(
         name = "propose_memory_merge",
-        description = "Create an agent-authored merge rewrite proposal for human review; does not approve or update memory"
+        description = "Create an agent-authored merge rewrite proposal for human review; does not approve or update memory. For Chinese-speaking users, write prose fields in Chinese while preserving exact technical tokens."
     )]
     async fn propose_memory_merge(
         &self,
@@ -206,7 +206,7 @@ impl ChatMemMcpService {
         }))
     }
 
-    #[tool(name = "create_checkpoint", description = "Freeze the current repo context into a resumable checkpoint")]
+    #[tool(name = "create_checkpoint", description = "Freeze the current repo context into a resumable checkpoint. For Chinese-speaking users, write checkpoint summaries in Chinese while preserving exact technical tokens.")]
     async fn create_checkpoint(
         &self,
         Parameters(input): Parameters<CreateCheckpointInput>,
@@ -239,7 +239,7 @@ impl ChatMemMcpService {
             .map_err(|error| internal_error(error.to_string()))
     }
 
-    #[tool(name = "build_handoff_packet", description = "Build and save a repository handoff packet for agent switching")]
+    #[tool(name = "build_handoff_packet", description = "Build and save a repository handoff packet for agent switching. For Chinese-speaking users, write goals and handoff prose in Chinese while preserving exact technical tokens.")]
     async fn build_handoff_packet(
         &self,
         Parameters(input): Parameters<BuildHandoffPacketInput>,
@@ -608,7 +608,7 @@ mod tests {
         assert!(packet
             .done_items
             .iter()
-            .any(|item| item.contains("Checkpoint frozen from codex")));
+            .any(|item| item.contains("已从 codex checkpoint 固化上下文")));
     }
 
     #[tokio::test]

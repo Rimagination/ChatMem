@@ -54,6 +54,13 @@ When you see this, do not treat it as context by itself. Treat it as an instruct
 
 ## Memory Candidate Rules
 
+Language rule:
+
+- Prefer Chinese for memory titles, values, usage hints, merge proposals, checkpoints, and handoff summaries when the user works in Chinese.
+- Preserve exact English identifiers such as file paths, commands, function names, env vars, config keys, model names, and API/tool names.
+- A good durable memory usually reads as Chinese prose with embedded technical tokens, for example: `跨 agent 记忆依赖 repo_root 归一化；继续使用 canonical_repo_root 匹配 .git 根目录。`
+- If the source evidence is entirely English and the user's language is unknown, keep the original wording instead of guessing.
+
 Good candidates are durable, repo-scoped, and useful at startup:
 
 - commands that must be run before packaging or release
@@ -93,7 +100,7 @@ ChatMem does not need an internal LLM API to rewrite memory. The active agent ca
 - Use a checkpoint when the same agent or user wants to resume current work with minimal drift.
 - Use a handoff packet when another agent needs a concise transfer asset.
 - Choose a target profile that matches the next agent when available.
-- Include current goal, completed work, next steps, key files, useful commands, risks, and related memory ids.
+- Include current goal, completed work, next steps, key files, useful commands, risks, and related memory ids; write prose fields in Chinese by default while preserving exact technical tokens.
 - Keep handoffs compact; they should replace raw transcript transfer, not become another transcript.
 
 ## If MCP Is Unavailable

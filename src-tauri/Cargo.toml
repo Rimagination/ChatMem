@@ -1,6 +1,6 @@
 [package]
 name = "chatmem"
-version = "0.1.9"
+version = "1.0.0"
 default-run = "chatmem"
 description = "ChatMem - Your AI conversations, forever remembered"
 authors = ["ChatMem"]

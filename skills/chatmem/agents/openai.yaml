@@ -1,7 +1,7 @@
 interface:
   display_name: "ChatMem"
   short_description: "Resume repository work with ChatMem memory, provider-backed hybrid search, entity graph, and handoffs"
-  default_prompt: "Use $chatmem to load approved repository memory, use hybrid keyword/vector history search for targeted gaps, call rebuild_repo_embeddings after embedding provider changes, consult entity graph and generated wiki projections when useful, check memory conflicts before approval, submit agent-authored merge rewrites with propose_memory_merge for human review, continue from the latest checkpoint or handoff, and avoid replaying raw transcripts."
+  default_prompt: "Use $chatmem to load approved repository memory, use hybrid keyword/vector history search for targeted gaps, call rebuild_repo_embeddings after embedding provider changes, consult entity graph and generated wiki projections when useful, check memory conflicts before approval, submit agent-authored merge rewrites with propose_memory_merge for human review, continue from the latest checkpoint or handoff, and avoid replaying raw transcripts. When writing durable memory, merge proposals, checkpoints, or handoffs for a Chinese-speaking user, use Chinese prose while preserving exact commands, paths, function names, config keys, model names, and API/tool names."
 
 dependencies:
   tools:

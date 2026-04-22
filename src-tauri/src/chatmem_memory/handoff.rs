@@ -5,13 +5,13 @@ pub fn derive_goal(goal_hint: Option<&str>, latest_summary: Option<&str>) -> Str
         .filter(|value| !value.trim().is_empty())
         .map(ToString::to_string)
         .or_else(|| latest_summary.filter(|value| !value.trim().is_empty()).map(ToString::to_string))
-        .unwrap_or_else(|| "Continue repository work".to_string())
+        .unwrap_or_else(|| "继续当前仓库工作".to_string())
 }
 
 pub fn summarize_done_item(latest_summary: Option<&str>) -> Vec<String> {
     latest_summary
         .filter(|value| !value.trim().is_empty())
-        .map(|value| vec![format!("Reviewed latest conversation: {value}")])
+        .map(|value| vec![format!("已查看最近对话：{value}")])
         .unwrap_or_default()
 }
 

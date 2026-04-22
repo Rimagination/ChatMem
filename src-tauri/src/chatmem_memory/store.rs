@@ -976,9 +976,7 @@ impl MemoryStore {
                 candidate_id: row.get(1)?,
                 memory_id: row.get(2)?,
                 memory_title: row.get(3)?,
-                reason: format!(
-                    "Agent-authored merge proposal from {proposed_by}; review before approval."
-                ),
+                reason: format!("来自 {proposed_by} 的 agent-authored merge proposal；批准前请先复核。"),
                 proposed_title: Some(row.get(4)?),
                 proposed_value: Some(row.get(5)?),
                 proposed_usage_hint: Some(row.get(6)?),
@@ -1049,15 +1047,9 @@ impl MemoryStore {
 
             if let Some((score, memory_id, title, memory_value, usage_hint)) = best_match {
                 let reason = if normalize_text(&value) == normalize_text(memory_value) {
-                    format!(
-                        "This candidate matches the approved memory value and should be merge-reviewed instead of stored twice (score {:.2}).",
-                        score
-                    )
+                    format!("该候选记忆与已批准记忆内容一致，应走合并复核，避免重复存储（score {:.2}）。", score)
                 } else {
-                    format!(
-                        "This candidate overlaps an approved memory and likely needs a merge-aware review (score {:.2}).",
-                        score
-                    )
+                    format!("该候选记忆与已批准记忆重叠，建议进行 merge-aware review（score {:.2}）。", score)
                 };
 
                 suggestions.push(MemoryMergeSuggestion {
@@ -1069,10 +1061,7 @@ impl MemoryStore {
                     proposed_title: Some(title.clone()),
                     proposed_value: Some(merge_memory_text(memory_value, &value)),
                     proposed_usage_hint: Some(merge_memory_text(usage_hint, &why_it_matters)),
-                    risk_note: Some(
-                        "Review before approval: this proposal rewrites an existing approved memory instead of creating a duplicate."
-                            .to_string(),
-                    ),
+                    risk_note: Some("批准前请复核：该提议会改写现有 approved memory，而不是创建重复记忆。".to_string()),
                     proposed_by: None,
                     created_at: None,
                 });
@@ -1503,7 +1492,7 @@ impl MemoryStore {
             .take(2)
             .collect::<Vec<_>>();
         let current_goal = handoff::derive_goal(None, Some(&summary));
-        let done_items = vec![format!("Checkpoint frozen from {source_agent}: {summary}")];
+        let done_items = vec![format!("已从 {source_agent} checkpoint 固化上下文：{summary}")];
         let mut next_items = vec![current_goal.clone()];
         if let Some(command) = &resume_command {
             next_items.push(format!("Resume with: {command}"));
@@ -2676,8 +2665,9 @@ fn auto_memory_candidate_from_line(line: &str) -> Option<AutoMemoryCandidateDraf
         kind: kind.to_string(),
         summary: truncate_text(&value, 96),
         value,
-        why_it_matters: "Automatically extracted from explicit durable-memory wording."
-            .to_string(),
+        why_it_matters:
+            "从明确的 durable-memory wording 自动提取；请在批准前复核中文表述和技术 token 是否准确。"
+                .to_string(),
     })
 }
 
@@ -2741,7 +2731,7 @@ fn record_candidate_conflicts_tx(
         )
         .to_string();
         let reason = format!(
-            "This candidate appears to contradict approved memory '{title}' (overlap {:.2}); review before approving either version.",
+            "该候选记忆可能与已批准记忆“{title}”冲突（overlap {:.2}）；批准任一版本前请先复核。",
             similarity
         );
         conn.execute(
@@ -2902,7 +2892,7 @@ fn build_wiki_page_specs(
     vec![
         WikiPageSpec {
             slug: "project-overview".to_string(),
-            title: "Project Overview".to_string(),
+            title: "项目概览".to_string(),
             body: build_project_overview_wiki_body(repo_root, memories, episodes),
             status: wiki_status(memories),
             source_memory_ids: memories.iter().map(|memory| memory.memory_id.clone()).collect(),
@@ -2911,25 +2901,25 @@ fn build_wiki_page_specs(
         },
         build_memory_wiki_page(
             "commands",
-            "Commands",
-            "Commands preserved from approved repository memory.",
+            "命令",
+            "从 approved repository memory 保留的命令。",
             &commands,
         ),
         build_memory_wiki_page(
             "gotchas",
-            "Gotchas",
-            "Operational traps and constraints preserved from approved repository memory.",
+            "注意事项",
+            "从 approved repository memory 保留的操作陷阱和约束。",
             &gotchas,
         ),
         build_memory_wiki_page(
             "decisions-and-conventions",
-            "Decisions and Conventions",
-            "Stable decisions, conventions, strategies, and preferences.",
+            "决策与约定",
+            "稳定的决策、约定、策略和偏好。",
             &decisions,
         ),
         WikiPageSpec {
             slug: "recent-work".to_string(),
-            title: "Recent Work".to_string(),
+            title: "最近工作".to_string(),
             body: build_recent_work_wiki_body(episodes),
             status: if episodes.is_empty() { "empty" } else { "fresh" }.to_string(),
             source_memory_ids: vec![],
@@ -2946,7 +2936,7 @@ fn build_memory_wiki_page(
     memories: &[ApprovedMemoryResponse],
 ) -> WikiPageSpec {
     let body = if memories.is_empty() {
-        format!("# {title}\n\n{intro}\n\nNo approved entries yet.\n")
+        format!("# {title}\n\n{intro}\n\n暂无已批准条目。\n")
     } else {
         format!(
             "# {title}\n\n{intro}\n\n{}",
@@ -2975,12 +2965,12 @@ fn build_project_overview_wiki_body(
     episodes: &[EpisodeResponse],
 ) -> String {
     let mut body = format!(
-        "# Project Overview\n\nRepository: `{repo_root}`\n\nChatMem remains the source of truth. This page is a generated wiki projection for human and agent onboarding.\n\n"
+        "# 项目概览\n\n仓库：`{repo_root}`\n\nChatMem approved memory 仍然是事实来源；本页是为用户和 agent onboarding 生成的 wiki projection。\n\n"
     );
 
-    body.push_str("## Key Memories\n\n");
+    body.push_str("## 关键记忆\n\n");
     if memories.is_empty() {
-        body.push_str("No approved memories yet.\n\n");
+        body.push_str("暂无已批准记忆。\n\n");
     } else {
         for memory in memories.iter().take(8) {
             body.push_str(&format_memory_wiki_item(memory));
@@ -2988,9 +2978,9 @@ fn build_project_overview_wiki_body(
         }
     }
 
-    body.push_str("## Recent Work\n\n");
+    body.push_str("## 最近工作\n\n");
     if episodes.is_empty() {
-        body.push_str("No captured episodes yet.\n");
+        body.push_str("暂无已捕获 episode。\n");
     } else {
         for episode in episodes.iter().take(6) {
             body.push_str(&format_episode_wiki_item(episode));
@@ -3002,10 +2992,10 @@ fn build_project_overview_wiki_body(
 }
 
 fn build_recent_work_wiki_body(episodes: &[EpisodeResponse]) -> String {
-    let mut body = "# Recent Work\n\nCondensed repository episodes captured from local agent conversations.\n\n".to_string();
+    let mut body = "# 最近工作\n\n从本地 agent 对话捕获的精简 repository episodes。\n\n".to_string();
 
     if episodes.is_empty() {
-        body.push_str("No captured episodes yet.\n");
+        body.push_str("暂无已捕获 episode。\n");
     } else {
         for episode in episodes.iter().take(12) {
             body.push_str(&format_episode_wiki_item(episode));
@@ -3018,7 +3008,7 @@ fn build_recent_work_wiki_body(episodes: &[EpisodeResponse]) -> String {
 
 fn format_memory_wiki_item(memory: &ApprovedMemoryResponse) -> String {
     let mut item = format!(
-        "- **{}** (`{}` / `{}`): {}\n  - Usage: {}\n  - Source memory: `{}`",
+        "- **{}** (`{}` / `{}`): {}\n  - 使用方式：{}\n  - 来源 memory：`{}`",
         memory.title,
         memory.kind,
         memory.freshness_status,
@@ -3028,7 +3018,7 @@ fn format_memory_wiki_item(memory: &ApprovedMemoryResponse) -> String {
     );
 
     if let Some(verified_at) = memory.verified_at.as_deref().or(memory.last_verified_at.as_deref()) {
-        item.push_str(&format!("\n  - Last verified: {verified_at}"));
+        item.push_str(&format!("\n  - 最近验证：{verified_at}"));
     }
 
     item
@@ -3036,7 +3026,7 @@ fn format_memory_wiki_item(memory: &ApprovedMemoryResponse) -> String {
 
 fn format_episode_wiki_item(episode: &EpisodeResponse) -> String {
     format!(
-        "- **{}** (`{}`): {}\n  - Source episode: `{}`",
+        "- **{}** (`{}`): {}\n  - 来源 episode：`{}`",
         episode.title, episode.outcome, episode.summary, episode.episode_id
     )
 }
@@ -3174,7 +3164,7 @@ fn merge_memory_text(existing: &str, incoming: &str) -> String {
         return incoming.to_string();
     }
 
-    format!("{existing}\n\nUpdate: {incoming}")
+    format!("{existing}\n\n更新：{incoming}")
 }
 
 fn evaluate_memory_freshness(
@@ -3876,6 +3866,7 @@ mod tests {
             .expect("expected explicit memory wording to create a pending candidate");
 
         assert!(extracted.value.contains("npm run test:run"));
+        assert!(extracted.why_it_matters.contains("自动提取"));
         assert_eq!(extracted.status, "pending_review");
         assert!(!extracted.evidence_refs.is_empty());
     }
@@ -3927,7 +3918,7 @@ mod tests {
             .expect("expected negated overlapping candidate to be flagged");
 
         assert_eq!(conflict.memory_title, "Primary release test command");
-        assert!(conflict.reason.contains("contradict"));
+        assert!(conflict.reason.contains("冲突"));
 
         let candidates = store
             .list_candidates_with_status(repo_root, Some("pending_review"))
@@ -4219,7 +4210,7 @@ mod tests {
             .expect("expected merge suggestion for overlapping command memory");
 
         assert_eq!(suggestion.memory_title, "Primary verification");
-        assert!(suggestion.reason.contains("merge"));
+        assert!(suggestion.reason.contains("合并"));
     }
 
     #[test]
@@ -4279,17 +4270,17 @@ mod tests {
         );
         assert_eq!(
             proposal.proposed_value.as_deref(),
-            Some("npm run test:run\n\nUpdate: npm run test:run -- --runInBand")
+            Some("npm run test:run\n\n更新：npm run test:run -- --runInBand")
         );
         assert_eq!(
             proposal.proposed_usage_hint.as_deref(),
-            Some("Use before merge\n\nUpdate: Use the serial variant before release packaging")
+            Some("Use before merge\n\n更新：Use the serial variant before release packaging")
         );
         assert!(proposal
             .risk_note
             .as_deref()
             .unwrap_or_default()
-            .contains("approval"));
+            .contains("批准"));
 
         let memories = store.list_repo_memories(repo_root).unwrap();
         assert_eq!(memories[0].value, "npm run test:run");
@@ -4344,9 +4335,9 @@ mod tests {
                 ReviewAction::ApproveMerge {
                     memory_id: memory_id.clone(),
                     title: "Primary verification".into(),
-                    value: "npm run test:run\n\nUpdate: npm run test:run -- --runInBand".into(),
+                    value: "npm run test:run\n\n更新：npm run test:run -- --runInBand".into(),
                     usage_hint:
-                        "Use before merge\n\nUpdate: Use the serial variant before release packaging"
+                        "Use before merge\n\n更新：Use the serial variant before release packaging"
                             .into(),
                 },
             )
@@ -4625,7 +4616,7 @@ mod tests {
         assert!(packet
             .done_items
             .iter()
-            .any(|item| item.contains("Checkpoint frozen from codex")));
+            .any(|item| item.contains("已从 codex checkpoint 固化上下文")));
         assert!(packet
             .useful_commands
             .iter()

@@ -86,6 +86,12 @@ The skill does not replace MCP. It only teaches the agent to:
 - use checkpoints and handoff packets instead of raw transcript transfer
 - avoid assuming ChatMem appears as an `@chatmem` chat mention
 
+Language convention:
+
+- For Chinese-speaking users, write durable memory titles, values, usage hints, merge proposals, checkpoints, and handoffs in Chinese.
+- Preserve exact technical tokens in English, including commands, paths, function names, config keys, model names, and MCP tool names.
+- Prefer mixed wording such as: `跨 agent 记忆依赖 repo_root 归一化；继续使用 canonical_repo_root 匹配 .git 根目录。`
+
 ## Tool Surface
 
 The core MCP tools include:
