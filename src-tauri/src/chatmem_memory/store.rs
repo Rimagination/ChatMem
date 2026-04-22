@@ -30,6 +30,12 @@ pub struct MemoryStore {
 pub enum ReviewAction {
     Approve { title: String, usage_hint: String },
     ApproveWithEdit { title: String, value: String, usage_hint: String },
+    ApproveMerge {
+        memory_id: String,
+        title: String,
+        value: String,
+        usage_hint: String,
+    },
     Reject,
     Snooze,
 }
@@ -345,7 +351,7 @@ impl MemoryStore {
                     "memory",
                     &memory_id,
                     &title,
-                    &candidate.3,
+                    &format!("{}\n\n{}", candidate.3, usage_hint),
                 )?;
             }
             ReviewAction::ApproveWithEdit {
@@ -384,7 +390,60 @@ impl MemoryStore {
                     "memory",
                     &memory_id,
                     &title,
-                    &value,
+                    &format!("{value}\n\n{usage_hint}"),
+                )?;
+            }
+            ReviewAction::ApproveMerge {
+                memory_id,
+                title,
+                value,
+                usage_hint,
+            } => {
+                let memory_repo_id = tx
+                    .query_row(
+                        "SELECT repo_id FROM approved_memories WHERE memory_id = ?1",
+                        [&memory_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .with_context(|| format!("memory {memory_id} not found"))?;
+                if memory_repo_id != candidate.0 {
+                    anyhow::bail!("candidate and memory belong to different repositories");
+                }
+
+                tx.execute(
+                    "UPDATE approved_memories
+                     SET title = ?2,
+                         value = ?3,
+                         usage_hint = ?4,
+                         last_verified_at = ?5,
+                         freshness_status = 'fresh',
+                         freshness_score = 1.0,
+                         verified_at = ?5,
+                         verified_by = 'merge_review',
+                         updated_at = ?5
+                     WHERE memory_id = ?1",
+                    params![memory_id, title, value, usage_hint, now],
+                )?;
+                tx.execute(
+                    "UPDATE memory_candidates SET status = 'approved', reviewed_at = ?2 WHERE candidate_id = ?1",
+                    params![candidate_id, now],
+                )?;
+                tx.execute(
+                    "UPDATE memory_conflicts
+                     SET status = 'resolved', resolved_at = ?3
+                     WHERE candidate_id = ?1 AND memory_id = ?2 AND status = 'open'",
+                    params![candidate_id, memory_id, now],
+                )?;
+                let candidate_evidence = load_evidence_refs_from_conn(&tx, "candidate", candidate_id)?;
+                append_evidence_refs_tx(&tx, "memory", &memory_id, &candidate_evidence)?;
+                upsert_search_document_tx(
+                    &tx,
+                    &format!("memory:{memory_id}"),
+                    &candidate.0,
+                    "memory",
+                    &memory_id,
+                    &title,
+                    &format!("{value}\n\n{usage_hint}"),
                 )?;
             }
             ReviewAction::Reject => {
@@ -714,16 +773,18 @@ impl MemoryStore {
                 .iter()
                 .filter(|(_, memory_kind, _, _, _)| memory_kind == &kind)
                 .filter_map(|(memory_id, _, title, memory_value, usage_hint)| {
-                    let score = merge_similarity(&summary, &value, &why_it_matters, title, memory_value, usage_hint);
-                    if score >= 0.72 {
-                        Some((score, memory_id, title, memory_value))
+                    let score =
+                        merge_similarity(&summary, &value, &why_it_matters, title, memory_value, usage_hint);
+                    let value_overlap = token_overlap(&value, memory_value);
+                    if score >= 0.55 || value_overlap >= 0.65 {
+                        Some((score, memory_id, title, memory_value, usage_hint))
                     } else {
                         None
                     }
                 })
                 .max_by(|left, right| left.0.partial_cmp(&right.0).unwrap_or(std::cmp::Ordering::Equal));
 
-            if let Some((score, memory_id, title, memory_value)) = best_match {
+            if let Some((score, memory_id, title, memory_value, usage_hint)) = best_match {
                 let reason = if normalize_text(&value) == normalize_text(memory_value) {
                     format!(
                         "This candidate matches the approved memory value and should be merge-reviewed instead of stored twice (score {:.2}).",
@@ -741,6 +802,13 @@ impl MemoryStore {
                     memory_id: memory_id.clone(),
                     memory_title: title.clone(),
                     reason,
+                    proposed_title: Some(title.clone()),
+                    proposed_value: Some(merge_memory_text(memory_value, &value)),
+                    proposed_usage_hint: Some(merge_memory_text(usage_hint, &why_it_matters)),
+                    risk_note: Some(
+                        "Review before approval: this proposal rewrites an existing approved memory instead of creating a duplicate."
+                            .to_string(),
+                    ),
                 });
             }
         }
@@ -1863,6 +1931,34 @@ fn upsert_search_document_tx(
     Ok(())
 }
 
+fn append_evidence_refs_tx(
+    conn: &Connection,
+    owner_type: &str,
+    owner_id: &str,
+    evidence_refs: &[EvidenceRef],
+) -> Result<()> {
+    for evidence in evidence_refs {
+        conn.execute(
+            "INSERT INTO evidence_refs (
+                evidence_id, owner_type, owner_id, conversation_id, message_id, tool_call_id, file_change_id, excerpt, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                owner_type,
+                owner_id,
+                evidence.conversation_id,
+                evidence.message_id,
+                evidence.tool_call_id,
+                evidence.file_change_id,
+                evidence.excerpt,
+                chrono::Utc::now().to_rfc3339(),
+            ],
+        )?;
+    }
+
+    Ok(())
+}
+
 fn upsert_document_embedding_tx(
     conn: &Connection,
     doc_id: &str,
@@ -2700,6 +2796,21 @@ fn merge_similarity(
     let why_overlap = token_overlap(why_it_matters, usage_hint);
 
     (title_overlap * 0.45) + (value_overlap * 0.45) + (why_overlap * 0.10)
+}
+
+fn merge_memory_text(existing: &str, incoming: &str) -> String {
+    let existing = existing.trim();
+    let incoming = incoming.trim();
+
+    if incoming.is_empty() || normalize_text(existing) == normalize_text(incoming) {
+        return existing.to_string();
+    }
+
+    if existing.is_empty() {
+        return incoming.to_string();
+    }
+
+    format!("{existing}\n\nUpdate: {incoming}")
 }
 
 fn evaluate_memory_freshness(
@@ -3603,6 +3714,153 @@ mod tests {
 
         assert_eq!(suggestion.memory_title, "Primary verification");
         assert!(suggestion.reason.contains("merge"));
+    }
+
+    #[test]
+    fn merge_suggestion_includes_a_reviewable_rewrite_proposal() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let approved_candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "command".to_string(),
+                summary: "Run tests before merge".to_string(),
+                value: "npm run test:run".to_string(),
+                why_it_matters: "Primary verification command".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.95,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        store
+            .review_candidate(
+                &approved_candidate_id,
+                ReviewAction::Approve {
+                    title: "Primary verification".into(),
+                    usage_hint: "Use before merge".into(),
+                },
+            )
+            .unwrap();
+
+        let candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "command".to_string(),
+                summary: "Run tests before release".to_string(),
+                value: "npm run test:run -- --runInBand".to_string(),
+                why_it_matters: "Use the serial variant before release packaging".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.82,
+                proposed_by: "claude".to_string(),
+            })
+            .unwrap();
+
+        let candidate = store
+            .list_candidates_with_status(repo_root, Some("pending_review"))
+            .unwrap()
+            .into_iter()
+            .find(|item| item.candidate_id == candidate_id)
+            .unwrap();
+        let proposal = candidate
+            .merge_suggestion
+            .expect("expected merge suggestion to carry a rewrite proposal");
+
+        assert_eq!(proposal.memory_title, "Primary verification");
+        assert_eq!(
+            proposal.proposed_title.as_deref(),
+            Some("Primary verification")
+        );
+        assert_eq!(
+            proposal.proposed_value.as_deref(),
+            Some("npm run test:run\n\nUpdate: npm run test:run -- --runInBand")
+        );
+        assert_eq!(
+            proposal.proposed_usage_hint.as_deref(),
+            Some("Use before merge\n\nUpdate: Use the serial variant before release packaging")
+        );
+        assert!(proposal
+            .risk_note
+            .as_deref()
+            .unwrap_or_default()
+            .contains("approval"));
+
+        let memories = store.list_repo_memories(repo_root).unwrap();
+        assert_eq!(memories[0].value, "npm run test:run");
+    }
+
+    #[test]
+    fn approving_a_merge_updates_existing_memory_without_creating_a_duplicate() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let approved_candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "command".to_string(),
+                summary: "Run tests before merge".to_string(),
+                value: "npm run test:run".to_string(),
+                why_it_matters: "Primary verification command".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.95,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        store
+            .review_candidate(
+                &approved_candidate_id,
+                ReviewAction::Approve {
+                    title: "Primary verification".into(),
+                    usage_hint: "Use before merge".into(),
+                },
+            )
+            .unwrap();
+        let memory_id = store.list_repo_memories(repo_root).unwrap()[0]
+            .memory_id
+            .clone();
+
+        let candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "command".to_string(),
+                summary: "Run tests before release".to_string(),
+                value: "npm run test:run -- --runInBand".to_string(),
+                why_it_matters: "Use the serial variant before release packaging".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.82,
+                proposed_by: "claude".to_string(),
+            })
+            .unwrap();
+
+        store
+            .review_candidate(
+                &candidate_id,
+                ReviewAction::ApproveMerge {
+                    memory_id: memory_id.clone(),
+                    title: "Primary verification".into(),
+                    value: "npm run test:run\n\nUpdate: npm run test:run -- --runInBand".into(),
+                    usage_hint:
+                        "Use before merge\n\nUpdate: Use the serial variant before release packaging"
+                            .into(),
+                },
+            )
+            .unwrap();
+
+        let memories = store.list_repo_memories(repo_root).unwrap();
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].memory_id, memory_id);
+        assert!(memories[0].value.contains("--runInBand"));
+        assert!(memories[0].usage_hint.contains("release packaging"));
+
+        let candidates = store.list_candidates(repo_root).unwrap();
+        let candidate = candidates
+            .iter()
+            .find(|item| item.candidate_id == candidate_id)
+            .unwrap();
+        assert_eq!(candidate.status, "approved");
+
+        let matches = store.search_history(repo_root, "serial release packaging", 5).unwrap();
+        assert!(matches.iter().any(|item| item.title == "Primary verification"));
     }
 
     #[test]

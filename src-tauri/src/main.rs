@@ -808,6 +808,7 @@ async fn review_memory_candidate(
     edited_title: Option<String>,
     edited_value: Option<String>,
     edited_usage_hint: Option<String>,
+    merge_memory_id: Option<String>,
 ) -> Result<(), String> {
     let store = open_memory_store()?;
     let review = match action.as_str() {
@@ -816,6 +817,13 @@ async fn review_memory_candidate(
             usage_hint: edited_usage_hint.unwrap_or_else(|| "Used for startup injection".to_string()),
         },
         "approve_with_edit" => ReviewAction::ApproveWithEdit {
+            title: edited_title.unwrap_or_else(|| "Approved memory".to_string()),
+            value: edited_value.unwrap_or_default(),
+            usage_hint: edited_usage_hint.unwrap_or_else(|| "Used for startup injection".to_string()),
+        },
+        "approve_merge" => ReviewAction::ApproveMerge {
+            memory_id: merge_memory_id
+                .ok_or_else(|| "approve_merge requires merge_memory_id".to_string())?,
             title: edited_title.unwrap_or_else(|| "Approved memory".to_string()),
             value: edited_value.unwrap_or_default(),
             usage_hint: edited_usage_hint.unwrap_or_else(|| "Used for startup injection".to_string()),

@@ -6,6 +6,7 @@ type MemoryInboxPanelProps = {
   loading: boolean;
   locale: Locale;
   onApprove: (candidate: MemoryCandidate) => void;
+  onApproveMerge: (candidate: MemoryCandidate) => void;
   onReject: (candidateId: string) => void;
 };
 
@@ -14,6 +15,7 @@ export default function MemoryInboxPanel({
   loading,
   locale,
   onApprove,
+  onApproveMerge,
   onReject,
 }: MemoryInboxPanelProps) {
   const isEnglish = locale === "en";
@@ -37,6 +39,10 @@ export default function MemoryInboxPanel({
     conflictSuffix: isEnglish ? "." : "\u51b2\u7a81\u3002",
     possibleMerge: isEnglish ? "Potential merge with" : "\u53ef\u4e0e",
     mergeSuffix: isEnglish ? "." : "\u5408\u5e76\u3002",
+    suggestedRewrite: isEnglish ? "Suggested rewrite" : "\u5efa\u8bae\u6539\u5199",
+    mergedValue: isEnglish ? "Memory value" : "\u8bb0\u5fc6\u5185\u5bb9",
+    mergedUsage: isEnglish ? "Usage hint" : "\u4f7f\u7528\u63d0\u793a",
+    approveMerge: isEnglish ? "Approve merge" : "\u6279\u51c6\u5408\u5e76",
     approve: isEnglish ? "Approve" : "\u6279\u51c6",
     reject: isEnglish ? "Reject" : "\u62d2\u7edd",
   };
@@ -115,6 +121,24 @@ export default function MemoryInboxPanel({
                 {candidate.merge_suggestion.reason}
               </div>
             )}
+            {candidate.merge_suggestion?.proposed_value && (
+              <div className="memory-merge-proposal">
+                <strong>{copy.suggestedRewrite}</strong>
+                <div className="memory-merge-proposal-block">
+                  <span>{copy.mergedValue}</span>
+                  <p>{candidate.merge_suggestion.proposed_value}</p>
+                </div>
+                {candidate.merge_suggestion.proposed_usage_hint ? (
+                  <div className="memory-merge-proposal-block">
+                    <span>{copy.mergedUsage}</span>
+                    <p>{candidate.merge_suggestion.proposed_usage_hint}</p>
+                  </div>
+                ) : null}
+                {candidate.merge_suggestion.risk_note ? (
+                  <p className="memory-card-copy">{candidate.merge_suggestion.risk_note}</p>
+                ) : null}
+              </div>
+            )}
             <div className="memory-review-cues">
               <span
                 className={`memory-review-pill ${
@@ -149,6 +173,11 @@ export default function MemoryInboxPanel({
               </div>
             )}
             <div className="memory-card-actions">
+              {candidate.merge_suggestion?.proposed_value ? (
+                <button type="button" className="btn btn-primary" onClick={() => onApproveMerge(candidate)}>
+                  {copy.approveMerge}
+                </button>
+              ) : null}
               <button type="button" className="btn btn-primary" onClick={() => onApprove(candidate)}>
                 {copy.approve}
               </button>

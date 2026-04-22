@@ -46,6 +46,14 @@ pub struct MemoryMergeSuggestion {
     pub memory_id: String,
     pub memory_title: String,
     pub reason: String,
+    #[serde(default)]
+    pub proposed_title: Option<String>,
+    #[serde(default)]
+    pub proposed_value: Option<String>,
+    #[serde(default)]
+    pub proposed_usage_hint: Option<String>,
+    #[serde(default)]
+    pub risk_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

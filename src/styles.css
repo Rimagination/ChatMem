@@ -1019,6 +1019,31 @@ button {
   background: rgba(253, 240, 239, 0.82);
 }
 
+.memory-merge-proposal {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(58, 143, 100, 0.18);
+  border-radius: var(--radius-sm);
+  background: rgba(237, 248, 241, 0.72);
+}
+
+.memory-merge-proposal-block {
+  display: grid;
+  gap: 3px;
+}
+
+.memory-merge-proposal-block span {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.memory-merge-proposal-block p {
+  white-space: pre-wrap;
+}
+
 .memory-review-cues {
   display: flex;
   flex-wrap: wrap;
@@ -1064,6 +1089,12 @@ button {
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.45;
+}
+
+.memory-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .page-layout {

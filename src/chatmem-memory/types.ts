@@ -30,6 +30,10 @@ export type MemoryMergeSuggestion = {
   memory_id: string;
   memory_title: string;
   reason: string;
+  proposed_title?: string | null;
+  proposed_value?: string | null;
+  proposed_usage_hint?: string | null;
+  risk_note?: string | null;
 };
 
 export type MemoryConflict = {

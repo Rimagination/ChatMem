@@ -996,6 +996,36 @@ function App() {
     }
   };
 
+  const handleApproveMergeCandidate = async (candidate: MemoryCandidate) => {
+    if (!activeRepoRoot || !candidate.merge_suggestion?.proposed_value) {
+      return;
+    }
+
+    setMemoryLoading(true);
+    try {
+      await reviewMemoryCandidate({
+        candidateId: candidate.candidate_id,
+        action: "approve_merge",
+        mergeMemoryId: candidate.merge_suggestion.memory_id,
+        editedTitle: candidate.merge_suggestion.proposed_title ?? candidate.merge_suggestion.memory_title,
+        editedValue: candidate.merge_suggestion.proposed_value,
+        editedUsageHint: candidate.merge_suggestion.proposed_usage_hint ?? candidate.why_it_matters,
+      });
+      const [nextCandidates, nextMemories, nextWikiPages] = await Promise.all([
+        listMemoryCandidates(activeRepoRoot, "pending_review"),
+        listRepoMemories(activeRepoRoot),
+        rebuildRepoWiki(activeRepoRoot),
+      ]);
+      setMemoryCandidates(nextCandidates);
+      setRepoMemories(nextMemories);
+      setWikiPages(nextWikiPages);
+    } catch (error) {
+      console.error("Failed to approve memory merge:", error);
+    } finally {
+      setMemoryLoading(false);
+    }
+  };
+
   const handleRejectCandidate = async (candidateId: string) => {
     if (!activeRepoRoot) {
       return;
@@ -2407,6 +2437,7 @@ function App() {
           loading={memoryLoading}
           locale={locale}
           onApprove={(candidate) => void handleApproveCandidate(candidate)}
+          onApproveMerge={(candidate) => void handleApproveMergeCandidate(candidate)}
           onReject={(candidateId) => void handleRejectCandidate(candidateId)}
         />
       );

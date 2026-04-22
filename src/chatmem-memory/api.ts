@@ -34,10 +34,11 @@ export function listEntityGraph(repoRoot: string, limit?: number) {
 
 export function reviewMemoryCandidate(payload: {
   candidateId: string;
-  action: "approve" | "approve_with_edit" | "reject" | "snooze";
+  action: "approve" | "approve_with_edit" | "approve_merge" | "reject" | "snooze";
   editedTitle?: string;
   editedValue?: string;
   editedUsageHint?: string;
+  mergeMemoryId?: string;
 }) {
   return invoke("review_memory_candidate", payload);
 }

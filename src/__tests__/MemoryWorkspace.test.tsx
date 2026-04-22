@@ -103,6 +103,16 @@ describe("Memory workspace", () => {
             status: "pending_review",
             created_at: "2026-04-19T09:00:00Z",
             evidence_refs: [],
+            merge_suggestion: {
+              candidate_id: "cand-001",
+              memory_id: "mem-001",
+              memory_title: "Primary verification",
+              reason: "This candidate overlaps an approved memory and likely needs a merge-aware review.",
+              proposed_title: "Primary verification",
+              proposed_value: "npm run test:run\n\nUpdate: Do not auto-approve candidate writes",
+              proposed_usage_hint: "Use before handoff\n\nUpdate: Human review is required",
+              risk_note: "Review before approval: this proposal rewrites an existing approved memory.",
+            },
           },
         ];
       }
@@ -177,6 +187,28 @@ describe("Memory workspace", () => {
         action: "approve",
         editedTitle: "Review pending memory",
         editedUsageHint: "Human review is required",
+      });
+    });
+  });
+
+  it("approves a merge proposal from the memory drawer", async () => {
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
+    fireEvent.click(await screen.findByRole("button", { name: "Memory 1" }));
+    expect(await screen.findByText("Suggested rewrite")).toBeTruthy();
+    expect(screen.getByText(/npm run test:run/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve merge" }));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("review_memory_candidate", {
+        candidateId: "cand-001",
+        action: "approve_merge",
+        mergeMemoryId: "mem-001",
+        editedTitle: "Primary verification",
+        editedValue: "npm run test:run\n\nUpdate: Do not auto-approve candidate writes",
+        editedUsageHint: "Use before handoff\n\nUpdate: Human review is required",
       });
     });
   });
