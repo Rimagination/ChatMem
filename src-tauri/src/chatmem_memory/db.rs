@@ -39,6 +39,28 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             updated_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS repo_aliases (
+            alias_id TEXT PRIMARY KEY,
+            repo_id TEXT NOT NULL,
+            alias_root TEXT NOT NULL,
+            alias_kind TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(repo_id, alias_root)
+        );
+
+        CREATE TABLE IF NOT EXISTS conversation_repo_links (
+            link_id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            repo_id TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            reason TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(conversation_id, repo_id)
+        );
+
         CREATE TABLE IF NOT EXISTS conversations (
             conversation_id TEXT PRIMARY KEY,
             repo_id TEXT NOT NULL,
@@ -56,6 +78,20 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             role TEXT NOT NULL,
             content TEXT NOT NULL,
             timestamp TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS conversation_chunks (
+            chunk_id TEXT PRIMARY KEY,
+            repo_id TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            chunk_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            message_ids_json TEXT NOT NULL DEFAULT '[]',
+            ordinal INTEGER NOT NULL,
+            token_estimate INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS tool_calls (
@@ -270,6 +306,18 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             updated_at TEXT NOT NULL,
             PRIMARY KEY (doc_id, embedding_model)
         );
+
+        CREATE INDEX IF NOT EXISTS idx_conversation_chunks_repo_updated
+        ON conversation_chunks(repo_id, updated_at);
+
+        CREATE INDEX IF NOT EXISTS idx_conversation_chunks_conversation
+        ON conversation_chunks(conversation_id, ordinal);
+
+        CREATE INDEX IF NOT EXISTS idx_repo_aliases_alias_root
+        ON repo_aliases(alias_root);
+
+        CREATE INDEX IF NOT EXISTS idx_conversation_repo_links_repo
+        ON conversation_repo_links(repo_id, confidence);
 
         CREATE INDEX IF NOT EXISTS idx_document_embeddings_repo_model
         ON document_embeddings(repo_id, embedding_model, dimensions);
@@ -808,6 +856,53 @@ mod tests {
         assert_eq!(names, vec!["agent_runs", "artifacts", "run_events"]);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn migration_creates_conversation_chunk_tables() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        let tables = [
+            "conversation_chunks",
+            "repo_aliases",
+            "conversation_repo_links",
+        ];
+
+        for table in tables {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 1, "expected table {table}");
+        }
+    }
+
+    #[test]
+    fn migration_creates_chunk_search_indexes() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        let indexes = [
+            "idx_conversation_chunks_repo_updated",
+            "idx_conversation_chunks_conversation",
+            "idx_repo_aliases_alias_root",
+            "idx_conversation_repo_links_repo",
+        ];
+
+        for index in indexes {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                    [index],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 1, "expected index {index}");
+        }
     }
 
     #[test]
