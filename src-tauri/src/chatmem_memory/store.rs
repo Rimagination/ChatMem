@@ -132,7 +132,30 @@ impl MemoryStore {
                 WHERE repo_id = ?1
                   AND doc_type = 'chunk'
                   AND doc_ref_id LIKE ?2
-             )",
+            )",
+            params![repo_id.clone(), format!("{conversation_id}:%")],
+        )?;
+        tx.execute(
+            "DELETE FROM document_embeddings
+             WHERE repo_id = ?1
+               AND doc_id IN (
+                    SELECT doc_id FROM search_documents
+                    WHERE repo_id = ?1
+                      AND doc_type = 'chunk'
+                      AND doc_ref_id LIKE ?2
+               )",
+            params![repo_id.clone(), format!("{conversation_id}:%")],
+        )?;
+        tx.execute(
+            "DELETE FROM memory_entity_links
+             WHERE repo_id = ?1
+               AND owner_type = 'chunk'
+               AND owner_id IN (
+                    SELECT doc_ref_id FROM search_documents
+                    WHERE repo_id = ?1
+                      AND doc_type = 'chunk'
+                      AND doc_ref_id LIKE ?2
+               )",
             params![repo_id.clone(), format!("{conversation_id}:%")],
         )?;
         tx.execute(
@@ -3641,6 +3664,169 @@ mod tests {
         assert!(matches.iter().any(|item| {
             item.r#type == "chunk" && item.summary.contains("TAURI_PRIVATE_KEY")
         }));
+    }
+
+    #[test]
+    fn conversation_snapshot_reupsert_cleans_stale_chunk_sidecars() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let now = Utc::now();
+        let conversation = Conversation {
+            id: "conv-stale-chunk-cleanup".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir: repo_root.to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("Chunk sidecar cleanup".to_string()),
+            messages: vec![
+                Message {
+                    id: Uuid::from_u128(0x9000_0000_0000_0000_0000_0000_0000_0001),
+                    timestamp: now,
+                    role: Role::User,
+                    content: "Initial message to seed chunk one.".to_string(),
+                    tool_calls: vec![],
+                    metadata: HashMap::new(),
+                },
+                Message {
+                    id: Uuid::from_u128(0x9000_0000_0000_0000_0000_0000_0000_0002),
+                    timestamp: now,
+                    role: Role::Assistant,
+                    content: "Initial message to seed chunk two with TAURI_PRIVATE_KEY entity."
+                        .to_string(),
+                    tool_calls: vec![],
+                    metadata: HashMap::new(),
+                },
+            ],
+            file_changes: vec![],
+        };
+
+        store
+            .upsert_conversation_snapshot("codex", &conversation, None)
+            .unwrap();
+
+        let repo_id = store.ensure_repo(repo_root).unwrap();
+        let conversation_id = "codex:conv-stale-chunk-cleanup".to_string();
+        let conn = store.conn().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT doc_ref_id
+                 FROM search_documents
+                 WHERE repo_id = ?1
+                   AND doc_type = 'chunk'
+                   AND doc_ref_id LIKE ?2
+                 ORDER BY doc_ref_id ASC",
+            )
+            .unwrap();
+        let old_chunk_refs = stmt
+            .query_map(params![repo_id.clone(), format!("{conversation_id}:%")], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(!old_chunk_refs.is_empty());
+        let stale_chunk_ref = old_chunk_refs[0].clone();
+        let stale_chunk_doc_id = format!("chunk:{stale_chunk_ref}");
+
+        conn.execute(
+            "INSERT INTO memory_entity_links (
+                link_id, repo_id, entity_id, owner_type, owner_id, relationship, created_at
+             ) VALUES (?1, ?2, ?3, 'chunk', ?4, ?5, ?6)",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                repo_id.clone(),
+                uuid::Uuid::new_v4().to_string(),
+                stale_chunk_ref.clone(),
+                "mentions",
+                chrono::Utc::now().to_rfc3339(),
+            ],
+        )
+        .unwrap();
+
+        let stale_search_docs_before = conn
+            .query_row(
+                "SELECT COUNT(*) FROM search_documents WHERE doc_id = ?1",
+                [stale_chunk_doc_id.clone()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        let stale_embeddings_before = conn
+            .query_row(
+                "SELECT COUNT(*) FROM document_embeddings WHERE doc_id = ?1",
+                [stale_chunk_doc_id.clone()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        let stale_links_before = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_entity_links WHERE repo_id = ?1 AND owner_type = 'chunk' AND owner_id = ?2",
+                params![repo_id.clone(), stale_chunk_ref.clone()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert!(stale_search_docs_before > 0);
+        assert!(stale_embeddings_before > 0);
+        assert!(stale_links_before > 0);
+        drop(stmt);
+        drop(conn);
+
+        let replacement_conversation = Conversation {
+            id: "conv-stale-chunk-cleanup".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir: repo_root.to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("Chunk sidecar cleanup replacement".to_string()),
+            messages: vec![Message {
+                id: Uuid::from_u128(0xA000_0000_0000_0000_0000_0000_0000_0001),
+                timestamp: now,
+                role: Role::Assistant,
+                content: "Replacement message keeps one new chunk only.".to_string(),
+                tool_calls: vec![],
+                metadata: HashMap::new(),
+            }],
+            file_changes: vec![],
+        };
+
+        store
+            .upsert_conversation_snapshot("codex", &replacement_conversation, None)
+            .unwrap();
+
+        let conn = store.conn().unwrap();
+        let stale_search_docs_after = conn
+            .query_row(
+                "SELECT COUNT(*) FROM search_documents WHERE doc_id = ?1",
+                [stale_chunk_doc_id.clone()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        let stale_embeddings_after = conn
+            .query_row(
+                "SELECT COUNT(*) FROM document_embeddings WHERE doc_id = ?1",
+                [stale_chunk_doc_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        let stale_links_after = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_entity_links WHERE repo_id = ?1 AND owner_type = 'chunk' AND owner_id = ?2",
+                params![repo_id.clone(), stale_chunk_ref.clone()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        let current_chunk_docs = conn
+            .query_row(
+                "SELECT COUNT(*) FROM search_documents
+                 WHERE repo_id = ?1 AND doc_type = 'chunk' AND doc_ref_id LIKE ?2",
+                params![repo_id, format!("{conversation_id}:%")],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+
+        assert_eq!(stale_search_docs_after, 0);
+        assert_eq!(stale_embeddings_after, 0);
+        assert_eq!(stale_links_after, 0);
+        assert!(current_chunk_docs > 0);
     }
 
     #[test]
