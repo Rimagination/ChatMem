@@ -17,12 +17,11 @@ function Resolve-ChatMemMcpBinary {
     (Join-Path $repoRoot "src-tauri\target\release\chatmem-mcp.exe"),
     (Join-Path $repoRoot ".tauri-target-build\release\chatmem-mcp.exe"),
     (Join-Path $repoRoot "src-tauri\target\debug\chatmem-mcp.exe")
-  )
+  ) | Where-Object { Test-Path $_ } |
+    Sort-Object { (Get-Item $_).LastWriteTimeUtc } -Descending
 
   foreach ($candidate in $candidates) {
-    if (Test-Path $candidate) {
-      return (Resolve-Path $candidate).Path
-    }
+    return (Resolve-Path $candidate).Path
   }
 
   return $null

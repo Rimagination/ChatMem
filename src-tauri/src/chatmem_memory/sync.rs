@@ -3,6 +3,7 @@ use agentswap_codex::CodexAdapter;
 use agentswap_core::{adapter::AgentAdapter, types::Conversation};
 use agentswap_gemini::GeminiAdapter;
 use rusqlite::Connection;
+use std::collections::BTreeSet;
 use walkdir::WalkDir;
 
 use super::store::MemoryStore;
@@ -102,7 +103,7 @@ pub fn sync_conversation_into_store(
 }
 
 pub fn sync_repo_conversations(store: &MemoryStore, repo_root: &str) -> anyhow::Result<usize> {
-    let normalized_repo = crate::chatmem_memory::repo_identity::normalize_repo_root(repo_root);
+    let normalized_repo = crate::chatmem_memory::repo_identity::canonical_repo_root(repo_root);
     let mut synced = 0usize;
 
     for agent in ["claude", "codex", "gemini"] {
@@ -116,17 +117,87 @@ pub fn sync_repo_conversations(store: &MemoryStore, repo_root: &str) -> anyhow::
 
         let summaries = adapter.list_conversations()?;
         for summary in summaries {
-            if crate::chatmem_memory::repo_identity::normalize_repo_root(&summary.project_dir)
-                != normalized_repo
-            {
+            if !summary_project_matches_repo(agent, &summary.project_dir, &normalized_repo) {
                 continue;
             }
 
-            let conversation = adapter.read_conversation(&summary.id)?;
+            let mut conversation = adapter.read_conversation(&summary.id)?;
+            if agent == "gemini"
+                && crate::chatmem_memory::repo_identity::normalize_repo_root(&conversation.project_dir)
+                    != normalized_repo
+            {
+                conversation.project_dir = normalized_repo.clone();
+            }
             sync_conversation_into_store(store, agent, &conversation)?;
             synced += 1;
         }
     }
 
     Ok(synced)
+}
+
+pub(crate) fn summary_project_matches_repo(
+    agent: &str,
+    project_dir: &str,
+    repo_root: &str,
+) -> bool {
+    let normalized_repo = crate::chatmem_memory::repo_identity::normalize_repo_root(repo_root);
+    if crate::chatmem_memory::repo_identity::normalize_repo_root(project_dir) == normalized_repo {
+        return true;
+    }
+
+    if agent != "gemini" {
+        return false;
+    }
+
+    let Some(project_hash) = project_dir.strip_prefix("gemini:") else {
+        return false;
+    };
+
+    gemini_repo_hash_candidates(repo_root, &normalized_repo).contains(project_hash)
+}
+
+fn gemini_repo_hash_candidates(repo_root: &str, normalized_repo: &str) -> BTreeSet<String> {
+    let mut variants = BTreeSet::new();
+    let trimmed = repo_root.trim().trim_end_matches(['\\', '/']);
+    if !trimmed.is_empty() {
+        variants.insert(trimmed.to_string());
+    }
+    variants.insert(normalized_repo.to_string());
+    variants.insert(normalized_repo.replace('/', "\\"));
+
+    if normalized_repo.len() >= 2 && normalized_repo.as_bytes()[1] == b':' {
+        let drive = normalized_repo.chars().next().unwrap();
+        let rest = &normalized_repo[1..];
+        variants.insert(format!("{}{}", drive.to_ascii_uppercase(), rest));
+        variants.insert(format!("{}{}", drive.to_ascii_lowercase(), rest));
+        variants.insert(format!("{}{}", drive.to_ascii_uppercase(), rest).replace('/', "\\"));
+        variants.insert(format!("{}{}", drive.to_ascii_lowercase(), rest).replace('/', "\\"));
+    }
+
+    variants
+        .into_iter()
+        .map(|variant| GeminiAdapter::project_hash_for_path(&variant))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::summary_project_matches_repo;
+    use agentswap_gemini::GeminiAdapter;
+
+    #[test]
+    fn gemini_hash_project_dir_matches_requested_repo_root() {
+        let repo_root = "D:/VSP/agentswap-gui";
+        let gemini_project_dir = format!(
+            "gemini:{}",
+            GeminiAdapter::project_hash_for_path("d:/vsp/agentswap-gui")
+        );
+
+        assert!(summary_project_matches_repo(
+            "gemini",
+            &gemini_project_dir,
+            repo_root
+        ));
+    }
 }

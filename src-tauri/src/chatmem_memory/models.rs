@@ -179,6 +179,24 @@ pub struct EntityGraphPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AgentConversationCount {
+    pub source_agent: String,
+    pub conversation_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RepoMemoryHealthResponse {
+    pub repo_root: String,
+    pub canonical_repo_root: String,
+    pub approved_memory_count: usize,
+    pub pending_candidate_count: usize,
+    pub search_document_count: usize,
+    pub inherited_repo_roots: Vec<String>,
+    pub conversation_counts_by_agent: Vec<AgentConversationCount>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WikiPageResponse {
     pub page_id: String,
     pub repo_root: String,

@@ -85,6 +85,22 @@ export type EntityGraph = {
   links: EntityLink[];
 };
 
+export type AgentConversationCount = {
+  source_agent: string;
+  conversation_count: number;
+};
+
+export type RepoMemoryHealth = {
+  repo_root: string;
+  canonical_repo_root: string;
+  approved_memory_count: number;
+  pending_candidate_count: number;
+  search_document_count: number;
+  inherited_repo_roots: string[];
+  conversation_counts_by_agent: AgentConversationCount[];
+  warnings: string[];
+};
+
 export type EmbeddingRebuildReport = {
   provider: string;
   embedding_model: string;

@@ -12,12 +12,17 @@ import type {
   HandoffPacket,
   MemoryConflict,
   MemoryCandidate,
+  RepoMemoryHealth,
   RunRecord,
   WikiPage,
 } from "./types";
 
 export function listRepoMemories(repoRoot: string) {
   return invoke<ApprovedMemory[]>("list_repo_memories", { repoRoot });
+}
+
+export function getRepoMemoryHealth(repoRoot: string) {
+  return invoke<RepoMemoryHealth>("get_repo_memory_health", { repoRoot });
 }
 
 export function listMemoryCandidates(repoRoot: string, status?: string) {

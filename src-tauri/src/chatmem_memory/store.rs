@@ -13,10 +13,12 @@ use super::{
     embedding,
     handoff,
     models::{
-        ApprovedMemoryResponse, CreateMemoryCandidateInput, CreateMemoryMergeProposalInput,
+        AgentConversationCount, ApprovedMemoryResponse, CreateMemoryCandidateInput,
+        CreateMemoryMergeProposalInput,
         EntityGraphPayload, EntityLinkResponse, EmbeddingRebuildReport, EntityNodeResponse,
         EpisodeResponse, EvidenceRef, HandoffPacketResponse, MemoryCandidateResponse,
-        MemoryConflictResponse, MemoryMergeSuggestion, SearchHistoryMatch, WikiPageResponse,
+        MemoryConflictResponse, MemoryMergeSuggestion, RepoMemoryHealthResponse,
+        SearchHistoryMatch, WikiPageResponse,
     },
     repo_identity,
 };
@@ -56,7 +58,7 @@ impl MemoryStore {
     }
 
     pub fn ensure_repo(&self, repo_root: &str) -> Result<String> {
-        let repo_root = repo_identity::normalize_repo_root(repo_root);
+        let repo_root = repo_identity::canonical_repo_root(repo_root);
         let repo_id = repo_identity::fingerprint_repo(&repo_root, None, None);
         let now = chrono::Utc::now().to_rfc3339();
         let conn = self.conn()?;
@@ -710,6 +712,31 @@ impl MemoryStore {
     pub fn list_repo_memories(&self, repo_root: &str) -> Result<Vec<ApprovedMemoryResponse>> {
         let repo_id = self.ensure_repo(repo_root)?;
         let conn = self.conn()?;
+        let memories = self.list_repo_memories_by_repo_id(&conn, &repo_id)?;
+        if !memories.is_empty() {
+            return Ok(memories);
+        }
+
+        for (ancestor_repo_id, ancestor_repo_root) in ancestor_repo_roots_from_conn(&conn, repo_root)? {
+            let mut inherited = self.list_repo_memories_by_repo_id(&conn, &ancestor_repo_id)?;
+            if inherited.is_empty() {
+                continue;
+            }
+            for memory in &mut inherited {
+                memory.selected_because =
+                    Some(format!("Inherited from ancestor repo {ancestor_repo_root}"));
+            }
+            return Ok(inherited);
+        }
+
+        Ok(memories)
+    }
+
+    fn list_repo_memories_by_repo_id(
+        &self,
+        conn: &Connection,
+        repo_id: &str,
+    ) -> Result<Vec<ApprovedMemoryResponse>> {
         let mut stmt = conn.prepare(
             "SELECT memory_id, kind, title, value, usage_hint, status, last_verified_at,
                     freshness_status, freshness_score, verified_at, verified_by
@@ -749,6 +776,84 @@ impl MemoryStore {
                 }
                 Ok(memories)
             })
+    }
+
+    pub fn repo_memory_health(&self, repo_root: &str) -> Result<RepoMemoryHealthResponse> {
+        let repo_id = self.ensure_repo(repo_root)?;
+        let canonical_repo_root = self.repo_root_for_id(&repo_id)?;
+        let conn = self.conn()?;
+
+        let approved_memory_count = count_table_rows(
+            &conn,
+            "approved_memories",
+            &repo_id,
+            Some(("status", "active")),
+        )?;
+        let pending_candidate_count = count_table_rows(
+            &conn,
+            "memory_candidates",
+            &repo_id,
+            Some(("status", "pending_review")),
+        )?;
+        let search_document_count = count_table_rows(&conn, "search_documents", &repo_id, None)?;
+
+        let mut inherited_repo_roots = Vec::new();
+        for (ancestor_repo_id, ancestor_repo_root) in
+            ancestor_repo_roots_from_conn(&conn, &canonical_repo_root)?
+        {
+            let ancestor_memory_count = count_table_rows(
+                &conn,
+                "approved_memories",
+                &ancestor_repo_id,
+                Some(("status", "active")),
+            )?;
+            if ancestor_memory_count > 0 {
+                inherited_repo_roots.push(ancestor_repo_root);
+            }
+        }
+
+        let mut stmt = conn.prepare(
+            "SELECT source_agent, COUNT(*)
+             FROM conversations
+             WHERE repo_id = ?1
+             GROUP BY source_agent
+             ORDER BY source_agent ASC",
+        )?;
+        let conversation_counts_by_agent = stmt
+            .query_map([repo_id.clone()], |row| {
+                Ok(AgentConversationCount {
+                    source_agent: row.get(0)?,
+                    conversation_count: row.get::<_, i64>(1)? as usize,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut warnings = Vec::new();
+        if approved_memory_count == 0 && !inherited_repo_roots.is_empty() {
+            warnings.push(format!(
+                "No approved memories exist for this repo, but ancestor repo memory exists in {}.",
+                inherited_repo_roots.join(", ")
+            ));
+        }
+        if pending_candidate_count > 0 {
+            warnings.push(format!(
+                "{pending_candidate_count} pending memory candidate(s) need review before they become startup memory."
+            ));
+        }
+        if search_document_count == 0 && inherited_repo_roots.is_empty() {
+            warnings.push("No searchable ChatMem documents are indexed for this repo yet.".to_string());
+        }
+
+        Ok(RepoMemoryHealthResponse {
+            repo_root: repo_identity::normalize_repo_root(repo_root),
+            canonical_repo_root,
+            approved_memory_count,
+            pending_candidate_count,
+            search_document_count,
+            inherited_repo_roots,
+            conversation_counts_by_agent,
+            warnings,
+        })
     }
 
     pub fn list_candidates(&self, repo_root: &str) -> Result<Vec<MemoryCandidateResponse>> {
@@ -1615,76 +1720,156 @@ impl MemoryStore {
 
         let repo_id = self.ensure_repo(repo_root)?;
         let conn = self.conn()?;
-        backfill_missing_document_embeddings_with_config(
-            &conn,
-            &repo_id,
-            &embedding::EmbeddingConfig::LocalHash,
-        )?;
-        if config != &embedding::EmbeddingConfig::LocalHash {
-            backfill_missing_document_embeddings_with_config(&conn, &repo_id, config)?;
+        let matches =
+            search_history_in_repo_id_with_embedding_config(&conn, &repo_id, query, limit, config)?;
+        if !matches.is_empty() {
+            return Ok(matches);
         }
 
-        let candidate_limit = (limit * 4).max(16);
-        let mut candidates = HashMap::new();
-
-        collect_fts_search_candidates(&conn, &repo_id, query, candidate_limit, &mut candidates)?;
-        collect_like_search_candidates(&conn, &repo_id, query, candidate_limit, &mut candidates)?;
-        collect_vector_search_candidates_with_config(&conn, &repo_id, query, candidate_limit, config, &mut candidates)?;
-        if config != &embedding::EmbeddingConfig::LocalHash {
-            collect_vector_search_candidates_with_config(
+        for (ancestor_repo_id, _) in ancestor_repo_roots_from_conn(&conn, repo_root)? {
+            let matches = search_history_in_repo_id_with_embedding_config(
                 &conn,
-                &repo_id,
+                &ancestor_repo_id,
                 query,
-                candidate_limit,
-                &embedding::EmbeddingConfig::LocalHash,
-                &mut candidates,
+                limit,
+                config,
             )?;
+            if !matches.is_empty() {
+                return Ok(matches);
+            }
         }
 
-        let mut scored = candidates
-            .into_values()
-            .filter_map(|mut candidate| {
-                if !candidate.has_retrieval_signal() {
-                    return None;
-                }
-
-                candidate.score = score_search_candidate(&candidate, query);
-                Some(candidate)
-            })
-            .collect::<Vec<_>>();
-
-        scored.sort_by(|left, right| {
-            right
-                .score
-                .partial_cmp(&left.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| right.updated_at.cmp(&left.updated_at))
-        });
-
-        let mut matches = Vec::new();
-        for candidate in scored.into_iter().take(limit) {
-            let why_matched = candidate.match_reason();
-            matches.push(SearchHistoryMatch {
-                r#type: candidate.doc_type.clone(),
-                title: candidate.title,
-                summary: truncate_text(&candidate.body, 280),
-                why_matched,
-                score: candidate.score,
-                evidence_refs: load_evidence_refs_from_conn(
-                    &conn,
-                    evidence_owner_for_doc_type(&candidate.doc_type),
-                    &candidate.doc_ref_id,
-                )?,
-            });
-        }
-
-        Ok(matches)
+        Ok(vec![])
     }
 
     pub fn evidence_refs(&self, owner_type: &str, owner_id: &str) -> Result<Vec<EvidenceRef>> {
         let conn = self.conn()?;
         load_evidence_refs_from_conn(&conn, owner_type, owner_id)
     }
+}
+
+fn search_history_in_repo_id_with_embedding_config(
+    conn: &Connection,
+    repo_id: &str,
+    query: &str,
+    limit: usize,
+    config: &embedding::EmbeddingConfig,
+) -> Result<Vec<SearchHistoryMatch>> {
+    backfill_missing_document_embeddings_with_config(
+        conn,
+        repo_id,
+        &embedding::EmbeddingConfig::LocalHash,
+    )?;
+    if config != &embedding::EmbeddingConfig::LocalHash {
+        backfill_missing_document_embeddings_with_config(conn, repo_id, config)?;
+    }
+
+    let candidate_limit = (limit * 4).max(16);
+    let mut candidates = HashMap::new();
+
+    collect_fts_search_candidates(conn, repo_id, query, candidate_limit, &mut candidates)?;
+    collect_like_search_candidates(conn, repo_id, query, candidate_limit, &mut candidates)?;
+    collect_vector_search_candidates_with_config(
+        conn,
+        repo_id,
+        query,
+        candidate_limit,
+        config,
+        &mut candidates,
+    )?;
+    if config != &embedding::EmbeddingConfig::LocalHash {
+        collect_vector_search_candidates_with_config(
+            conn,
+            repo_id,
+            query,
+            candidate_limit,
+            &embedding::EmbeddingConfig::LocalHash,
+            &mut candidates,
+        )?;
+    }
+
+    let mut scored = candidates
+        .into_values()
+        .filter_map(|mut candidate| {
+            if !candidate.has_retrieval_signal() {
+                return None;
+            }
+
+            candidate.score = score_search_candidate(&candidate, query);
+            Some(candidate)
+        })
+        .collect::<Vec<_>>();
+
+    scored.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| right.updated_at.cmp(&left.updated_at))
+    });
+
+    let mut matches = Vec::new();
+    for candidate in scored.into_iter().take(limit) {
+        let why_matched = candidate.match_reason();
+        matches.push(SearchHistoryMatch {
+            r#type: candidate.doc_type.clone(),
+            title: candidate.title,
+            summary: truncate_text(&candidate.body, 280),
+            why_matched,
+            score: candidate.score,
+            evidence_refs: load_evidence_refs_from_conn(
+                conn,
+                evidence_owner_for_doc_type(&candidate.doc_type),
+                &candidate.doc_ref_id,
+            )?,
+        });
+    }
+
+    Ok(matches)
+}
+
+fn ancestor_repo_roots_from_conn(
+    conn: &Connection,
+    repo_root: &str,
+) -> Result<Vec<(String, String)>> {
+    let normalized = repo_identity::normalize_repo_root(repo_root);
+    let mut stmt = conn.prepare(
+        "SELECT repo_id, repo_root
+         FROM repos
+         WHERE ?1 LIKE repo_root || '/%'
+         ORDER BY length(repo_root) DESC, updated_at DESC",
+    )?;
+    let rows = stmt
+        .query_map([normalized], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+fn count_table_rows(
+    conn: &Connection,
+    table: &str,
+    repo_id: &str,
+    status_filter: Option<(&str, &str)>,
+) -> Result<usize> {
+    let sql = match status_filter {
+        Some((status_column, _)) => {
+            format!("SELECT COUNT(*) FROM {table} WHERE repo_id = ?1 AND {status_column} = ?2")
+        }
+        None => format!("SELECT COUNT(*) FROM {table} WHERE repo_id = ?1"),
+    };
+
+    let count = match status_filter {
+        Some((_, status_value)) => conn.query_row(
+            &sql,
+            params![repo_id, status_value],
+            |row| row.get::<_, i64>(0),
+        )?,
+        None => conn.query_row(&sql, [repo_id], |row| row.get::<_, i64>(0))?,
+    };
+
+    Ok(count as usize)
 }
 
 fn evidence_owner_for_doc_type(doc_type: &str) -> &'static str {
@@ -3045,6 +3230,112 @@ mod tests {
     fn new_store() -> MemoryStore {
         let path = std::env::temp_dir().join(format!("chatmem-store-test-{}.sqlite", uuid::Uuid::new_v4()));
         MemoryStore::new(path).unwrap()
+    }
+
+    fn approve_test_memory(
+        store: &MemoryStore,
+        repo_root: &str,
+        title: &str,
+        value: &str,
+    ) -> String {
+        let candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "strategy".to_string(),
+                summary: title.to_string(),
+                value: value.to_string(),
+                why_it_matters: "Keeps cross-agent memory retrieval stable".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.91,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+        store
+            .review_candidate(
+                &candidate_id,
+                ReviewAction::Approve {
+                    title: title.to_string(),
+                    usage_hint: "Use when repo-specific memory appears empty".to_string(),
+                },
+            )
+            .unwrap();
+        candidate_id
+    }
+
+    #[test]
+    fn list_repo_memories_falls_back_to_existing_ancestor_repo_when_child_is_empty() {
+        let store = new_store();
+        approve_test_memory(
+            &store,
+            "d:/vsp",
+            "ChatMem parent-root memory",
+            "chatmem-parent-root-unique-token",
+        );
+
+        let memories = store.list_repo_memories("d:/vsp/agentswap-gui").unwrap();
+
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].title, "ChatMem parent-root memory");
+        assert_eq!(
+            memories[0].selected_because.as_deref(),
+            Some("Inherited from ancestor repo d:/vsp")
+        );
+    }
+
+    #[test]
+    fn search_history_falls_back_to_existing_ancestor_repo_when_child_has_no_matches() {
+        let store = new_store();
+        approve_test_memory(
+            &store,
+            "d:/vsp",
+            "ChatMem parent search memory",
+            "ancestor-search-unique-token",
+        );
+
+        let matches = store
+            .search_history("d:/vsp/agentswap-gui", "ancestor-search-unique-token", 5)
+            .unwrap();
+
+        assert!(matches
+            .iter()
+            .any(|item| item.title == "ChatMem parent search memory"));
+    }
+
+    #[test]
+    fn repo_memory_health_reports_pending_candidates_and_ancestor_drift() {
+        let store = new_store();
+        approve_test_memory(
+            &store,
+            "d:/vsp",
+            "Parent memory",
+            "parent-memory-health-token",
+        );
+        store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: "d:/vsp/agentswap-gui".to_string(),
+                kind: "product_decision".to_string(),
+                summary: "Keep conversation view full width".to_string(),
+                value: "Project memory review belongs on project home.".to_string(),
+                why_it_matters: "Pending candidates must be visible before startup memory works.".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.95,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        let health = store.repo_memory_health("d:/vsp/agentswap-gui").unwrap();
+
+        assert_eq!(health.approved_memory_count, 0);
+        assert_eq!(health.pending_candidate_count, 1);
+        assert_eq!(health.inherited_repo_roots, vec!["d:/vsp".to_string()]);
+        assert!(health
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("ancestor repo")));
+        assert!(health
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("pending memory candidate")));
     }
 
     #[test]

@@ -12,7 +12,8 @@ use chatmem::chatmem_memory::{
     checkpoints::{CheckpointRecord, CreateCheckpointInput},
     models::{
         ApprovedMemoryResponse, EmbeddingRebuildReport, EntityGraphPayload, EpisodeResponse,
-        HandoffPacketResponse, MemoryCandidateResponse, MemoryConflictResponse, WikiPageResponse,
+        HandoffPacketResponse, MemoryCandidateResponse, MemoryConflictResponse,
+        RepoMemoryHealthResponse, WikiPageResponse,
     },
     runs::{list_artifacts as load_artifacts, list_runs as load_runs, ArtifactRecord, RunRecord},
     store::{MemoryStore, ReviewAction},
@@ -772,6 +773,14 @@ async fn list_repo_memories(repo_root: String) -> Result<Vec<ApprovedMemoryRespo
 }
 
 #[command]
+async fn get_repo_memory_health(repo_root: String) -> Result<RepoMemoryHealthResponse, String> {
+    let store = open_memory_store()?;
+    store
+        .repo_memory_health(&repo_root)
+        .map_err(|e| e.to_string())
+}
+
+#[command]
 async fn list_memory_candidates(
     repo_root: String,
     status: Option<String>,
@@ -967,6 +976,7 @@ fn main() {
             verify_webdav_server,
             sync_webdav_now,
             list_repo_memories,
+            get_repo_memory_health,
             list_memory_candidates,
             list_memory_conflicts,
             list_entity_graph,

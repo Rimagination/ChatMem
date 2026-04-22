@@ -1,11 +1,48 @@
 use uuid::Uuid;
+use std::path::{Path, PathBuf};
 
 pub fn normalize_repo_root(input: &str) -> String {
-    input
-        .trim()
+    let mut normalized = input.trim().to_string();
+    if let Some(stripped) = normalized.strip_prefix(r"\\?\UNC\") {
+        normalized = format!("//{stripped}");
+    } else if let Some(stripped) = normalized.strip_prefix(r"\\?\") {
+        normalized = stripped.to_string();
+    } else if let Some(stripped) = normalized.strip_prefix("//?/") {
+        normalized = stripped.to_string();
+    }
+
+    normalized
         .trim_end_matches(['\\', '/'])
         .replace('\\', "/")
         .to_lowercase()
+}
+
+pub fn canonical_repo_root(input: &str) -> String {
+    let normalized_fallback = normalize_repo_root(input);
+    if input.trim().is_empty() {
+        return normalized_fallback;
+    }
+
+    let input_path = PathBuf::from(input.trim());
+    let mut cursor = if input_path.exists() {
+        input_path.canonicalize().unwrap_or(input_path)
+    } else {
+        input_path
+    };
+
+    if cursor.is_file() {
+        cursor.pop();
+    }
+
+    let mut current: Option<&Path> = Some(cursor.as_path());
+    while let Some(path) = current {
+        if path.join(".git").exists() {
+            return normalize_repo_root(&path.to_string_lossy());
+        }
+        current = path.parent();
+    }
+
+    normalized_fallback
 }
 
 pub fn fingerprint_repo(repo_root: &str, git_remote: Option<&str>, branch: Option<&str>) -> String {
@@ -21,7 +58,7 @@ pub fn fingerprint_repo(repo_root: &str, git_remote: Option<&str>, branch: Optio
 
 #[cfg(test)]
 mod tests {
-    use super::{fingerprint_repo, normalize_repo_root};
+    use super::{canonical_repo_root, fingerprint_repo, normalize_repo_root};
 
     #[test]
     fn normalizes_windows_repo_root() {
@@ -45,5 +82,22 @@ mod tests {
         );
 
         assert_eq!(left, right);
+    }
+
+    #[test]
+    fn canonical_repo_root_collapses_nested_paths_to_git_root() {
+        let root = std::env::temp_dir().join(format!(
+            "chatmem-repo-root-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let nested = root.join("src").join("chatmem_memory");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let canonical = canonical_repo_root(nested.to_str().unwrap());
+
+        assert_eq!(canonical, normalize_repo_root(&root.to_string_lossy()));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

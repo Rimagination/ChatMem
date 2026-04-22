@@ -8,6 +8,10 @@ pub struct GeminiSession {
     pub session_id: String,
     #[serde(rename = "projectHash")]
     pub project_hash: String,
+    #[serde(rename = "projectPath", default)]
+    pub project_path: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
     #[serde(rename = "startTime")]
     pub start_time: String,
     #[serde(rename = "lastUpdated")]
@@ -170,8 +174,28 @@ mod tests {
         let session = parse_session(&data).unwrap();
         assert_eq!(session.session_id, "abc-123");
         assert_eq!(session.project_hash, "deadbeef");
+        assert!(session.project_path.is_none());
+        assert!(session.cwd.is_none());
         assert!(session.summary.is_none());
         assert!(session.messages.is_empty());
+    }
+
+    #[test]
+    fn test_parse_project_path_metadata() {
+        let data = serde_json::to_vec(&json!({
+            "sessionId": "abc-123",
+            "projectHash": "deadbeef",
+            "projectPath": "D:/VSP/agentswap-gui",
+            "cwd": "D:/VSP/fallback",
+            "startTime": "2026-03-04T10:00:00.000Z",
+            "lastUpdated": "2026-03-04T10:05:00.000Z",
+            "messages": []
+        }))
+        .unwrap();
+
+        let session = parse_session(&data).unwrap();
+        assert_eq!(session.project_path.as_deref(), Some("D:/VSP/agentswap-gui"));
+        assert_eq!(session.cwd.as_deref(), Some("D:/VSP/fallback"));
     }
 
     #[test]
