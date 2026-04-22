@@ -96,9 +96,45 @@ export type RepoMemoryHealth = {
   approved_memory_count: number;
   pending_candidate_count: number;
   search_document_count: number;
+  indexed_chunk_count: number;
   inherited_repo_roots: string[];
   conversation_counts_by_agent: AgentConversationCount[];
+  repo_aliases: RepoAlias[];
   warnings: string[];
+};
+
+export type RepoAlias = {
+  alias_root: string;
+  alias_kind: string;
+  confidence: number;
+};
+
+export type RepoScanReport = {
+  repo_root: string;
+  canonical_repo_root: string;
+  scanned_conversation_count: number;
+  linked_conversation_count: number;
+  skipped_conversation_count: number;
+  source_agents: AgentConversationCount[];
+  warnings: string[];
+};
+
+export type ProjectContextPayload = {
+  repo_summary: string;
+  intent: string;
+  approved_memories: ApprovedMemory[];
+  priority_gotchas: ApprovedMemory[];
+  recent_handoff: HandoffPacket | null;
+  relevant_history: Array<{
+    type: string;
+    title: string;
+    summary: string;
+    why_matched: string;
+    score: number;
+    evidence_refs: EvidenceRef[];
+  }>;
+  pending_candidates: MemoryCandidate[];
+  repo_diagnostics: RepoMemoryHealth;
 };
 
 export type EmbeddingRebuildReport = {

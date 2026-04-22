@@ -12,6 +12,8 @@ import type {
   HandoffPacket,
   MemoryConflict,
   MemoryCandidate,
+  ProjectContextPayload,
+  RepoScanReport,
   RepoMemoryHealth,
   RunRecord,
   WikiPage,
@@ -23,6 +25,19 @@ export function listRepoMemories(repoRoot: string) {
 
 export function getRepoMemoryHealth(repoRoot: string) {
   return invoke<RepoMemoryHealth>("get_repo_memory_health", { repoRoot });
+}
+
+export function scanRepoConversations(repoRoot: string) {
+  return invoke<RepoScanReport>("scan_repo_conversations", { repoRoot });
+}
+
+export function getProjectContext(payload: {
+  repoRoot: string;
+  query: string;
+  intent?: string;
+  limit?: number;
+}) {
+  return invoke<ProjectContextPayload>("get_project_context", payload);
 }
 
 export function listMemoryCandidates(repoRoot: string, status?: string) {
