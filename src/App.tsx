@@ -693,6 +693,9 @@ function App() {
   const [isWindowFilled, setIsWindowFilled] = useState(false);
   const organizeMenuRef = useRef<HTMLDivElement | null>(null);
   const activeRepoRoot = selectedConversation?.project_dir ?? null;
+  const activeRepoRootRef = useRef<string | null>(activeRepoRoot);
+  const repoScanRequestIdRef = useRef(0);
+  const repoScanActiveCountRef = useRef(0);
   const availableHandoffTargets = ["claude", "codex", "gemini"].filter(
     (agent) => agent !== selectedAgent,
   );
@@ -761,6 +764,15 @@ function App() {
   }, [selectedConversation?.id]);
 
   useEffect(() => {
+    activeRepoRootRef.current = activeRepoRoot;
+    if (!activeRepoRoot) {
+      repoScanRequestIdRef.current += 1;
+      repoScanActiveCountRef.current = 0;
+      setRepoScanRunning(false);
+    }
+  }, [activeRepoRoot]);
+
+  useEffect(() => {
     if (!appSettings.autoCheckUpdates) {
       return;
     }
@@ -810,25 +822,37 @@ function App() {
     const loadProjectMemory = async () => {
       setMemoryLoading(true);
       setRepoHealthLoading(true);
+      const requestRepoRoot = activeRepoRoot;
       try {
-        const [nextMemories, nextCandidates, nextWikiPages, nextHealth] = await Promise.all([
+        const [nextMemories, nextCandidates, nextWikiPages] = await Promise.all([
           listRepoMemories(activeRepoRoot),
           listMemoryCandidates(activeRepoRoot, "pending_review"),
           rebuildRepoWiki(activeRepoRoot),
-          getRepoMemoryHealth(activeRepoRoot),
         ]);
-        if (cancelled) {
+        if (cancelled || activeRepoRootRef.current !== requestRepoRoot) {
           return;
         }
         setRepoMemories(nextMemories);
         setMemoryCandidates(nextCandidates);
         setWikiPages(nextWikiPages);
-        setRepoMemoryHealth(nextHealth);
       } catch (error) {
         console.error("Failed to load project memory:", error);
       } finally {
         if (!cancelled) {
           setMemoryLoading(false);
+        }
+      }
+
+      try {
+        const nextHealth = await getRepoMemoryHealth(requestRepoRoot);
+        if (cancelled || activeRepoRootRef.current !== requestRepoRoot) {
+          return;
+        }
+        setRepoMemoryHealth(nextHealth);
+      } catch (error) {
+        console.error("Failed to load repo memory health:", error);
+      } finally {
+        if (!cancelled) {
           setRepoHealthLoading(false);
         }
       }
@@ -842,16 +866,27 @@ function App() {
   }, [activeRepoRoot]);
 
   const handleScanRepoConversations = async () => {
-    if (!activeRepoRoot) return;
+    if (!activeRepoRoot) {
+      return;
+    }
+    const requestRepoRoot = activeRepoRoot;
+    const requestId = ++repoScanRequestIdRef.current;
+    repoScanActiveCountRef.current += 1;
     setRepoScanRunning(true);
     try {
-      await scanRepoConversations(activeRepoRoot);
-      const nextHealth = await getRepoMemoryHealth(activeRepoRoot);
-      setRepoMemoryHealth(nextHealth);
+      await scanRepoConversations(requestRepoRoot);
+      const nextHealth = await getRepoMemoryHealth(requestRepoRoot);
+      if (
+        activeRepoRootRef.current === requestRepoRoot &&
+        requestId === repoScanRequestIdRef.current
+      ) {
+        setRepoMemoryHealth(nextHealth);
+      }
     } catch (error) {
       console.error("Failed to scan repo conversations:", error);
     } finally {
-      setRepoScanRunning(false);
+      repoScanActiveCountRef.current = Math.max(0, repoScanActiveCountRef.current - 1);
+      setRepoScanRunning(repoScanActiveCountRef.current > 0);
     }
   };
 

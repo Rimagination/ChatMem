@@ -156,22 +156,12 @@ describe("Memory workspace", () => {
       if (command === "scan_repo_conversations") {
         return {
           repo_root: "D:/VSP/agentswap-gui",
+          canonical_repo_root: "D:/VSP/agentswap-gui",
           scanned_conversation_count: 1,
-          updated_embedding_count: 1,
-          repo_diagnostics: {
-            repo_root: "D:/VSP/agentswap-gui",
-            canonical_repo_root: "D:/VSP/agentswap-gui",
-            approved_memory_count: 1,
-            pending_candidate_count: 1,
-            search_document_count: 4,
-            indexed_chunk_count: 8,
-            inherited_repo_roots: [],
-            conversation_counts_by_agent: [
-              { source_agent: "claude", conversation_count: 1 },
-            ],
-            repo_aliases: [],
-            warnings: [],
-          },
+          linked_conversation_count: 1,
+          skipped_conversation_count: 0,
+          source_agents: ["claude"],
+          warnings: [],
         };
       }
 
@@ -274,5 +264,32 @@ describe("Memory workspace", () => {
         repoRoot: "D:/VSP/agentswap-gui",
       });
     });
+  });
+
+  it("still loads memory drawer data when repo health load fails", async () => {
+    const baseImplementation = mockInvoke.getMockImplementation();
+    if (!baseImplementation) {
+      throw new Error("Missing base invoke mock implementation");
+    }
+
+    mockInvoke.mockImplementation((command: string, payload?: Record<string, unknown>) => {
+      if (command === "get_repo_memory_health") {
+        return Promise.reject(new Error("health unavailable"));
+      }
+      return baseImplementation(command, payload);
+    });
+
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Memory 1" })).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Memory 1" }));
+    expect(await screen.findByRole("complementary", { name: "Project Memory" })).toBeTruthy();
+    expect(screen.getByText("Review pending memory")).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Approved 1" })).toBeTruthy();
   });
 });
