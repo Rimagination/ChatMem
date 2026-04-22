@@ -4,6 +4,7 @@ pub mod db;
 pub mod embedding;
 pub mod eval;
 pub mod handoff;
+pub mod chunks;
 pub mod mcp;
 pub mod models;
 pub mod repo_identity;
