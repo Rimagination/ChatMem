@@ -241,7 +241,7 @@ describe("App", () => {
 
     renderApp();
 
-    expect(await screen.findByText("ChatMem v0.1.8")).toBeTruthy();
+    expect(await screen.findByText("ChatMem v0.1.9")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Continue Work" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Needs Review" })).toBeNull();
     expect(screen.queryByRole("button", { name: "History" })).toBeNull();
@@ -330,7 +330,7 @@ describe("App", () => {
 
     renderApp();
 
-    const title = await screen.findByText("ChatMem v0.1.8");
+    const title = await screen.findByText("ChatMem v0.1.9");
     const topbar = title.closest(".app-topbar");
     expect(topbar).toBeTruthy();
 
@@ -350,7 +350,7 @@ describe("App", () => {
 
     const { container } = renderApp();
 
-    await screen.findByText("ChatMem v0.1.8");
+    await screen.findByText("ChatMem v0.1.9");
 
     await waitFor(() => {
       expect(container.querySelector(".app-shell")?.classList.contains("is-window-filled")).toBe(
