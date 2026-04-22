@@ -13,11 +13,14 @@ use chatmem::chatmem_memory::{
     models::{
         ApprovedMemoryResponse, EmbeddingRebuildReport, EntityGraphPayload, EpisodeResponse,
         HandoffPacketResponse, MemoryCandidateResponse, MemoryConflictResponse,
-        RepoMemoryHealthResponse, WikiPageResponse,
+        RepoMemoryHealthResponse, RepoScanReport, WikiPageResponse,
     },
     runs::{list_artifacts as load_artifacts, list_runs as load_runs, ArtifactRecord, RunRecord},
     store::{MemoryStore, ReviewAction},
-    sync::{build_resume_command, resolve_storage_path, sync_conversation_into_store},
+    sync::{
+        build_resume_command, resolve_storage_path,
+        scan_repo_conversations as sync_scan_repo_conversations, sync_conversation_into_store,
+    },
 };
 
 // Import AgentSwap adapters
@@ -781,6 +784,12 @@ async fn get_repo_memory_health(repo_root: String) -> Result<RepoMemoryHealthRes
 }
 
 #[command]
+async fn scan_repo_conversations(repo_root: String) -> Result<RepoScanReport, String> {
+    let store = open_memory_store()?;
+    sync_scan_repo_conversations(&store, &repo_root).map_err(|e| e.to_string())
+}
+
+#[command]
 async fn list_memory_candidates(
     repo_root: String,
     status: Option<String>,
@@ -977,6 +986,7 @@ fn main() {
             sync_webdav_now,
             list_repo_memories,
             get_repo_memory_health,
+            scan_repo_conversations,
             list_memory_candidates,
             list_memory_conflicts,
             list_entity_graph,

@@ -3,10 +3,13 @@ use agentswap_codex::CodexAdapter;
 use agentswap_core::{adapter::AgentAdapter, types::Conversation};
 use agentswap_gemini::GeminiAdapter;
 use rusqlite::Connection;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use walkdir::WalkDir;
 
-use super::store::MemoryStore;
+use super::{
+    models::{AgentConversationCount, RepoScanReport},
+    store::MemoryStore,
+};
 
 pub fn build_resume_command(agent: &str, id: &str) -> Option<String> {
     match agent {
@@ -103,8 +106,23 @@ pub fn sync_conversation_into_store(
 }
 
 pub fn sync_repo_conversations(store: &MemoryStore, repo_root: &str) -> anyhow::Result<usize> {
+    Ok(scan_repo_conversations(store, repo_root)?.linked_conversation_count)
+}
+
+pub fn scan_repo_conversations(
+    store: &MemoryStore,
+    repo_root: &str,
+) -> anyhow::Result<RepoScanReport> {
+    let normalized_requested_repo =
+        crate::chatmem_memory::repo_identity::normalize_repo_root(repo_root);
     let normalized_repo = crate::chatmem_memory::repo_identity::canonical_repo_root(repo_root);
-    let mut synced = 0usize;
+    let repo_id = store.ensure_repo(&normalized_repo)?;
+    store.upsert_repo_alias_for_repo_id(&repo_id, &normalized_requested_repo, "requested", 1.0)?;
+    store.upsert_repo_alias_for_repo_id(&repo_id, &normalized_repo, "canonical", 1.0)?;
+    let mut scanned = 0usize;
+    let mut linked = 0usize;
+    let mut skipped = 0usize;
+    let mut source_agent_counts: HashMap<String, usize> = HashMap::new();
 
     for agent in ["claude", "codex", "gemini"] {
         let Some(adapter) = get_adapter(agent) else {
@@ -117,23 +135,63 @@ pub fn sync_repo_conversations(store: &MemoryStore, repo_root: &str) -> anyhow::
 
         let summaries = adapter.list_conversations()?;
         for summary in summaries {
+            scanned += 1;
             if !summary_project_matches_repo(agent, &summary.project_dir, &normalized_repo) {
+                skipped += 1;
                 continue;
             }
 
             let mut conversation = adapter.read_conversation(&summary.id)?;
+            let observed_project_root =
+                crate::chatmem_memory::repo_identity::normalize_repo_root(&conversation.project_dir);
             if agent == "gemini"
-                && crate::chatmem_memory::repo_identity::normalize_repo_root(&conversation.project_dir)
-                    != normalized_repo
+                && observed_project_root != normalized_repo
             {
                 conversation.project_dir = normalized_repo.clone();
             }
             sync_conversation_into_store(store, agent, &conversation)?;
-            synced += 1;
+            linked += 1;
+            *source_agent_counts.entry(agent.to_string()).or_insert(0) += 1;
+
+            if !observed_project_root.is_empty() && observed_project_root != normalized_repo {
+                store.upsert_repo_alias_for_repo_id(
+                    &repo_id,
+                    &observed_project_root,
+                    "observed",
+                    0.72,
+                )?;
+            }
         }
     }
 
-    Ok(synced)
+    let mut source_agents = source_agent_counts
+        .into_iter()
+        .map(
+            |(source_agent, conversation_count)| AgentConversationCount {
+                source_agent,
+                conversation_count,
+            },
+        )
+        .collect::<Vec<_>>();
+    source_agents.sort_by(|left, right| left.source_agent.cmp(&right.source_agent));
+
+    let mut warnings = Vec::new();
+    if linked == 0 && scanned > 0 {
+        warnings.push(
+            "ChatMem scanned local conversations but none matched this repo root; verify project paths or aliases."
+                .to_string(),
+        );
+    }
+
+    Ok(RepoScanReport {
+        repo_root: normalized_requested_repo,
+        canonical_repo_root: normalized_repo,
+        scanned_conversation_count: scanned,
+        linked_conversation_count: linked,
+        skipped_conversation_count: skipped,
+        source_agents,
+        warnings,
+    })
 }
 
 pub(crate) fn summary_project_matches_repo(

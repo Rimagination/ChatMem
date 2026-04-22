@@ -185,13 +185,33 @@ pub struct AgentConversationCount {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RepoAliasResponse {
+    pub alias_root: String,
+    pub alias_kind: String,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RepoScanReport {
+    pub repo_root: String,
+    pub canonical_repo_root: String,
+    pub scanned_conversation_count: usize,
+    pub linked_conversation_count: usize,
+    pub skipped_conversation_count: usize,
+    pub source_agents: Vec<AgentConversationCount>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RepoMemoryHealthResponse {
     pub repo_root: String,
     pub canonical_repo_root: String,
     pub approved_memory_count: usize,
     pub pending_candidate_count: usize,
     pub search_document_count: usize,
+    pub indexed_chunk_count: usize,
     pub inherited_repo_roots: Vec<String>,
+    pub repo_aliases: Vec<RepoAliasResponse>,
     pub conversation_counts_by_agent: Vec<AgentConversationCount>,
     pub warnings: Vec<String>,
 }

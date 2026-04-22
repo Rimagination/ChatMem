@@ -18,7 +18,7 @@ use super::{
         CreateMemoryMergeProposalInput,
         EntityGraphPayload, EntityLinkResponse, EmbeddingRebuildReport, EntityNodeResponse,
         EpisodeResponse, EvidenceRef, HandoffPacketResponse, MemoryCandidateResponse,
-        MemoryConflictResponse, MemoryMergeSuggestion, RepoMemoryHealthResponse,
+        MemoryConflictResponse, MemoryMergeSuggestion, RepoAliasResponse, RepoMemoryHealthResponse,
         SearchHistoryMatch, WikiPageResponse,
     },
     repo_identity,
@@ -83,6 +83,60 @@ impl MemoryStore {
             |row| row.get::<_, String>(0),
         )
         .context("repository not found")
+    }
+
+    pub(crate) fn upsert_repo_alias_for_repo_id(
+        &self,
+        repo_id: &str,
+        alias_root: &str,
+        alias_kind: &str,
+        confidence: f64,
+    ) -> Result<()> {
+        let alias_root = repo_identity::normalize_repo_root(alias_root);
+        if alias_root.is_empty() {
+            return Ok(());
+        }
+
+        let alias_id = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_URL,
+            format!("chatmem:repo-alias:{repo_id}:{alias_root}").as_bytes(),
+        )
+        .to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        let conn = self.conn()?;
+
+        conn.execute(
+            "INSERT INTO repo_aliases (
+                alias_id, repo_id, alias_root, alias_kind, confidence, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+             ON CONFLICT(repo_id, alias_root) DO UPDATE SET
+                alias_kind = excluded.alias_kind,
+                confidence = excluded.confidence,
+                updated_at = excluded.updated_at",
+            params![alias_id, repo_id, alias_root, alias_kind, confidence, now],
+        )?;
+
+        Ok(())
+    }
+
+    fn list_repo_aliases_by_repo_id(&self, repo_id: &str) -> Result<Vec<RepoAliasResponse>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT alias_root, alias_kind, confidence
+             FROM repo_aliases
+             WHERE repo_id = ?1
+             ORDER BY confidence DESC, alias_root ASC",
+        )?;
+
+        let rows = stmt.query_map([repo_id], |row| {
+            Ok(RepoAliasResponse {
+                alias_root: row.get(0)?,
+                alias_kind: row.get(1)?,
+                confidence: row.get(2)?,
+            })
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn upsert_conversation_snapshot(
@@ -877,6 +931,8 @@ impl MemoryStore {
             Some(("status", "pending_review")),
         )?;
         let search_document_count = count_table_rows(&conn, "search_documents", &repo_id, None)?;
+        let indexed_chunk_count = count_table_rows(&conn, "conversation_chunks", &repo_id, None)?;
+        let repo_aliases = self.list_repo_aliases_by_repo_id(&repo_id)?;
 
         let mut inherited_repo_roots = Vec::new();
         for (ancestor_repo_id, ancestor_repo_root) in
@@ -931,7 +987,9 @@ impl MemoryStore {
             approved_memory_count,
             pending_candidate_count,
             search_document_count,
+            indexed_chunk_count,
             inherited_repo_roots,
+            repo_aliases,
             conversation_counts_by_agent,
             warnings,
         })
@@ -3451,6 +3509,26 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("pending memory candidate")));
+    }
+
+    #[test]
+    fn repo_memory_health_reports_indexed_chunks_and_aliases() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let repo_id = store.ensure_repo(repo_root).unwrap();
+
+        store
+            .upsert_repo_alias_for_repo_id(&repo_id, "d:/vsp", "ancestor", 0.72)
+            .unwrap();
+
+        let health = store.repo_memory_health(repo_root).unwrap();
+
+        assert_eq!(health.indexed_chunk_count, 0);
+        assert!(health.repo_aliases.iter().any(|alias| {
+            alias.alias_root == "d:/vsp"
+                && alias.alias_kind == "ancestor"
+                && (alias.confidence - 0.72).abs() < 1e-6
+        }));
     }
 
     #[test]
