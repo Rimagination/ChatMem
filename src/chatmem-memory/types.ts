@@ -78,6 +78,14 @@ export type EntityGraph = {
   links: EntityLink[];
 };
 
+export type EmbeddingRebuildReport = {
+  provider: string;
+  embedding_model: string;
+  dimensions: number;
+  indexed_documents: number;
+  fallback_indexed_documents: number;
+};
+
 export type EpisodeRecord = {
   episode_id: string;
   title: string;

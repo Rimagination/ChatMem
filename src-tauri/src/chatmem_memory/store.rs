@@ -14,7 +14,7 @@ use super::{
     handoff,
     models::{
         ApprovedMemoryResponse, CreateMemoryCandidateInput, EntityGraphPayload, EntityLinkResponse,
-        EntityNodeResponse, EpisodeResponse, EvidenceRef, HandoffPacketResponse,
+        EmbeddingRebuildReport, EntityNodeResponse, EpisodeResponse, EvidenceRef, HandoffPacketResponse,
         MemoryCandidateResponse, MemoryConflictResponse, MemoryMergeSuggestion, SearchHistoryMatch,
         WikiPageResponse,
     },
@@ -1306,20 +1306,111 @@ impl MemoryStore {
     }
 
     pub fn search_history(&self, repo_root: &str, query: &str, limit: usize) -> Result<Vec<SearchHistoryMatch>> {
+        let config = embedding::EmbeddingConfig::from_env();
+        match self.search_history_with_embedding_config(repo_root, query, limit, &config) {
+            Ok(matches) => Ok(matches),
+            Err(error) if config != embedding::EmbeddingConfig::LocalHash => {
+                eprintln!(
+                    "ChatMem embedding provider failed; falling back to local hash embeddings: {error}"
+                );
+                self.search_history_with_embedding_config(
+                    repo_root,
+                    query,
+                    limit,
+                    &embedding::EmbeddingConfig::LocalHash,
+                )
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn rebuild_repo_embeddings(&self, repo_root: &str) -> Result<EmbeddingRebuildReport> {
+        let config = embedding::EmbeddingConfig::from_env();
+        match self.rebuild_repo_embeddings_with_config(repo_root, &config) {
+            Ok(report) => Ok(report),
+            Err(error) if config != embedding::EmbeddingConfig::LocalHash => {
+                eprintln!(
+                    "ChatMem embedding provider failed during rebuild; falling back to local hash embeddings: {error}"
+                );
+                self.rebuild_repo_embeddings_with_config(
+                    repo_root,
+                    &embedding::EmbeddingConfig::LocalHash,
+                )
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) fn rebuild_repo_embeddings_with_config(
+        &self,
+        repo_root: &str,
+        config: &embedding::EmbeddingConfig,
+    ) -> Result<EmbeddingRebuildReport> {
+        let repo_id = self.ensure_repo(repo_root)?;
+        let conn = self.conn()?;
+        backfill_missing_document_embeddings_with_config(
+            &conn,
+            &repo_id,
+            &embedding::EmbeddingConfig::LocalHash,
+        )?;
+        if config != &embedding::EmbeddingConfig::LocalHash {
+            backfill_missing_document_embeddings_with_config(&conn, &repo_id, config)?;
+        }
+
+        let active_count = count_document_embeddings(&conn, &repo_id, &config.model_id())?;
+        let fallback_count = count_document_embeddings(
+            &conn,
+            &repo_id,
+            embedding::LOCAL_EMBEDDING_MODEL,
+        )?;
+
+        Ok(EmbeddingRebuildReport {
+            provider: config.provider_label().to_string(),
+            embedding_model: config.model_id(),
+            dimensions: config.dimensions(),
+            indexed_documents: active_count,
+            fallback_indexed_documents: fallback_count,
+        })
+    }
+
+    pub(crate) fn search_history_with_embedding_config(
+        &self,
+        repo_root: &str,
+        query: &str,
+        limit: usize,
+        config: &embedding::EmbeddingConfig,
+    ) -> Result<Vec<SearchHistoryMatch>> {
         if query.trim().is_empty() || limit == 0 {
             return Ok(vec![]);
         }
 
         let repo_id = self.ensure_repo(repo_root)?;
         let conn = self.conn()?;
-        backfill_missing_document_embeddings(&conn, &repo_id)?;
+        backfill_missing_document_embeddings_with_config(
+            &conn,
+            &repo_id,
+            &embedding::EmbeddingConfig::LocalHash,
+        )?;
+        if config != &embedding::EmbeddingConfig::LocalHash {
+            backfill_missing_document_embeddings_with_config(&conn, &repo_id, config)?;
+        }
 
         let candidate_limit = (limit * 4).max(16);
         let mut candidates = HashMap::new();
 
         collect_fts_search_candidates(&conn, &repo_id, query, candidate_limit, &mut candidates)?;
         collect_like_search_candidates(&conn, &repo_id, query, candidate_limit, &mut candidates)?;
-        collect_vector_search_candidates(&conn, &repo_id, query, candidate_limit, &mut candidates)?;
+        collect_vector_search_candidates_with_config(&conn, &repo_id, query, candidate_limit, config, &mut candidates)?;
+        if config != &embedding::EmbeddingConfig::LocalHash {
+            collect_vector_search_candidates_with_config(
+                &conn,
+                &repo_id,
+                query,
+                candidate_limit,
+                &embedding::EmbeddingConfig::LocalHash,
+                &mut candidates,
+            )?;
+        }
 
         let mut scored = candidates
             .into_values()
@@ -1388,6 +1479,7 @@ struct SearchCandidate {
     keyword_rank: Option<usize>,
     like_match: bool,
     vector_score: Option<f64>,
+    vector_provider: Option<String>,
     score: f64,
 }
 
@@ -1400,10 +1492,11 @@ impl SearchCandidate {
 
     fn match_reason(&self) -> String {
         let vector_score = self.vector_score.unwrap_or(0.0);
+        let provider = self.vector_provider.as_deref().unwrap_or("local-hash");
         if self.keyword_rank.is_some() && vector_score >= VECTOR_MATCH_THRESHOLD {
-            "hybrid repository history match (keyword + vector rerank)".to_string()
+            format!("hybrid repository history match (keyword + {provider} vector rerank)")
         } else if vector_score >= VECTOR_MATCH_THRESHOLD {
-            "vector similarity match from local embeddings".to_string()
+            format!("vector similarity match from {provider} embeddings")
         } else if self.keyword_rank.is_some() {
             "keyword repository history match".to_string()
         } else {
@@ -1495,14 +1588,16 @@ fn collect_like_search_candidates(
     Ok(())
 }
 
-fn collect_vector_search_candidates(
+fn collect_vector_search_candidates_with_config(
     conn: &Connection,
     repo_id: &str,
     query: &str,
     limit: usize,
+    config: &embedding::EmbeddingConfig,
     candidates: &mut HashMap<String, SearchCandidate>,
 ) -> Result<()> {
-    let query_vector = embedding::embed_query(query);
+    let query_embedding = embedding::embed_query_with_config(config, query)?;
+    let query_vector = query_embedding.vector;
     if query_vector.iter().all(|value| *value == 0.0) {
         return Ok(());
     }
@@ -1520,8 +1615,8 @@ fn collect_vector_search_candidates(
     let rows = stmt.query_map(
         params![
             repo_id,
-            embedding::LOCAL_EMBEDDING_MODEL,
-            embedding::LOCAL_EMBEDDING_DIMENSIONS as i64,
+            query_embedding.model_id,
+            query_embedding.dimensions as i64,
         ],
         |row| {
             Ok((
@@ -1567,7 +1662,10 @@ fn collect_vector_search_candidates(
         let candidate = search_candidate_entry(
             candidates, doc_id, doc_type, doc_ref_id, title, body, updated_at,
         );
-        candidate.vector_score = Some(candidate.vector_score.unwrap_or(0.0).max(vector_score));
+        if vector_score > candidate.vector_score.unwrap_or(0.0) {
+            candidate.vector_score = Some(vector_score);
+            candidate.vector_provider = Some(config.provider_label().to_string());
+        }
     }
 
     Ok(())
@@ -1592,6 +1690,7 @@ fn search_candidate_entry<'a>(
         keyword_rank: None,
         like_match: false,
         vector_score: None,
+        vector_provider: None,
         score: 0.0,
     })
 }
@@ -1618,15 +1717,22 @@ fn score_search_candidate(candidate: &SearchCandidate, query: &str) -> f64 {
         + type_bonus
 }
 
-fn backfill_missing_document_embeddings(conn: &Connection, repo_id: &str) -> Result<()> {
+fn backfill_missing_document_embeddings_with_config(
+    conn: &Connection,
+    repo_id: &str,
+    config: &embedding::EmbeddingConfig,
+) -> Result<()> {
+    let embedding_model = config.model_id();
+    let dimensions = config.dimensions();
     let mut stmt = conn.prepare(
         "SELECT sd.doc_id, sd.title, sd.body
          FROM search_documents sd
-         LEFT JOIN document_embeddings de ON de.doc_id = sd.doc_id
+         LEFT JOIN document_embeddings de
+           ON de.doc_id = sd.doc_id
+          AND de.embedding_model = ?2
          WHERE sd.repo_id = ?1
            AND (
                de.doc_id IS NULL
-               OR de.embedding_model != ?2
                OR de.dimensions != ?3
                OR de.updated_at < sd.updated_at
            )",
@@ -1635,8 +1741,8 @@ fn backfill_missing_document_embeddings(conn: &Connection, repo_id: &str) -> Res
     let rows = stmt.query_map(
         params![
             repo_id,
-            embedding::LOCAL_EMBEDDING_MODEL,
-            embedding::LOCAL_EMBEDDING_DIMENSIONS as i64,
+            embedding_model,
+            dimensions as i64,
         ],
         |row| {
             Ok((
@@ -1651,10 +1757,23 @@ fn backfill_missing_document_embeddings(conn: &Connection, repo_id: &str) -> Res
     drop(stmt);
 
     for (doc_id, title, body) in missing {
-        upsert_document_embedding_tx(conn, &doc_id, repo_id, &title, &body)?;
+        upsert_document_embedding_for_config_tx(conn, &doc_id, repo_id, &title, &body, config)?;
     }
 
     Ok(())
+}
+
+fn count_document_embeddings(conn: &Connection, repo_id: &str, embedding_model: &str) -> Result<usize> {
+    let count = conn.query_row(
+        "SELECT COUNT(*)
+         FROM document_embeddings
+         WHERE repo_id = ?1
+           AND embedding_model = ?2",
+        params![repo_id, embedding_model],
+        |row| row.get::<_, i64>(0),
+    )?;
+
+    Ok(count as usize)
 }
 
 fn load_evidence_refs_from_conn(conn: &Connection, owner_type: &str, owner_id: &str) -> Result<Vec<EvidenceRef>> {
@@ -1751,24 +1870,41 @@ fn upsert_document_embedding_tx(
     title: &str,
     body: &str,
 ) -> Result<()> {
+    upsert_document_embedding_for_config_tx(
+        conn,
+        doc_id,
+        repo_id,
+        title,
+        body,
+        &embedding::EmbeddingConfig::LocalHash,
+    )
+}
+
+fn upsert_document_embedding_for_config_tx(
+    conn: &Connection,
+    doc_id: &str,
+    repo_id: &str,
+    title: &str,
+    body: &str,
+    config: &embedding::EmbeddingConfig,
+) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
-    let vector = embedding::embed_search_document(title, body);
-    let vector_json = serde_json::to_string(&vector)?;
+    let embedding = embedding::embed_search_document_with_config(config, title, body)?;
+    let vector_json = serde_json::to_string(&embedding.vector)?;
     conn.execute(
         "INSERT INTO document_embeddings (
             doc_id, repo_id, embedding_model, dimensions, vector_json, updated_at
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT(doc_id) DO UPDATE SET
+         ON CONFLICT(doc_id, embedding_model) DO UPDATE SET
             repo_id = excluded.repo_id,
-            embedding_model = excluded.embedding_model,
             dimensions = excluded.dimensions,
             vector_json = excluded.vector_json,
             updated_at = excluded.updated_at",
         params![
             doc_id,
             repo_id,
-            embedding::LOCAL_EMBEDDING_MODEL,
-            embedding::LOCAL_EMBEDDING_DIMENSIONS as i64,
+            embedding.model_id,
+            embedding.dimensions as i64,
             vector_json,
             now,
         ],
@@ -2611,6 +2747,8 @@ mod tests {
     use chrono::Utc;
     use rusqlite::params;
     use std::collections::HashMap;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::{thread, time::Duration};
     use uuid::Uuid;
 
@@ -2789,6 +2927,218 @@ mod tests {
             .unwrap();
 
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn document_embeddings_can_keep_remote_model_and_local_fallback_for_same_doc() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "strategy".to_string(),
+                summary: "Remote snapshot flow".to_string(),
+                value: "WebDAV sync uploads manifest snapshots to the configured remote path.".to_string(),
+                why_it_matters: "Agents need searchable cloud persistence context.".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.89,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        store
+            .review_candidate(
+                &candidate_id,
+                ReviewAction::Approve {
+                    title: "Remote snapshot flow".into(),
+                    usage_hint: "Use when investigating persistence or backup behavior.".into(),
+                },
+            )
+            .unwrap();
+
+        let conn = store.conn().unwrap();
+        let doc_id = conn
+            .query_row(
+                "SELECT doc_id
+                 FROM search_documents
+                 WHERE doc_type = 'memory'
+                   AND title = 'Remote snapshot flow'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+
+        conn.execute(
+            "INSERT INTO document_embeddings (
+                doc_id, repo_id, embedding_model, dimensions, vector_json, updated_at
+             )
+             SELECT ?1, repo_id, ?2, ?3, ?4, ?5
+             FROM search_documents
+             WHERE doc_id = ?1",
+            params![
+                doc_id,
+                "openai-compatible:text-embedding-3-small:1536",
+                1536_i64,
+                "[0.01,0.02,0.03]",
+                "2026-04-22T00:00:00Z",
+            ],
+        )
+        .unwrap();
+
+        let models = conn
+            .prepare(
+                "SELECT embedding_model
+                 FROM document_embeddings
+                 WHERE doc_id = ?1
+                 ORDER BY embedding_model ASC",
+            )
+            .unwrap()
+            .query_map([doc_id], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(
+            models,
+            vec![
+                "chatmem-local-hash-v1".to_string(),
+                "openai-compatible:text-embedding-3-small:1536".to_string(),
+            ]
+        );
+
+        let matches = store.search_history(repo_root, "cloud drive backup", 5).unwrap();
+        assert!(matches.iter().any(|item| item.title == "Remote snapshot flow"));
+    }
+
+    #[test]
+    fn search_history_can_use_openai_compatible_embedding_provider() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "strategy".to_string(),
+                summary: "Remote snapshot flow".to_string(),
+                value: "WebDAV sync uploads manifest snapshots to the configured remote path.".to_string(),
+                why_it_matters: "Agents need searchable cloud persistence context.".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.89,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        store
+            .review_candidate(
+                &candidate_id,
+                ReviewAction::Approve {
+                    title: "Remote snapshot flow".into(),
+                    usage_hint: "Use when investigating persistence or backup behavior.".into(),
+                },
+            )
+            .unwrap();
+
+        let server = spawn_embedding_server(2);
+        let config = super::embedding::EmbeddingConfig::OpenAiCompatible {
+            base_url: server.base_url,
+            api_key: "test-key".to_string(),
+            model: "text-embedding-3-small".to_string(),
+            dimensions: 3,
+        };
+
+        let matches = store
+            .search_history_with_embedding_config(repo_root, "cloud drive backup", 5, &config)
+            .unwrap();
+
+        let matched = matches
+            .iter()
+            .find(|item| item.title == "Remote snapshot flow")
+            .expect("real provider vector search should find the WebDAV memory");
+        assert!(matched.why_matched.contains("openai-compatible"));
+
+        let conn = store.conn().unwrap();
+        let count = conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM document_embeddings
+                 WHERE embedding_model = ?1
+                   AND dimensions = 3",
+                [config.model_id()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn rebuild_repo_embeddings_indexes_configured_provider_and_reports_counts() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "strategy".to_string(),
+                summary: "Remote snapshot flow".to_string(),
+                value: "WebDAV sync uploads manifest snapshots to the configured remote path.".to_string(),
+                why_it_matters: "Agents need searchable cloud persistence context.".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.89,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        store
+            .review_candidate(
+                &candidate_id,
+                ReviewAction::Approve {
+                    title: "Remote snapshot flow".into(),
+                    usage_hint: "Use when investigating persistence or backup behavior.".into(),
+                },
+            )
+            .unwrap();
+
+        let server = spawn_embedding_server(1);
+        let config = super::embedding::EmbeddingConfig::OpenAiCompatible {
+            base_url: server.base_url,
+            api_key: "test-key".to_string(),
+            model: "text-embedding-3-small".to_string(),
+            dimensions: 3,
+        };
+
+        let report = store
+            .rebuild_repo_embeddings_with_config(repo_root, &config)
+            .unwrap();
+
+        assert_eq!(report.provider, "openai-compatible");
+        assert_eq!(report.embedding_model, "openai-compatible:text-embedding-3-small:3");
+        assert_eq!(report.indexed_documents, 1);
+        assert_eq!(report.fallback_indexed_documents, 1);
+    }
+
+    struct TestEmbeddingServer {
+        base_url: String,
+    }
+
+    fn spawn_embedding_server(expected_requests: usize) -> TestEmbeddingServer {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            for _ in 0..expected_requests {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buffer = [0_u8; 8192];
+                let _ = stream.read(&mut buffer).unwrap();
+                let response_body = r#"{"data":[{"embedding":[1.0,0.0,0.0]}]}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+
+        TestEmbeddingServer {
+            base_url: format!("http://{addr}/v1"),
+        }
     }
 
     #[test]

@@ -77,7 +77,7 @@ The desktop settings screen owns WebDAV credentials and cloud upload. MCP tools 
 
 ## Retrieval Rule
 
-Search history is indexed as FTS plus local `chatmem-local-hash-v1` vectors. Treat vector hits as retrieval candidates, not final truth: prefer approved memories and evidence refs for durable facts, and verify stale or surprising matches before acting.
+Search history is indexed as FTS plus vectors. Local `chatmem-local-hash-v1` vectors are always kept as a fallback. When `CHATMEM_EMBEDDING_PROVIDER=openai-compatible` and the matching base URL/model/dimensions/API key environment variables are present, search can use real provider embeddings stored side-by-side with the local fallback. Call `rebuild_repo_embeddings` after changing embedding provider settings. Treat vector hits as retrieval candidates, not final truth: prefer approved memories and evidence refs for durable facts, and verify stale or surprising matches before acting.
 
 ## Extraction And Conflict Rule
 

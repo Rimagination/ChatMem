@@ -1,5 +1,10 @@
+use anyhow::{Context, Result};
+use serde::Deserialize;
+
 pub const LOCAL_EMBEDDING_MODEL: &str = "chatmem-local-hash-v1";
 pub const LOCAL_EMBEDDING_DIMENSIONS: usize = 384;
+const DEFAULT_OPENAI_COMPATIBLE_BASE_URL: &str = "https://api.openai.com/v1";
+const DEFAULT_OPENAI_COMPATIBLE_MODEL: &str = "text-embedding-3-small";
 
 const STOP_WORDS: &[&str] = &[
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "into", "is",
@@ -137,6 +142,192 @@ const PHRASE_ALIAS_GROUPS: &[(&[&str], &[&str])] = &[
         ],
     ),
 ];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmbeddingConfig {
+    LocalHash,
+    OpenAiCompatible {
+        base_url: String,
+        api_key: String,
+        model: String,
+        dimensions: usize,
+    },
+}
+
+impl EmbeddingConfig {
+    pub fn from_env() -> Self {
+        Self::from_env_map(|key| std::env::var(key).ok())
+    }
+
+    pub fn from_env_map<F>(mut get_env: F) -> Self
+    where
+        F: FnMut(&str) -> Option<String>,
+    {
+        let provider = get_env("CHATMEM_EMBEDDING_PROVIDER").unwrap_or_default();
+        if provider.trim().eq_ignore_ascii_case("openai-compatible") {
+            let api_key = get_env("CHATMEM_EMBEDDING_API_KEY").unwrap_or_default();
+            if api_key.trim().is_empty() {
+                return Self::LocalHash;
+            }
+
+            let dimensions = get_env("CHATMEM_EMBEDDING_DIMENSIONS")
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(LOCAL_EMBEDDING_DIMENSIONS);
+
+            return Self::OpenAiCompatible {
+                base_url: get_env("CHATMEM_EMBEDDING_BASE_URL")
+                    .unwrap_or_else(|| DEFAULT_OPENAI_COMPATIBLE_BASE_URL.to_string())
+                    .trim()
+                    .trim_end_matches('/')
+                    .to_string(),
+                api_key,
+                model: get_env("CHATMEM_EMBEDDING_MODEL")
+                    .unwrap_or_else(|| DEFAULT_OPENAI_COMPATIBLE_MODEL.to_string())
+                    .trim()
+                    .to_string(),
+                dimensions,
+            };
+        }
+
+        Self::LocalHash
+    }
+
+    pub fn provider_label(&self) -> &'static str {
+        match self {
+            Self::LocalHash => "local-hash",
+            Self::OpenAiCompatible { .. } => "openai-compatible",
+        }
+    }
+
+    pub fn dimensions(&self) -> usize {
+        match self {
+            Self::LocalHash => LOCAL_EMBEDDING_DIMENSIONS,
+            Self::OpenAiCompatible { dimensions, .. } => *dimensions,
+        }
+    }
+
+    pub fn model_id(&self) -> String {
+        match self {
+            Self::LocalHash => LOCAL_EMBEDDING_MODEL.to_string(),
+            Self::OpenAiCompatible {
+                model, dimensions, ..
+            } => format!("openai-compatible:{model}:{dimensions}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EmbeddingOutput {
+    pub model_id: String,
+    pub dimensions: usize,
+    pub vector: Vec<f32>,
+}
+
+pub fn embed_search_document_with_config(
+    config: &EmbeddingConfig,
+    title: &str,
+    body: &str,
+) -> Result<EmbeddingOutput> {
+    let text = format!("{title}\n\n{body}");
+    embed_text_with_config(config, &text, true)
+}
+
+pub fn embed_query_with_config(config: &EmbeddingConfig, query: &str) -> Result<EmbeddingOutput> {
+    embed_text_with_config(config, query, false)
+}
+
+fn embed_text_with_config(
+    config: &EmbeddingConfig,
+    text: &str,
+    is_document: bool,
+) -> Result<EmbeddingOutput> {
+    let vector = match config {
+        EmbeddingConfig::LocalHash => {
+            if is_document {
+                let mut parts = text.splitn(2, "\n\n");
+                let title = parts.next().unwrap_or_default();
+                let body = parts.next().unwrap_or_default();
+                embed_search_document(title, body)
+            } else {
+                embed_query(text)
+            }
+        }
+        EmbeddingConfig::OpenAiCompatible { .. } => embed_openai_compatible(config, text)?,
+    };
+
+    Ok(EmbeddingOutput {
+        model_id: config.model_id(),
+        dimensions: vector.len(),
+        vector,
+    })
+}
+
+fn embed_openai_compatible(config: &EmbeddingConfig, text: &str) -> Result<Vec<f32>> {
+    let EmbeddingConfig::OpenAiCompatible {
+        base_url,
+        api_key,
+        model,
+        dimensions,
+    } = config
+    else {
+        anyhow::bail!("openai-compatible embedding config required");
+    };
+
+    let endpoint = openai_compatible_embeddings_endpoint(base_url);
+    let client = reqwest::blocking::Client::new();
+    let mut body = serde_json::json!({
+        "model": model,
+        "input": text,
+    });
+    if *dimensions > 0 {
+        body["dimensions"] = serde_json::json!(dimensions);
+    }
+
+    let response = client
+        .post(endpoint)
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .context("failed to call embedding provider")?
+        .error_for_status()
+        .context("embedding provider returned an error")?
+        .text()
+        .context("failed to read embedding provider response")?;
+
+    parse_openai_compatible_embedding_response(&response)
+}
+
+fn openai_compatible_embeddings_endpoint(base_url: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if trimmed.ends_with("/embeddings") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/embeddings")
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiCompatibleEmbeddingResponse {
+    data: Vec<OpenAiCompatibleEmbeddingItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiCompatibleEmbeddingItem {
+    embedding: Vec<f32>,
+}
+
+pub(crate) fn parse_openai_compatible_embedding_response(response: &str) -> Result<Vec<f32>> {
+    let parsed: OpenAiCompatibleEmbeddingResponse =
+        serde_json::from_str(response).context("invalid embedding provider response")?;
+    parsed
+        .data
+        .into_iter()
+        .next()
+        .map(|item| item.embedding)
+        .filter(|embedding| !embedding.is_empty())
+        .context("embedding provider response did not include a vector")
+}
 
 pub fn embed_search_document(title: &str, body: &str) -> Vec<f32> {
     let mut vector = vec![0.0; LOCAL_EMBEDDING_DIMENSIONS];
@@ -284,6 +475,8 @@ fn normalize(mut vector: Vec<f32>) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::{cosine_similarity, embed_query, embed_search_document};
 
     #[test]
@@ -305,5 +498,36 @@ mod tests {
     fn local_embedding_returns_stable_dimensions() {
         let vector = embed_search_document("Vector search", "Embedding based retrieval");
         assert_eq!(vector.len(), super::LOCAL_EMBEDDING_DIMENSIONS);
+    }
+
+    #[test]
+    fn embedding_config_reads_openai_compatible_provider_from_env_like_map() {
+        let env = HashMap::from([
+            ("CHATMEM_EMBEDDING_PROVIDER".to_string(), "openai-compatible".to_string()),
+            ("CHATMEM_EMBEDDING_BASE_URL".to_string(), "https://example.com/v1/".to_string()),
+            ("CHATMEM_EMBEDDING_API_KEY".to_string(), "test-key".to_string()),
+            ("CHATMEM_EMBEDDING_MODEL".to_string(), "text-embedding-3-small".to_string()),
+            ("CHATMEM_EMBEDDING_DIMENSIONS".to_string(), "1536".to_string()),
+        ]);
+
+        let config = super::EmbeddingConfig::from_env_map(|key| env.get(key).cloned());
+
+        assert_eq!(config.model_id(), "openai-compatible:text-embedding-3-small:1536");
+        assert_eq!(config.dimensions(), 1536);
+        assert_eq!(config.provider_label(), "openai-compatible");
+    }
+
+    #[test]
+    fn openai_compatible_provider_parses_embedding_response() {
+        let response = r#"{
+            "model": "text-embedding-3-small",
+            "data": [
+                { "embedding": [0.1, 0.2, 0.3] }
+            ]
+        }"#;
+
+        let vector = super::parse_openai_compatible_embedding_response(response).unwrap();
+
+        assert_eq!(vector, vec![0.1, 0.2, 0.3]);
     }
 }

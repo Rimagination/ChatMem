@@ -11,7 +11,7 @@ use super::{
     checkpoints::{CheckpointRecord, CreateCheckpointInput},
     models::{
         BuildHandoffPacketInput, CreateMemoryCandidateInput, CreateMemoryCandidateResult,
-        EntityGraphPayload, GetRepoMemoryInput, ListMemoryCandidatesInput,
+        EmbeddingRebuildReport, EntityGraphPayload, GetRepoMemoryInput, ListMemoryCandidatesInput,
         ListMemoryCandidatesPayload, ListWikiPagesPayload, MemoryConflictResponse,
         RepoMemoryPayload, SearchHistoryPayload, SearchRepoHistoryInput,
     },
@@ -116,6 +116,7 @@ impl ChatMemMcpService {
             .with_route((Self::resume_from_checkpoint_tool_attr(), Self::resume_from_checkpoint))
             .with_route((Self::list_repo_wiki_pages_tool_attr(), Self::list_repo_wiki_pages))
             .with_route((Self::rebuild_repo_wiki_tool_attr(), Self::rebuild_repo_wiki))
+            .with_route((Self::rebuild_repo_embeddings_tool_attr(), Self::rebuild_repo_embeddings))
             .with_route((Self::list_memory_conflicts_tool_attr(), Self::list_memory_conflicts))
             .with_route((Self::list_entity_graph_tool_attr(), Self::list_entity_graph))
     }
@@ -274,6 +275,18 @@ impl ChatMemMcpService {
             .map_err(|error| internal_error(error.to_string()))
     }
 
+    #[tool(name = "rebuild_repo_embeddings", description = "Rebuild repository vector embeddings using the configured provider, keeping local hash fallback vectors")]
+    async fn rebuild_repo_embeddings(
+        &self,
+        Parameters(input): Parameters<RepoRootInput>,
+    ) -> Result<Json<EmbeddingRebuildReport>, McpError> {
+        let _ = sync::sync_repo_conversations(&self.store, &input.repo_root);
+        self.store
+            .rebuild_repo_embeddings(&input.repo_root)
+            .map(Json)
+            .map_err(|error| internal_error(error.to_string()))
+    }
+
     #[tool(name = "list_entity_graph", description = "List lightweight repository entity graph nodes and links extracted from memory/search documents")]
     async fn list_entity_graph(
         &self,
@@ -390,6 +403,7 @@ mod tests {
             ChatMemMcpService::resume_from_checkpoint_tool_attr().name,
             ChatMemMcpService::list_repo_wiki_pages_tool_attr().name,
             ChatMemMcpService::rebuild_repo_wiki_tool_attr().name,
+            ChatMemMcpService::rebuild_repo_embeddings_tool_attr().name,
             ChatMemMcpService::list_memory_conflicts_tool_attr().name,
             ChatMemMcpService::list_entity_graph_tool_attr().name,
         ]

@@ -246,12 +246,13 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         );
 
         CREATE TABLE IF NOT EXISTS document_embeddings (
-            doc_id TEXT PRIMARY KEY,
+            doc_id TEXT NOT NULL,
             repo_id TEXT NOT NULL,
             embedding_model TEXT NOT NULL,
             dimensions INTEGER NOT NULL,
             vector_json TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (doc_id, embedding_model)
         );
 
         CREATE INDEX IF NOT EXISTS idx_document_embeddings_repo_model
@@ -299,6 +300,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_column(conn, "handoff_packets", "consumed_at", "TEXT")?;
     ensure_column(conn, "handoff_packets", "consumed_by", "TEXT")?;
     dedupe_legacy_checkpoint_handoff_links(conn)?;
+    migrate_document_embeddings_to_composite_key(conn)?;
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_packets_checkpoint_id_unique
          ON handoff_packets(checkpoint_id)
@@ -411,6 +413,64 @@ fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool
     }
 
     Ok(false)
+}
+
+fn migrate_document_embeddings_to_composite_key(conn: &Connection) -> Result<()> {
+    if document_embeddings_has_composite_key(conn)? {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "
+        DROP INDEX IF EXISTS idx_document_embeddings_repo_model;
+        DROP TABLE IF EXISTS document_embeddings_migration_backup;
+        ALTER TABLE document_embeddings RENAME TO document_embeddings_migration_backup;
+
+        CREATE TABLE document_embeddings (
+            doc_id TEXT NOT NULL,
+            repo_id TEXT NOT NULL,
+            embedding_model TEXT NOT NULL,
+            dimensions INTEGER NOT NULL,
+            vector_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (doc_id, embedding_model)
+        );
+
+        INSERT OR REPLACE INTO document_embeddings (
+            doc_id, repo_id, embedding_model, dimensions, vector_json, updated_at
+        )
+        SELECT doc_id, repo_id, embedding_model, dimensions, vector_json, updated_at
+        FROM document_embeddings_migration_backup;
+
+        DROP TABLE document_embeddings_migration_backup;
+
+        CREATE INDEX IF NOT EXISTS idx_document_embeddings_repo_model
+        ON document_embeddings(repo_id, embedding_model, dimensions);
+        ",
+    )?;
+
+    Ok(())
+}
+
+fn document_embeddings_has_composite_key(conn: &Connection) -> Result<bool> {
+    let mut stmt = conn.prepare("PRAGMA table_info(document_embeddings)")?;
+    let columns = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(1)?, row.get::<_, i64>(5)?))
+    })?;
+
+    let mut primary_key_columns = columns
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|(_, pk_position)| *pk_position > 0)
+        .collect::<Vec<_>>();
+    primary_key_columns.sort_by_key(|(_, pk_position)| *pk_position);
+
+    let names = primary_key_columns
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect::<Vec<_>>();
+
+    Ok(names == vec!["doc_id".to_string(), "embedding_model".to_string()])
 }
 
 #[cfg(test)]
@@ -742,6 +802,68 @@ mod tests {
         assert!(columns.contains(&"verified_by".to_string()));
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn migrations_allow_multiple_embedding_models_per_document() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE document_embeddings (
+                doc_id TEXT PRIMARY KEY,
+                repo_id TEXT NOT NULL,
+                embedding_model TEXT NOT NULL,
+                dimensions INTEGER NOT NULL,
+                vector_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            INSERT INTO document_embeddings (
+                doc_id, repo_id, embedding_model, dimensions, vector_json, updated_at
+            ) VALUES (
+                'doc-1', 'repo-1', 'chatmem-local-hash-v1', 384, '[0.1,0.2]', '2026-04-22T00:00:00Z'
+            );
+            ",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO document_embeddings (
+                doc_id, repo_id, embedding_model, dimensions, vector_json, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                "doc-1",
+                "repo-1",
+                "openai-compatible:text-embedding-3-small:1536",
+                1536_i64,
+                "[0.3,0.4]",
+                "2026-04-22T00:01:00Z",
+            ],
+        )
+        .unwrap();
+
+        let models = conn
+            .prepare(
+                "SELECT embedding_model
+                 FROM document_embeddings
+                 WHERE doc_id = 'doc-1'
+                 ORDER BY embedding_model ASC",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(
+            models,
+            vec![
+                "chatmem-local-hash-v1".to_string(),
+                "openai-compatible:text-embedding-3-small:1536".to_string(),
+            ]
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@ import type {
   ArtifactRecord,
   CheckpointCreateInput,
   CheckpointRecord,
+  EmbeddingRebuildReport,
   EntityGraph,
   EpisodeRecord,
   HandoffConsumeInput,
@@ -55,6 +56,10 @@ export function listWikiPages(repoRoot: string) {
 
 export function rebuildRepoWiki(repoRoot: string) {
   return invoke<WikiPage[]>("rebuild_repo_wiki", { repoRoot });
+}
+
+export function rebuildRepoEmbeddings(repoRoot: string) {
+  return invoke<EmbeddingRebuildReport>("rebuild_repo_embeddings", { repoRoot });
 }
 
 export function listHandoffs(repoRoot: string) {

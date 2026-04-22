@@ -11,8 +11,8 @@ use chatmem::chatmem_memory::{
     a2a::AgentCard,
     checkpoints::{CheckpointRecord, CreateCheckpointInput},
     models::{
-        ApprovedMemoryResponse, EntityGraphPayload, EpisodeResponse, HandoffPacketResponse,
-        MemoryCandidateResponse, MemoryConflictResponse, WikiPageResponse,
+        ApprovedMemoryResponse, EmbeddingRebuildReport, EntityGraphPayload, EpisodeResponse,
+        HandoffPacketResponse, MemoryCandidateResponse, MemoryConflictResponse, WikiPageResponse,
     },
     runs::{list_artifacts as load_artifacts, list_runs as load_runs, ArtifactRecord, RunRecord},
     store::{MemoryStore, ReviewAction},
@@ -854,6 +854,14 @@ async fn rebuild_repo_wiki(repo_root: String) -> Result<Vec<WikiPageResponse>, S
 }
 
 #[command]
+async fn rebuild_repo_embeddings(repo_root: String) -> Result<EmbeddingRebuildReport, String> {
+    let store = open_memory_store()?;
+    store
+        .rebuild_repo_embeddings(&repo_root)
+        .map_err(|e| e.to_string())
+}
+
+#[command]
 async fn list_handoffs(repo_root: String) -> Result<Vec<HandoffPacketResponse>, String> {
     let store = open_memory_store()?;
     store.list_handoffs(&repo_root).map_err(|e| e.to_string())
@@ -959,6 +967,7 @@ fn main() {
             list_episodes,
             list_wiki_pages,
             rebuild_repo_wiki,
+            rebuild_repo_embeddings,
             list_handoffs,
             list_checkpoints,
             list_runs,

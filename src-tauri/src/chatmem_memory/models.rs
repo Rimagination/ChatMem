@@ -127,6 +127,15 @@ pub struct SearchHistoryMatch {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EmbeddingRebuildReport {
+    pub provider: String,
+    pub embedding_model: String,
+    pub dimensions: usize,
+    pub indexed_documents: usize,
+    pub fallback_indexed_documents: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SearchHistoryPayload {
     pub matches: Vec<SearchHistoryMatch>,
 }
