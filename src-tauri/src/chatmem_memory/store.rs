@@ -3342,8 +3342,7 @@ fn normalize_text(text: &str) -> String {
 fn should_search_history(intent: &str, query: &str) -> bool {
     match intent.trim().to_lowercase().as_str() {
         "recall" | "continue_work" | "debug" | "release" | "memory_review" => return true,
-        "auto" | "" => {}
-        _ => return false,
+        _ => {}
     }
 
     let normalized_query = normalize_text(query);
@@ -3693,6 +3692,49 @@ mod tests {
 
         assert_eq!(context.pending_candidates.len(), 1);
         assert_eq!(context.pending_candidates[0].status, "pending_review");
+    }
+
+    #[test]
+    fn project_context_unknown_intent_still_uses_recallish_query_for_history() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let now = Utc::now();
+        let conversation = Conversation {
+            id: "conv-project-context-startup-intent".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir: repo_root.to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("History evidence labeling discussion".to_string()),
+            messages: vec![Message {
+                id: Uuid::new_v4(),
+                timestamp: now,
+                role: Role::Assistant,
+                content:
+                    "We decided that history evidence must be labeled as not approved memory."
+                        .to_string(),
+                tool_calls: vec![],
+                metadata: HashMap::new(),
+            }],
+            file_changes: vec![],
+        };
+        store
+            .upsert_conversation_snapshot("codex", &conversation, None)
+            .unwrap();
+
+        let context = store
+            .get_project_context(
+                repo_root,
+                "did we discuss history evidence labeling",
+                Some("startup"),
+                Some(5),
+            )
+            .unwrap();
+
+        assert!(context
+            .relevant_history
+            .iter()
+            .any(|item| item.summary.contains("not approved memory")));
     }
 
     #[test]
