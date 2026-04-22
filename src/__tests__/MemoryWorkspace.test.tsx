@@ -160,7 +160,7 @@ describe("Memory workspace", () => {
           scanned_conversation_count: 1,
           linked_conversation_count: 1,
           skipped_conversation_count: 0,
-          source_agents: ["claude"],
+          source_agents: [{ source_agent: "claude", conversation_count: 1 }],
           warnings: [],
         };
       }
