@@ -54,4 +54,35 @@ describe("ProjectIndexStatus", () => {
     fireEvent.click(screen.getByRole("button", { name: "Rescan local history" }));
     expect(onScan).toHaveBeenCalledTimes(1);
   });
+
+  it("renders legacy repo health payloads without optional arrays", () => {
+    const onScan = vi.fn();
+    const legacyHealth = {
+      repo_root: "D:/VSP/agentswap-gui",
+      canonical_repo_root: "D:/VSP/agentswap-gui",
+      approved_memory_count: 0,
+      pending_candidate_count: 0,
+      search_document_count: 0,
+      indexed_chunk_count: 0,
+      inherited_repo_roots: [],
+      repo_aliases: [],
+    } as Partial<RepoMemoryHealth>;
+
+    render(
+      <ProjectIndexStatus
+        health={legacyHealth as RepoMemoryHealth}
+        loading={false}
+        scanning={false}
+        locale="en"
+        onScan={onScan}
+      />,
+    );
+
+    const conversationsLabel = screen.getByText("Conversations");
+    expect(conversationsLabel.parentElement?.querySelector(".meta-value")?.textContent).toBe("0");
+    expect(screen.queryByText("Warnings")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Rescan local history" }));
+    expect(onScan).toHaveBeenCalledTimes(1);
+  });
 });

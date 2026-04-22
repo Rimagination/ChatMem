@@ -17,8 +17,10 @@ export default function ProjectIndexStatus({
   onScan,
 }: ProjectIndexStatusProps) {
   const isEnglish = locale === "en";
+  const conversationCounts = health?.conversation_counts_by_agent ?? [];
+  const warnings = health?.warnings ?? [];
   const totalConversations =
-    health?.conversation_counts_by_agent.reduce(
+    conversationCounts.reduce(
       (count, source) => count + source.conversation_count,
       0,
     ) ?? 0;
@@ -99,11 +101,11 @@ export default function ProjectIndexStatus({
         </div>
       </div>
 
-      {health?.warnings.length ? (
+      {warnings.length ? (
         <div className="project-index-warnings" role="status">
           <span className="meta-label">{copy.warnings}</span>
           <ul>
-            {health.warnings.map((warning) => (
+            {warnings.map((warning) => (
               <li key={warning}>{warning}</li>
             ))}
           </ul>
