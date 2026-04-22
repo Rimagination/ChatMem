@@ -42,6 +42,8 @@ pub struct ApprovedMemoryResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MemoryMergeSuggestion {
+    #[serde(default)]
+    pub proposal_id: Option<String>,
     pub candidate_id: String,
     pub memory_id: String,
     pub memory_title: String,
@@ -54,6 +56,10 @@ pub struct MemoryMergeSuggestion {
     pub proposed_usage_hint: Option<String>,
     #[serde(default)]
     pub risk_note: Option<String>,
+    #[serde(default)]
+    pub proposed_by: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -234,6 +240,25 @@ pub struct CreateMemoryCandidateInput {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CreateMemoryCandidateResult {
     pub candidate_id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CreateMemoryMergeProposalInput {
+    pub repo_root: String,
+    pub candidate_id: String,
+    pub target_memory_id: String,
+    pub proposed_title: String,
+    pub proposed_value: String,
+    pub proposed_usage_hint: String,
+    pub risk_note: Option<String>,
+    pub proposed_by: String,
+    pub evidence_refs: Vec<EvidenceRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CreateMemoryMergeProposalResult {
+    pub proposal_id: String,
     pub status: String,
 }
 

@@ -40,6 +40,7 @@ export default function MemoryInboxPanel({
     possibleMerge: isEnglish ? "Potential merge with" : "\u53ef\u4e0e",
     mergeSuffix: isEnglish ? "." : "\u5408\u5e76\u3002",
     suggestedRewrite: isEnglish ? "Suggested rewrite" : "\u5efa\u8bae\u6539\u5199",
+    mergeProposedBy: isEnglish ? "Merge proposed by" : "\u5408\u5e76\u5efa\u8bae\u6765\u81ea",
     mergedValue: isEnglish ? "Memory value" : "\u8bb0\u5fc6\u5185\u5bb9",
     mergedUsage: isEnglish ? "Usage hint" : "\u4f7f\u7528\u63d0\u793a",
     approveMerge: isEnglish ? "Approve merge" : "\u6279\u51c6\u5408\u5e76",
@@ -123,7 +124,14 @@ export default function MemoryInboxPanel({
             )}
             {candidate.merge_suggestion?.proposed_value && (
               <div className="memory-merge-proposal">
-                <strong>{copy.suggestedRewrite}</strong>
+                <div className="memory-merge-proposal-heading">
+                  <strong>{copy.suggestedRewrite}</strong>
+                  {candidate.merge_suggestion.proposed_by ? (
+                    <span>
+                      {copy.mergeProposedBy} {candidate.merge_suggestion.proposed_by}
+                    </span>
+                  ) : null}
+                </div>
                 <div className="memory-merge-proposal-block">
                   <span>{copy.mergedValue}</span>
                   <p>{candidate.merge_suggestion.proposed_value}</p>

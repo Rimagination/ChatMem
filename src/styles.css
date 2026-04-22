@@ -1028,6 +1028,20 @@ button {
   background: rgba(237, 248, 241, 0.72);
 }
 
+.memory-merge-proposal-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.memory-merge-proposal-heading span {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .memory-merge-proposal-block {
   display: grid;
   gap: 3px;

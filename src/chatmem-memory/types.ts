@@ -26,6 +26,7 @@ export type ApprovedMemory = {
 export type MemoryFreshnessStatus = "fresh" | "stale" | "unknown";
 
 export type MemoryMergeSuggestion = {
+  proposal_id?: string | null;
   candidate_id: string;
   memory_id: string;
   memory_title: string;
@@ -34,6 +35,8 @@ export type MemoryMergeSuggestion = {
   proposed_value?: string | null;
   proposed_usage_hint?: string | null;
   risk_note?: string | null;
+  proposed_by?: string | null;
+  created_at?: string | null;
 };
 
 export type MemoryConflict = {

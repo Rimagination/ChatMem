@@ -11,9 +11,10 @@ use super::{
     checkpoints::{CheckpointRecord, CreateCheckpointInput},
     models::{
         BuildHandoffPacketInput, CreateMemoryCandidateInput, CreateMemoryCandidateResult,
-        EmbeddingRebuildReport, EntityGraphPayload, GetRepoMemoryInput, ListMemoryCandidatesInput,
-        ListMemoryCandidatesPayload, ListWikiPagesPayload, MemoryConflictResponse,
-        RepoMemoryPayload, SearchHistoryPayload, SearchRepoHistoryInput,
+        CreateMemoryMergeProposalInput, CreateMemoryMergeProposalResult, EmbeddingRebuildReport,
+        EntityGraphPayload, GetRepoMemoryInput, ListMemoryCandidatesInput, ListMemoryCandidatesPayload,
+        ListWikiPagesPayload, MemoryConflictResponse, RepoMemoryPayload, SearchHistoryPayload,
+        SearchRepoHistoryInput,
     },
     runs::{self, ArtifactRecord, RunRecord},
     search,
@@ -108,6 +109,7 @@ impl ChatMemMcpService {
             .with_route((Self::get_repo_memory_tool_attr(), Self::get_repo_memory))
             .with_route((Self::search_repo_history_tool_attr(), Self::search_repo_history))
             .with_route((Self::create_memory_candidate_tool_attr(), Self::create_memory_candidate))
+            .with_route((Self::propose_memory_merge_tool_attr(), Self::propose_memory_merge))
             .with_route((Self::create_checkpoint_tool_attr(), Self::create_checkpoint))
             .with_route((Self::list_memory_candidates_tool_attr(), Self::list_memory_candidates))
             .with_route((Self::build_handoff_packet_tool_attr(), Self::build_handoff_packet))
@@ -168,6 +170,25 @@ impl ChatMemMcpService {
 
         Ok(Json(CreateMemoryCandidateResult {
             candidate_id,
+            status: "pending_review".to_string(),
+        }))
+    }
+
+    #[tool(
+        name = "propose_memory_merge",
+        description = "Create an agent-authored merge rewrite proposal for human review; does not approve or update memory"
+    )]
+    async fn propose_memory_merge(
+        &self,
+        Parameters(input): Parameters<CreateMemoryMergeProposalInput>,
+    ) -> Result<Json<CreateMemoryMergeProposalResult>, McpError> {
+        let proposal_id = self
+            .store
+            .propose_memory_merge(&input)
+            .map_err(|error| internal_error(error.to_string()))?;
+
+        Ok(Json(CreateMemoryMergeProposalResult {
+            proposal_id,
             status: "pending_review".to_string(),
         }))
     }
@@ -330,8 +351,11 @@ mod tests {
     };
     use crate::chatmem_memory::{
         checkpoints::CreateCheckpointInput,
-        models::{BuildHandoffPacketInput, ListMemoryCandidatesPayload},
-        store::MemoryStore,
+        models::{
+            BuildHandoffPacketInput, CreateMemoryCandidateInput, CreateMemoryMergeProposalInput,
+            ListMemoryCandidatesInput, ListMemoryCandidatesPayload,
+        },
+        store::{MemoryStore, ReviewAction},
     };
     use rmcp::{Json, handler::server::wrapper::Parameters};
     use schemars::schema_for;
@@ -395,6 +419,7 @@ mod tests {
             ChatMemMcpService::get_repo_memory_tool_attr().name,
             ChatMemMcpService::search_repo_history_tool_attr().name,
             ChatMemMcpService::create_memory_candidate_tool_attr().name,
+            ChatMemMcpService::propose_memory_merge_tool_attr().name,
             ChatMemMcpService::create_checkpoint_tool_attr().name,
             ChatMemMcpService::list_memory_candidates_tool_attr().name,
             ChatMemMcpService::build_handoff_packet_tool_attr().name,
@@ -419,6 +444,85 @@ mod tests {
         }
 
         assert_eq!(names, expected_names);
+    }
+
+    #[tokio::test]
+    async fn propose_memory_merge_tool_stores_agent_authored_rewrite_for_review() {
+        let service = ChatMemMcpService::new(new_store());
+        let repo_root = "d:/vsp/agentswap-gui".to_string();
+        let approved_candidate_id = service
+            .store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.clone(),
+                kind: "command".to_string(),
+                summary: "Run tests before merge".to_string(),
+                value: "npm run test:run".to_string(),
+                why_it_matters: "Primary verification command".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.95,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+        service
+            .store
+            .review_candidate(
+                &approved_candidate_id,
+                ReviewAction::Approve {
+                    title: "Primary verification".to_string(),
+                    usage_hint: "Use before merge".to_string(),
+                },
+            )
+            .unwrap();
+        let memory_id = service.store.list_repo_memories(&repo_root).unwrap()[0]
+            .memory_id
+            .clone();
+        let candidate_id = service
+            .store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.clone(),
+                kind: "command".to_string(),
+                summary: "Run tests before release".to_string(),
+                value: "npm run test:run -- --runInBand".to_string(),
+                why_it_matters: "Use the serial variant before release packaging".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.82,
+                proposed_by: "claude".to_string(),
+            })
+            .unwrap();
+
+        let Json(result) = service
+            .propose_memory_merge(Parameters(CreateMemoryMergeProposalInput {
+                repo_root: repo_root.clone(),
+                candidate_id: candidate_id.clone(),
+                target_memory_id: memory_id,
+                proposed_title: "Primary verification".to_string(),
+                proposed_value: "npm run test:run\n\nBefore packaging, use npm run test:run -- --runInBand.".to_string(),
+                proposed_usage_hint: "Use before merge; prefer the serial variant before release packaging.".to_string(),
+                risk_note: Some("Agent-authored rewrite; review wording before approval.".to_string()),
+                proposed_by: "codex".to_string(),
+                evidence_refs: vec![],
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(result.status, "pending_review");
+        let Json(payload) = service
+            .list_memory_candidates(Parameters(ListMemoryCandidatesInput {
+                repo_root,
+                status: Some("pending_review".to_string()),
+            }))
+            .await
+            .unwrap();
+        let proposal = payload
+            .candidates
+            .into_iter()
+            .find(|candidate| candidate.candidate_id == candidate_id)
+            .unwrap()
+            .merge_suggestion
+            .unwrap();
+
+        assert_eq!(proposal.proposal_id.as_deref(), Some(result.proposal_id.as_str()));
+        assert_eq!(proposal.proposed_by.as_deref(), Some("codex"));
     }
 
     #[tokio::test]

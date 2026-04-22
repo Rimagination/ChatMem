@@ -112,6 +112,7 @@ describe("Memory workspace", () => {
               proposed_value: "npm run test:run\n\nUpdate: Do not auto-approve candidate writes",
               proposed_usage_hint: "Use before handoff\n\nUpdate: Human review is required",
               risk_note: "Review before approval: this proposal rewrites an existing approved memory.",
+              proposed_by: "codex",
             },
           },
         ];
@@ -197,6 +198,7 @@ describe("Memory workspace", () => {
     fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
     fireEvent.click(await screen.findByRole("button", { name: "Memory 1" }));
     expect(await screen.findByText("Suggested rewrite")).toBeTruthy();
+    expect(screen.getByText("Merge proposed by codex")).toBeTruthy();
     expect(screen.getByText(/npm run test:run/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Approve merge" }));

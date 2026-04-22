@@ -197,6 +197,22 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             UNIQUE(candidate_id, memory_id)
         );
 
+        CREATE TABLE IF NOT EXISTS memory_merge_proposals (
+            proposal_id TEXT PRIMARY KEY,
+            repo_id TEXT NOT NULL,
+            candidate_id TEXT NOT NULL,
+            target_memory_id TEXT NOT NULL,
+            proposed_title TEXT NOT NULL,
+            proposed_value TEXT NOT NULL,
+            proposed_usage_hint TEXT NOT NULL,
+            risk_note TEXT,
+            proposed_by TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(candidate_id, target_memory_id)
+        );
+
         CREATE TABLE IF NOT EXISTS memory_entities (
             entity_id TEXT PRIMARY KEY,
             repo_id TEXT NOT NULL,
@@ -260,6 +276,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_memory_conflicts_repo_status
         ON memory_conflicts(repo_id, status);
+
+        CREATE INDEX IF NOT EXISTS idx_memory_merge_proposals_repo_status
+        ON memory_merge_proposals(repo_id, status);
 
         CREATE INDEX IF NOT EXISTS idx_memory_entity_links_repo_owner
         ON memory_entity_links(repo_id, owner_type, owner_id);
@@ -512,6 +531,7 @@ mod tests {
                    'evidence_refs',
                    'document_embeddings',
                    'memory_conflicts',
+                   'memory_merge_proposals',
                    'memory_entities',
                    'memory_entity_links',
                    'search_documents',
@@ -542,6 +562,7 @@ mod tests {
                 "memory_conflicts",
                 "memory_entities",
                 "memory_entity_links",
+                "memory_merge_proposals",
                 "messages",
                 "repos",
                 "search_documents",

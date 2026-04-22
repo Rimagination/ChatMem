@@ -94,6 +94,7 @@ The core MCP tools include:
 - `search_repo_history`
 - `list_entity_graph`
 - `create_memory_candidate`
+- `propose_memory_merge`
 - `list_memory_candidates`
 - `list_memory_conflicts`
 - `build_handoff_packet`

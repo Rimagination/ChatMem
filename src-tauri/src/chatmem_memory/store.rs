@@ -13,10 +13,10 @@ use super::{
     embedding,
     handoff,
     models::{
-        ApprovedMemoryResponse, CreateMemoryCandidateInput, EntityGraphPayload, EntityLinkResponse,
-        EmbeddingRebuildReport, EntityNodeResponse, EpisodeResponse, EvidenceRef, HandoffPacketResponse,
-        MemoryCandidateResponse, MemoryConflictResponse, MemoryMergeSuggestion, SearchHistoryMatch,
-        WikiPageResponse,
+        ApprovedMemoryResponse, CreateMemoryCandidateInput, CreateMemoryMergeProposalInput,
+        EntityGraphPayload, EntityLinkResponse, EmbeddingRebuildReport, EntityNodeResponse,
+        EpisodeResponse, EvidenceRef, HandoffPacketResponse, MemoryCandidateResponse,
+        MemoryConflictResponse, MemoryMergeSuggestion, SearchHistoryMatch, WikiPageResponse,
     },
     repo_identity,
 };
@@ -297,6 +297,93 @@ impl MemoryStore {
         Ok(candidate_id)
     }
 
+    pub fn propose_memory_merge(&self, input: &CreateMemoryMergeProposalInput) -> Result<String> {
+        let repo_id = self.ensure_repo(&input.repo_root)?;
+        let proposal_id = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_URL,
+            format!(
+                "chatmem:merge-proposal:{}:{}",
+                input.candidate_id, input.target_memory_id
+            )
+            .as_bytes(),
+        )
+        .to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+
+        let (candidate_repo_id, candidate_kind, candidate_status) = tx
+            .query_row(
+                "SELECT repo_id, kind, status FROM memory_candidates WHERE candidate_id = ?1",
+                [&input.candidate_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .with_context(|| format!("candidate {} not found", input.candidate_id))?;
+        if candidate_repo_id != repo_id {
+            anyhow::bail!("candidate belongs to a different repository");
+        }
+        if candidate_status != "pending_review" {
+            anyhow::bail!("candidate must be pending_review before a merge can be proposed");
+        }
+
+        let (memory_repo_id, memory_kind) = tx
+            .query_row(
+                "SELECT repo_id, kind FROM approved_memories WHERE memory_id = ?1 AND status = 'active'",
+                [&input.target_memory_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .with_context(|| format!("active memory {} not found", input.target_memory_id))?;
+        if memory_repo_id != repo_id {
+            anyhow::bail!("target memory belongs to a different repository");
+        }
+        if memory_kind != candidate_kind {
+            anyhow::bail!("candidate and target memory kinds do not match");
+        }
+
+        tx.execute(
+            "INSERT INTO memory_merge_proposals (
+                proposal_id, repo_id, candidate_id, target_memory_id,
+                proposed_title, proposed_value, proposed_usage_hint, risk_note,
+                proposed_by, status, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending_review', ?10, ?10)
+             ON CONFLICT(candidate_id, target_memory_id) DO UPDATE SET
+                proposed_title = excluded.proposed_title,
+                proposed_value = excluded.proposed_value,
+                proposed_usage_hint = excluded.proposed_usage_hint,
+                risk_note = excluded.risk_note,
+                proposed_by = excluded.proposed_by,
+                status = 'pending_review',
+                updated_at = excluded.updated_at",
+            params![
+                proposal_id,
+                repo_id,
+                input.candidate_id,
+                input.target_memory_id,
+                input.proposed_title,
+                input.proposed_value,
+                input.proposed_usage_hint,
+                input.risk_note,
+                input.proposed_by,
+                now,
+            ],
+        )?;
+        replace_evidence_refs_tx(
+            &tx,
+            "memory_merge_proposal",
+            &proposal_id,
+            &input.evidence_refs,
+        )?;
+        tx.commit()?;
+
+        Ok(proposal_id)
+    }
+
     pub fn review_candidate(&self, candidate_id: &str, review: ReviewAction) -> Result<()> {
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
@@ -342,6 +429,12 @@ impl MemoryStore {
                     "UPDATE memory_candidates SET status = 'approved', reviewed_at = ?2 WHERE candidate_id = ?1",
                     params![candidate_id, now],
                 )?;
+                tx.execute(
+                    "UPDATE memory_merge_proposals
+                     SET status = 'superseded', updated_at = ?2
+                     WHERE candidate_id = ?1 AND status = 'pending_review'",
+                    params![candidate_id, now],
+                )?;
                 let evidence = load_evidence_refs_from_conn(&tx, "candidate", candidate_id)?;
                 replace_evidence_refs_tx(&tx, "memory", &memory_id, &evidence)?;
                 upsert_search_document_tx(
@@ -379,6 +472,12 @@ impl MemoryStore {
                 )?;
                 tx.execute(
                     "UPDATE memory_candidates SET status = 'approved', reviewed_at = ?2 WHERE candidate_id = ?1",
+                    params![candidate_id, now],
+                )?;
+                tx.execute(
+                    "UPDATE memory_merge_proposals
+                     SET status = 'superseded', updated_at = ?2
+                     WHERE candidate_id = ?1 AND status = 'pending_review'",
                     params![candidate_id, now],
                 )?;
                 let evidence = load_evidence_refs_from_conn(&tx, "candidate", candidate_id)?;
@@ -434,6 +533,13 @@ impl MemoryStore {
                      WHERE candidate_id = ?1 AND memory_id = ?2 AND status = 'open'",
                     params![candidate_id, memory_id, now],
                 )?;
+                tx.execute(
+                    "UPDATE memory_merge_proposals
+                     SET status = CASE WHEN target_memory_id = ?2 THEN 'approved' ELSE 'superseded' END,
+                         updated_at = ?3
+                     WHERE candidate_id = ?1 AND status = 'pending_review'",
+                    params![candidate_id, memory_id, now],
+                )?;
                 let candidate_evidence = load_evidence_refs_from_conn(&tx, "candidate", candidate_id)?;
                 append_evidence_refs_tx(&tx, "memory", &memory_id, &candidate_evidence)?;
                 upsert_search_document_tx(
@@ -449,6 +555,12 @@ impl MemoryStore {
             ReviewAction::Reject => {
                 tx.execute(
                     "UPDATE memory_candidates SET status = 'rejected', reviewed_at = ?2 WHERE candidate_id = ?1",
+                    params![candidate_id, now],
+                )?;
+                tx.execute(
+                    "UPDATE memory_merge_proposals
+                     SET status = 'rejected', updated_at = ?2
+                     WHERE candidate_id = ?1 AND status = 'pending_review'",
                     params![candidate_id, now],
                 )?;
             }
@@ -713,6 +825,11 @@ impl MemoryStore {
             .into_iter()
             .map(|suggestion| (suggestion.candidate_id.clone(), suggestion))
             .collect::<HashMap<_, _>>();
+        let agent_merge_proposals = self
+            .list_pending_memory_merge_proposals_by_repo_id(repo_id)?
+            .into_iter()
+            .map(|proposal| (proposal.candidate_id.clone(), proposal))
+            .collect::<HashMap<_, _>>();
         let conflict_suggestions = self
             .list_memory_conflicts_by_repo_id(repo_id, Some("open"))?
             .into_iter()
@@ -721,11 +838,52 @@ impl MemoryStore {
         let mut candidates = rows;
         for candidate in &mut candidates {
             candidate.evidence_refs = self.evidence_refs("candidate", &candidate.candidate_id)?;
-            candidate.merge_suggestion = merge_suggestions.get(&candidate.candidate_id).cloned();
+            candidate.merge_suggestion = agent_merge_proposals
+                .get(&candidate.candidate_id)
+                .or_else(|| merge_suggestions.get(&candidate.candidate_id))
+                .cloned();
             candidate.conflict_suggestion =
                 conflict_suggestions.get(&candidate.candidate_id).cloned();
         }
         Ok(candidates)
+    }
+
+    fn list_pending_memory_merge_proposals_by_repo_id(
+        &self,
+        repo_id: &str,
+    ) -> Result<Vec<MemoryMergeSuggestion>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT p.proposal_id, p.candidate_id, p.target_memory_id, m.title,
+                    p.proposed_title, p.proposed_value, p.proposed_usage_hint,
+                    p.risk_note, p.proposed_by, p.created_at
+             FROM memory_merge_proposals p
+             JOIN approved_memories m ON m.memory_id = p.target_memory_id
+             WHERE p.repo_id = ?1
+               AND p.status = 'pending_review'
+               AND m.status = 'active'
+             ORDER BY p.updated_at DESC",
+        )?;
+        let rows = stmt.query_map([repo_id], |row| {
+            let proposed_by = row.get::<_, String>(8)?;
+            Ok(MemoryMergeSuggestion {
+                proposal_id: Some(row.get(0)?),
+                candidate_id: row.get(1)?,
+                memory_id: row.get(2)?,
+                memory_title: row.get(3)?,
+                reason: format!(
+                    "Agent-authored merge proposal from {proposed_by}; review before approval."
+                ),
+                proposed_title: Some(row.get(4)?),
+                proposed_value: Some(row.get(5)?),
+                proposed_usage_hint: Some(row.get(6)?),
+                risk_note: row.get(7)?,
+                proposed_by: Some(proposed_by),
+                created_at: Some(row.get(9)?),
+            })
+        })?;
+
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     fn suggest_memory_merges_by_repo_id(&self, repo_id: &str) -> Result<Vec<MemoryMergeSuggestion>> {
@@ -798,6 +956,7 @@ impl MemoryStore {
                 };
 
                 suggestions.push(MemoryMergeSuggestion {
+                    proposal_id: None,
                     candidate_id,
                     memory_id: memory_id.clone(),
                     memory_title: title.clone(),
@@ -809,6 +968,8 @@ impl MemoryStore {
                         "Review before approval: this proposal rewrites an existing approved memory instead of creating a duplicate."
                             .to_string(),
                     ),
+                    proposed_by: None,
+                    created_at: None,
                 });
             }
         }
@@ -2852,7 +3013,7 @@ mod tests {
     use super::{MemoryStore, ReviewAction};
     use crate::chatmem_memory::{
         checkpoints::CreateCheckpointInput,
-        models::CreateMemoryCandidateInput,
+        models::{CreateMemoryCandidateInput, CreateMemoryMergeProposalInput},
     };
     use agentswap_core::types::{AgentKind, Conversation, Message, Role};
     use chrono::Utc;
@@ -3861,6 +4022,84 @@ mod tests {
 
         let matches = store.search_history(repo_root, "serial release packaging", 5).unwrap();
         assert!(matches.iter().any(|item| item.title == "Primary verification"));
+    }
+
+    #[test]
+    fn agent_authored_merge_proposal_overrides_deterministic_merge_suggestion() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let approved_candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "command".to_string(),
+                summary: "Run tests before merge".to_string(),
+                value: "npm run test:run".to_string(),
+                why_it_matters: "Primary verification command".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.95,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        store
+            .review_candidate(
+                &approved_candidate_id,
+                ReviewAction::Approve {
+                    title: "Primary verification".into(),
+                    usage_hint: "Use before merge".into(),
+                },
+            )
+            .unwrap();
+        let memory_id = store.list_repo_memories(repo_root).unwrap()[0]
+            .memory_id
+            .clone();
+
+        let candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "command".to_string(),
+                summary: "Run tests before release".to_string(),
+                value: "npm run test:run -- --runInBand".to_string(),
+                why_it_matters: "Use the serial variant before release packaging".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.82,
+                proposed_by: "claude".to_string(),
+            })
+            .unwrap();
+
+        let proposal_id = store
+            .propose_memory_merge(&CreateMemoryMergeProposalInput {
+                repo_root: repo_root.to_string(),
+                candidate_id: candidate_id.clone(),
+                target_memory_id: memory_id.clone(),
+                proposed_title: "Primary verification".to_string(),
+                proposed_value: "npm run test:run\n\nBefore packaging, use npm run test:run -- --runInBand.".to_string(),
+                proposed_usage_hint: "Use before merge; prefer the serial variant before release packaging.".to_string(),
+                risk_note: Some("Agent-authored rewrite; review wording before approval.".to_string()),
+                proposed_by: "codex".to_string(),
+                evidence_refs: vec![],
+            })
+            .unwrap();
+
+        let candidate = store
+            .list_candidates_with_status(repo_root, Some("pending_review"))
+            .unwrap()
+            .into_iter()
+            .find(|item| item.candidate_id == candidate_id)
+            .unwrap();
+        let proposal = candidate.merge_suggestion.unwrap();
+
+        assert_eq!(proposal.proposal_id.as_deref(), Some(proposal_id.as_str()));
+        assert_eq!(proposal.memory_id, memory_id);
+        assert_eq!(proposal.proposed_by.as_deref(), Some("codex"));
+        assert_eq!(
+            proposal.proposed_value.as_deref(),
+            Some("npm run test:run\n\nBefore packaging, use npm run test:run -- --runInBand.")
+        );
+        assert_eq!(
+            proposal.proposed_usage_hint.as_deref(),
+            Some("Use before merge; prefer the serial variant before release packaging.")
+        );
     }
 
     #[test]

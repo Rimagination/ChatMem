@@ -36,7 +36,8 @@ Do not use it for general web search, unrelated memory, or one-off notes that wi
 7. Use `list_entity_graph` when a task depends on related systems, symbols, protocols, agents, or release concepts.
 8. Use `list_memory_conflicts` before approving a surprising candidate, especially when it negates an existing command or convention.
 9. When a stable fact should survive this thread, call `create_memory_candidate` with concise text and evidence.
-10. Before another agent continues the task, call `build_handoff_packet` instead of asking the user to copy the full conversation.
+10. When a pending candidate should update an existing approved memory, use `propose_memory_merge` to submit an agent-authored rewrite proposal for human review. Do not approve or silently overwrite approved memory yourself.
+11. Before another agent continues the task, call `build_handoff_packet` instead of asking the user to copy the full conversation.
 
 ## Continuation Prompts
 
@@ -82,6 +83,10 @@ Search history is indexed as FTS plus vectors. Local `chatmem-local-hash-v1` vec
 ## Extraction And Conflict Rule
 
 ChatMem may auto-create pending candidates only from explicit durable-memory wording such as "Remember:", "Rule:", "Gotcha:", "Always", or "Do not". Auto-extracted candidates are not approved automatically. Conflicts are review signals attached to candidates when new wording appears to negate an active approved memory.
+
+## Merge Proposal Rule
+
+ChatMem does not need an internal LLM API to rewrite memory. The active agent can draft a better merge proposal through `propose_memory_merge` after reading the candidate, approved memory, conflicts, and evidence. The desktop memory inbox remains the human approval surface. If the rewrite is uncertain, ask the user instead of submitting a confident proposal.
 
 ## Handoff Rules
 
