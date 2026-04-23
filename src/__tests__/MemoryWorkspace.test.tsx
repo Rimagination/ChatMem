@@ -428,6 +428,305 @@ describe("Memory workspace", () => {
     ).toHaveLength(2);
   });
 
+  it("auto bootstrap transitions from scanning note to ready notice after scan success and refreshed health", async () => {
+    let healthCallCount = 0;
+    const scanDeferred = createDeferred<{
+      repo_root: string;
+      canonical_repo_root: string;
+      scanned_conversation_count: number;
+      linked_conversation_count: number;
+      skipped_conversation_count: number;
+      source_agents: { source_agent: string; conversation_count: number }[];
+      warnings: string[];
+    }>();
+    const baseImplementation = mockInvoke.getMockImplementation();
+    if (!baseImplementation) {
+      throw new Error("Missing base invoke mock implementation");
+    }
+
+    mockInvoke.mockImplementation((command: string, payload?: Record<string, unknown>) => {
+      if (
+        command === "get_repo_memory_health" &&
+        payload?.repoRoot === "D:/VSP/agentswap-gui"
+      ) {
+        healthCallCount += 1;
+        if (healthCallCount === 1) {
+          return Promise.resolve({
+            repo_root: "D:/VSP/agentswap-gui",
+            canonical_repo_root: "D:/VSP/agentswap-gui",
+            approved_memory_count: 1,
+            pending_candidate_count: 1,
+            search_document_count: 0,
+            indexed_chunk_count: 0,
+            inherited_repo_roots: [],
+            conversation_counts_by_agent: [],
+            repo_aliases: [],
+            warnings: [],
+          });
+        }
+
+        return Promise.resolve({
+          repo_root: "D:/VSP/agentswap-gui",
+          canonical_repo_root: "D:/VSP/agentswap-gui",
+          approved_memory_count: 1,
+          pending_candidate_count: 1,
+          search_document_count: 4,
+          indexed_chunk_count: 8,
+          inherited_repo_roots: [],
+          conversation_counts_by_agent: [{ source_agent: "claude", conversation_count: 1 }],
+          repo_aliases: [],
+          warnings: [],
+        });
+      }
+
+      if (
+        command === "scan_repo_conversations" &&
+        payload?.repoRoot === "D:/VSP/agentswap-gui"
+      ) {
+        return scanDeferred.promise;
+      }
+
+      return baseImplementation(command, payload);
+    });
+
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
+
+    expect(
+      await screen.findByText(
+        "Importing local history for this project. Older conversations may not be fully searchable yet. When indexing finishes, you can ask what was discussed before.",
+      ),
+    ).toBeTruthy();
+
+    scanDeferred.resolve({
+      repo_root: "D:/VSP/agentswap-gui",
+      canonical_repo_root: "D:/VSP/agentswap-gui",
+      scanned_conversation_count: 1,
+      linked_conversation_count: 1,
+      skipped_conversation_count: 0,
+      source_agents: [{ source_agent: "claude", conversation_count: 1 }],
+      warnings: [],
+    });
+
+    expect(
+      await screen.findByText(
+        "Local history is ready for this project. You can now ask what was discussed before.",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.queryByText(
+        "Importing local history for this project. Older conversations may not be fully searchable yet. When indexing finishes, you can ask what was discussed before.",
+      ),
+    ).toBeNull();
+  });
+
+  it("switching to another conversation clears the ready notice before async detail load resolves", async () => {
+    let repoAHealthCallCount = 0;
+    const repoBDetailDeferred = createDeferred<{
+      id: string;
+      source_agent: string;
+      project_dir: string;
+      created_at: string;
+      updated_at: string;
+      summary: string;
+      storage_path: string;
+      resume_command: string;
+      messages: [];
+      file_changes: [];
+    }>();
+    const baseImplementation = mockInvoke.getMockImplementation();
+    if (!baseImplementation) {
+      throw new Error("Missing base invoke mock implementation");
+    }
+
+    mockInvoke.mockImplementation((command: string, payload?: Record<string, unknown>) => {
+      if (command === "list_conversations") {
+        return Promise.resolve([
+          {
+            id: "conv-001",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/VSP/agentswap-gui",
+            created_at: "2026-04-19T08:00:00Z",
+            updated_at: "2026-04-19T09:00:00Z",
+            summary: "Repo A first conversation",
+            message_count: 3,
+            file_count: 2,
+          },
+          {
+            id: "conv-002",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/VSP/another-repo",
+            created_at: "2026-04-19T09:30:00Z",
+            updated_at: "2026-04-19T09:45:00Z",
+            summary: "Repo B conversation",
+            message_count: 4,
+            file_count: 1,
+          },
+        ]);
+      }
+
+      if (command === "read_conversation" && payload?.id === "conv-001") {
+        return Promise.resolve({
+          id: "conv-001",
+          source_agent: payload?.agent ?? "claude",
+          project_dir: "D:/VSP/agentswap-gui",
+          created_at: "2026-04-19T08:00:00Z",
+          updated_at: "2026-04-19T09:00:00Z",
+          summary: "Repo A first conversation",
+          storage_path: "C:/Users/demo/.claude/projects/conv-001.jsonl",
+          resume_command: "claude --resume conv-001",
+          messages: [],
+          file_changes: [],
+        });
+      }
+
+      if (command === "read_conversation" && payload?.id === "conv-002") {
+        return repoBDetailDeferred.promise;
+      }
+
+      if (
+        command === "get_repo_memory_health" &&
+        payload?.repoRoot === "D:/VSP/agentswap-gui"
+      ) {
+        repoAHealthCallCount += 1;
+        if (repoAHealthCallCount === 1) {
+          return Promise.resolve({
+            repo_root: "D:/VSP/agentswap-gui",
+            canonical_repo_root: "D:/VSP/agentswap-gui",
+            approved_memory_count: 1,
+            pending_candidate_count: 1,
+            search_document_count: 0,
+            indexed_chunk_count: 0,
+            inherited_repo_roots: [],
+            conversation_counts_by_agent: [],
+            repo_aliases: [],
+            warnings: [],
+          });
+        }
+
+        return Promise.resolve({
+          repo_root: "D:/VSP/agentswap-gui",
+          canonical_repo_root: "D:/VSP/agentswap-gui",
+          approved_memory_count: 1,
+          pending_candidate_count: 1,
+          search_document_count: 4,
+          indexed_chunk_count: 8,
+          inherited_repo_roots: [],
+          conversation_counts_by_agent: [{ source_agent: "claude", conversation_count: 1 }],
+          repo_aliases: [],
+          warnings: [],
+        });
+      }
+
+      if (
+        command === "get_repo_memory_health" &&
+        payload?.repoRoot === "D:/VSP/another-repo"
+      ) {
+        return Promise.resolve({
+          repo_root: "D:/VSP/another-repo",
+          canonical_repo_root: "D:/VSP/another-repo",
+          approved_memory_count: 1,
+          pending_candidate_count: 0,
+          search_document_count: 2,
+          indexed_chunk_count: 6,
+          inherited_repo_roots: [],
+          conversation_counts_by_agent: [{ source_agent: "claude", conversation_count: 1 }],
+          repo_aliases: [],
+          warnings: [],
+        });
+      }
+
+      return baseImplementation(command, payload);
+    });
+
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("Repo A first conversation"))[0]);
+
+    expect(
+      await screen.findByText(
+        "Local history is ready for this project. You can now ask what was discussed before.",
+      ),
+    ).toBeTruthy();
+
+    fireEvent.click((await screen.findAllByText("Repo B conversation"))[0]);
+
+    expect(
+      screen.queryByText(
+        "Local history is ready for this project. You can now ask what was discussed before.",
+      ),
+    ).toBeNull();
+
+    repoBDetailDeferred.resolve({
+      id: "conv-002",
+      source_agent: "claude",
+      project_dir: "D:/VSP/another-repo",
+      created_at: "2026-04-19T09:30:00Z",
+      updated_at: "2026-04-19T09:45:00Z",
+      summary: "Repo B conversation",
+      storage_path: "C:/Users/demo/.claude/projects/conv-002.jsonl",
+      resume_command: "claude --resume conv-002",
+      messages: [],
+      file_changes: [],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Repo B conversation" })).toBeTruthy();
+    });
+  });
+
+  it("manual rescan does not show the ready notice", async () => {
+    const baseImplementation = mockInvoke.getMockImplementation();
+    if (!baseImplementation) {
+      throw new Error("Missing base invoke mock implementation");
+    }
+
+    mockInvoke.mockImplementation((command: string, payload?: Record<string, unknown>) => {
+      if (
+        command === "get_repo_memory_health" &&
+        payload?.repoRoot === "D:/VSP/agentswap-gui"
+      ) {
+        return Promise.resolve({
+          repo_root: "D:/VSP/agentswap-gui",
+          canonical_repo_root: "D:/VSP/agentswap-gui",
+          approved_memory_count: 1,
+          pending_candidate_count: 1,
+          search_document_count: 4,
+          indexed_chunk_count: 8,
+          inherited_repo_roots: [],
+          conversation_counts_by_agent: [{ source_agent: "claude", conversation_count: 1 }],
+          repo_aliases: [],
+          warnings: [],
+        });
+      }
+
+      return baseImplementation(command, payload);
+    });
+
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Rescan local history" })).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Rescan local history" }));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("scan_repo_conversations", {
+        repoRoot: "D:/VSP/agentswap-gui",
+      });
+    });
+
+    expect(
+      screen.queryByText(
+        "Local history is ready for this project. You can now ask what was discussed before.",
+      ),
+    ).toBeNull();
+  });
+
   it("auto bootstraps local history only once per repo across repo revisits in a session", async () => {
     let repoAHealthCallCount = 0;
     const baseImplementation = mockInvoke.getMockImplementation();

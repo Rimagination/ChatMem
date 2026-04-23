@@ -667,6 +667,9 @@ function App() {
   const [repoMemoryHealth, setRepoMemoryHealth] = useState<RepoMemoryHealth | null>(null);
   const [repoHealthLoading, setRepoHealthLoading] = useState(false);
   const [repoScanRunning, setRepoScanRunning] = useState(false);
+  const [bootstrapReadyConversationId, setBootstrapReadyConversationId] = useState<string | null>(
+    null,
+  );
   const [searchQuery, setSearchQuery] = useState("");
   const [copyState, setCopyState] = useState<CopyState>({ target: null, status: "idle" });
   const [appSettings, setAppSettings] = useState<AppSettings>(() => loadSettings());
@@ -692,6 +695,8 @@ function App() {
   const [collapsedSnapshot, setCollapsedSnapshot] = useState<Record<string, boolean> | null>(null);
   const [isWindowFilled, setIsWindowFilled] = useState(false);
   const organizeMenuRef = useRef<HTMLDivElement | null>(null);
+  const activeConversationId = selectedConversation?.id ?? null;
+  const activeConversationIdRef = useRef<string | null>(activeConversationId);
   const activeRepoRoot = selectedConversation?.project_dir ?? null;
   const activeRepoRootRef = useRef<string | null>(activeRepoRoot);
   const repoScanRequestIdRef = useRef(0);
@@ -762,7 +767,14 @@ function App() {
 
   useEffect(() => {
     setCopyState({ target: null, status: "idle" });
-  }, [selectedConversation?.id]);
+    setBootstrapReadyConversationId((current) =>
+      current === activeConversationId ? current : null,
+    );
+  }, [activeConversationId]);
+
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId;
+  }, [activeConversationId]);
 
   useEffect(() => {
     activeRepoRootRef.current = activeRepoRoot;
@@ -773,18 +785,32 @@ function App() {
     }
   }, [activeRepoRoot]);
 
-  const runRepoScan = useCallback(async (requestRepoRoot: string) => {
+  const runRepoScan = useCallback(
+    async (
+      requestRepoRoot: string,
+      options?: {
+        announceBootstrapReady?: boolean;
+        requestConversationId?: string | null;
+      },
+    ) => {
     const requestId = ++repoScanRequestIdRef.current;
     repoScanActiveCountRef.current += 1;
     setRepoScanRunning(true);
     try {
       await scanRepoConversations(requestRepoRoot);
       const nextHealth = await getRepoMemoryHealth(requestRepoRoot);
+      const shouldAnnounceBootstrapReady =
+        options?.announceBootstrapReady === true &&
+        nextHealth.indexed_chunk_count > 0 &&
+        activeConversationIdRef.current === options.requestConversationId;
       if (
         activeRepoRootRef.current === requestRepoRoot &&
         requestId === repoScanRequestIdRef.current
       ) {
         setRepoMemoryHealth(nextHealth);
+        if (shouldAnnounceBootstrapReady) {
+          setBootstrapReadyConversationId(options?.requestConversationId ?? null);
+        }
       }
       return nextHealth;
     } catch (error) {
@@ -794,7 +820,9 @@ function App() {
       repoScanActiveCountRef.current = Math.max(0, repoScanActiveCountRef.current - 1);
       setRepoScanRunning(repoScanActiveCountRef.current > 0);
     }
-  }, []);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!appSettings.autoCheckUpdates) {
@@ -847,6 +875,7 @@ function App() {
       setMemoryLoading(true);
       setRepoHealthLoading(true);
       const requestRepoRoot = activeRepoRoot;
+      const requestConversationId = activeConversationId;
       try {
         const [nextMemories, nextCandidates, nextWikiPages] = await Promise.all([
           listRepoMemories(activeRepoRoot),
@@ -879,7 +908,10 @@ function App() {
           autoBootstrapAttemptedReposRef.current[bootstrapKey] !== true
         ) {
           autoBootstrapAttemptedReposRef.current[bootstrapKey] = true;
-          void runRepoScan(requestRepoRoot);
+          void runRepoScan(requestRepoRoot, {
+            announceBootstrapReady: true,
+            requestConversationId,
+          });
         }
       } catch (error) {
         console.error("Failed to load repo memory health:", error);
@@ -895,7 +927,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeRepoRoot, runRepoScan]);
+  }, [activeConversationId, activeRepoRoot, runRepoScan]);
 
   const handleScanRepoConversations = async () => {
     if (!activeRepoRoot) {
@@ -923,6 +955,9 @@ function App() {
   };
 
   const loadConversationDetail = async (id: string, agent = selectedAgent) => {
+    if (id !== activeConversationIdRef.current) {
+      setBootstrapReadyConversationId(null);
+    }
     setDetailLoading(true);
     try {
       const result = await invoke<Conversation>("read_conversation", {
@@ -2655,6 +2690,7 @@ function App() {
             health={repoMemoryHealth}
             loading={repoHealthLoading}
             scanning={repoScanRunning}
+            bootstrapReady={bootstrapReadyConversationId === selectedConversation.id}
             locale={locale}
             onScan={() => void handleScanRepoConversations()}
           />
