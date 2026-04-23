@@ -935,6 +935,160 @@ describe("Memory workspace", () => {
     ).toHaveLength(1);
   });
 
+  it("same-repo conversation switches inherit bootstrap ready when the in-flight scan completes", async () => {
+    const scanDeferred = createDeferred<{
+      repo_root: string;
+      canonical_repo_root: string;
+      scanned_conversation_count: number;
+      linked_conversation_count: number;
+      skipped_conversation_count: number;
+      source_agents: { source_agent: string; conversation_count: number }[];
+      warnings: string[];
+    }>();
+    let healthCallCount = 0;
+    const baseImplementation = mockInvoke.getMockImplementation();
+    if (!baseImplementation) {
+      throw new Error("Missing base invoke mock implementation");
+    }
+
+    mockInvoke.mockImplementation((command: string, payload?: Record<string, unknown>) => {
+      if (command === "list_conversations") {
+        return Promise.resolve([
+          {
+            id: "conv-001",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/VSP/agentswap-gui",
+            created_at: "2026-04-19T08:00:00Z",
+            updated_at: "2026-04-19T09:00:00Z",
+            summary: "Repo A first conversation",
+            message_count: 3,
+            file_count: 2,
+          },
+          {
+            id: "conv-002",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/VSP/agentswap-gui",
+            created_at: "2026-04-19T10:00:00Z",
+            updated_at: "2026-04-19T11:00:00Z",
+            summary: "Repo A second conversation",
+            message_count: 5,
+            file_count: 4,
+          },
+        ]);
+      }
+
+      if (command === "read_conversation" && payload?.id === "conv-001") {
+        return Promise.resolve({
+          id: "conv-001",
+          source_agent: payload?.agent ?? "claude",
+          project_dir: "D:/VSP/agentswap-gui",
+          created_at: "2026-04-19T08:00:00Z",
+          updated_at: "2026-04-19T09:00:00Z",
+          summary: "Repo A first conversation",
+          storage_path: "C:/Users/demo/.claude/projects/conv-001.jsonl",
+          resume_command: "claude --resume conv-001",
+          messages: [],
+          file_changes: [],
+        });
+      }
+
+      if (command === "read_conversation" && payload?.id === "conv-002") {
+        return Promise.resolve({
+          id: "conv-002",
+          source_agent: payload?.agent ?? "claude",
+          project_dir: "D:/VSP/agentswap-gui",
+          created_at: "2026-04-19T10:00:00Z",
+          updated_at: "2026-04-19T11:00:00Z",
+          summary: "Repo A second conversation",
+          storage_path: "C:/Users/demo/.claude/projects/conv-002.jsonl",
+          resume_command: "claude --resume conv-002",
+          messages: [],
+          file_changes: [],
+        });
+      }
+
+      if (command === "get_repo_memory_health" && payload?.repoRoot === "D:/VSP/agentswap-gui") {
+        healthCallCount += 1;
+        if (healthCallCount === 1) {
+          return Promise.resolve({
+            repo_root: "D:/VSP/agentswap-gui",
+            canonical_repo_root: "D:/VSP/agentswap-gui",
+            approved_memory_count: 1,
+            pending_candidate_count: 0,
+            search_document_count: 0,
+            indexed_chunk_count: 0,
+            inherited_repo_roots: [],
+            conversation_counts_by_agent: [],
+            repo_aliases: [],
+            warnings: [],
+          });
+        }
+
+        return Promise.resolve({
+          repo_root: "D:/VSP/agentswap-gui",
+          canonical_repo_root: "D:/VSP/agentswap-gui",
+          approved_memory_count: 1,
+          pending_candidate_count: 0,
+          search_document_count: 4,
+          indexed_chunk_count: 8,
+          inherited_repo_roots: [],
+          conversation_counts_by_agent: [{ source_agent: "claude", conversation_count: 2 }],
+          repo_aliases: [],
+          warnings: [],
+        });
+      }
+
+      if (command === "scan_repo_conversations" && payload?.repoRoot === "D:/VSP/agentswap-gui") {
+        return scanDeferred.promise;
+      }
+
+      if (command === "list_memory_candidates") {
+        return Promise.resolve([]);
+      }
+
+      return baseImplementation(command, payload);
+    });
+
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("Repo A first conversation"))[0]);
+
+    await screen.findByText(
+      "Importing local history for this project. Older conversations may not be fully searchable yet. When indexing finishes, you can ask what was discussed before.",
+    );
+
+    fireEvent.click((await screen.findAllByText("Repo A second conversation"))[0]);
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Repo A second conversation" })).toBeTruthy();
+    });
+
+    scanDeferred.resolve({
+      repo_root: "D:/VSP/agentswap-gui",
+      canonical_repo_root: "D:/VSP/agentswap-gui",
+      scanned_conversation_count: 2,
+      linked_conversation_count: 2,
+      skipped_conversation_count: 0,
+      source_agents: [{ source_agent: "claude", conversation_count: 2 }],
+      warnings: [],
+    });
+
+    await screen.findByText(
+      "Local history is ready for this project. You can now ask what was discussed before.",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Memory" }));
+
+    expect((await screen.findByRole("tab", { name: "Approved 1" })).getAttribute("aria-selected")).toBe(
+      "true",
+    );
+
+    const firstCard = (await screen.findByText("Primary verification")).closest("article");
+    await waitFor(() => {
+      expect(document.activeElement).toBe(firstCard);
+    });
+  });
+
   it("first post-bootstrap Memory open focuses the first approved memory card when inbox count is zero", async () => {
     const scanDeferred = createDeferred<{
       repo_root: string;

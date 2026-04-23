@@ -805,17 +805,17 @@ function App() {
     try {
       await scanRepoConversations(requestRepoRoot);
       const nextHealth = await getRepoMemoryHealth(requestRepoRoot);
-      const shouldAnnounceBootstrapReady =
-        options?.announceBootstrapReady === true &&
-        nextHealth.indexed_chunk_count > 0 &&
-        activeConversationIdRef.current === options.requestConversationId;
       if (
         activeRepoRootRef.current === requestRepoRoot &&
         requestId === repoScanRequestIdRef.current
       ) {
         setRepoMemoryHealth(nextHealth);
-        if (shouldAnnounceBootstrapReady) {
-          const readyConversationId = options?.requestConversationId ?? null;
+        if (
+          options?.announceBootstrapReady === true &&
+          nextHealth.indexed_chunk_count > 0 &&
+          activeConversationIdRef.current
+        ) {
+          const readyConversationId = activeConversationIdRef.current;
           setBootstrapReadyConversationId(readyConversationId);
           setPendingApprovedMemoryAutofocusConversationId(readyConversationId);
         }
