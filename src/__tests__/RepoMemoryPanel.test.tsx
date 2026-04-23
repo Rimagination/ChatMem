@@ -1,3 +1,4 @@
+import React from "react";
 import { render } from "@testing-library/react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import RepoMemoryPanel from "../components/RepoMemoryPanel";
@@ -33,7 +34,7 @@ beforeAll(() => {
 });
 
 describe("RepoMemoryPanel autofocus", () => {
-  it("focus executes when autofocus is requested", () => {
+  it("focus executes once for a single autofocus request in StrictMode", () => {
     const scrollIntoView = vi.fn();
     const scrollSpy = vi
       .spyOn(HTMLElement.prototype, "scrollIntoView" as keyof HTMLElement)
@@ -41,21 +42,66 @@ describe("RepoMemoryPanel autofocus", () => {
     const onAutoFocusHandled = vi.fn();
 
     render(
-      <RepoMemoryPanel
-        memories={[buildMemory()]}
-        loading={false}
-        locale="en"
-        onReverify={vi.fn()}
-        autoFocusFirstMemory
-        onAutoFocusHandled={onAutoFocusHandled}
-      />,
+      <React.StrictMode>
+        <RepoMemoryPanel
+          memories={[buildMemory()]}
+          loading={false}
+          locale="en"
+          onReverify={vi.fn()}
+          autoFocusFirstMemory
+          onAutoFocusHandled={onAutoFocusHandled}
+        />
+      </React.StrictMode>,
     );
 
     const firstCard = document.querySelector(".memory-card");
     expect(firstCard).toBeInstanceOf(HTMLElement);
     expect(firstCard?.getAttribute("tabindex")).toBe("-1");
     expect(document.activeElement).toBe(firstCard);
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
     expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
+    expect(onAutoFocusHandled).toHaveBeenCalledTimes(1);
+
+    scrollSpy.mockRestore();
+  });
+
+  it("keeps the same autofocus request idempotent across rerender in StrictMode", () => {
+    const scrollIntoView = vi.fn();
+    const scrollSpy = vi
+      .spyOn(HTMLElement.prototype, "scrollIntoView" as keyof HTMLElement)
+      .mockImplementation(scrollIntoView as () => void);
+    const onAutoFocusHandled = vi.fn();
+    const onReverify = vi.fn();
+
+    const { rerender } = render(
+      <React.StrictMode>
+        <RepoMemoryPanel
+          memories={[buildMemory()]}
+          loading={false}
+          locale="en"
+          onReverify={onReverify}
+          autoFocusFirstMemory
+          onAutoFocusHandled={onAutoFocusHandled}
+        />
+      </React.StrictMode>,
+    );
+
+    rerender(
+      <React.StrictMode>
+        <RepoMemoryPanel
+          memories={[buildMemory({ title: "Primary verification" })]}
+          loading={false}
+          locale="en"
+          onReverify={onReverify}
+          autoFocusFirstMemory
+          onAutoFocusHandled={onAutoFocusHandled}
+        />
+      </React.StrictMode>,
+    );
+
+    const firstCard = document.querySelector(".memory-card");
+    expect(document.activeElement).toBe(firstCard);
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
     expect(onAutoFocusHandled).toHaveBeenCalledTimes(1);
 
     scrollSpy.mockRestore();
