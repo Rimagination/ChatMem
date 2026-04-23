@@ -696,6 +696,7 @@ function App() {
   const activeRepoRootRef = useRef<string | null>(activeRepoRoot);
   const repoScanRequestIdRef = useRef(0);
   const repoScanActiveCountRef = useRef(0);
+  const autoBootstrapAttemptedReposRef = useRef<Record<string, true>>({});
   const availableHandoffTargets = ["claude", "codex", "gemini"].filter(
     (agent) => agent !== selectedAgent,
   );
@@ -872,10 +873,13 @@ function App() {
           return;
         }
         setRepoMemoryHealth(nextHealth);
+        const bootstrapKey = nextHealth.canonical_repo_root || requestRepoRoot;
         if (
           nextHealth.indexed_chunk_count === 0 &&
-          repoScanActiveCountRef.current === 0
+          repoScanActiveCountRef.current === 0 &&
+          autoBootstrapAttemptedReposRef.current[bootstrapKey] !== true
         ) {
+          autoBootstrapAttemptedReposRef.current[bootstrapKey] = true;
           void runRepoScan(requestRepoRoot);
         }
       } catch (error) {

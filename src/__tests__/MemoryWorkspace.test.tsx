@@ -348,6 +348,112 @@ describe("Memory workspace", () => {
     ).toHaveLength(2);
   });
 
+  it("auto bootstraps local history only once per repo in a session", async () => {
+    const baseImplementation = mockInvoke.getMockImplementation();
+    if (!baseImplementation) {
+      throw new Error("Missing base invoke mock implementation");
+    }
+
+    mockInvoke.mockImplementation((command: string, payload?: Record<string, unknown>) => {
+      if (command === "list_conversations") {
+        return Promise.resolve([
+          {
+            id: "conv-001",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/VSP/agentswap-gui",
+            created_at: "2026-04-19T08:00:00Z",
+            updated_at: "2026-04-19T09:00:00Z",
+            summary: "Memory workflow one",
+            message_count: 3,
+            file_count: 2,
+          },
+          {
+            id: "conv-002",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/VSP/agentswap-gui",
+            created_at: "2026-04-19T10:00:00Z",
+            updated_at: "2026-04-19T11:00:00Z",
+            summary: "Memory workflow two",
+            message_count: 5,
+            file_count: 4,
+          },
+        ]);
+      }
+
+      if (
+        command === "read_conversation" &&
+        (payload?.id === "conv-001" || payload?.id === "conv-002")
+      ) {
+        return Promise.resolve({
+          id: payload.id,
+          source_agent: payload?.agent ?? "claude",
+          project_dir: "D:/VSP/agentswap-gui",
+          created_at:
+            payload.id === "conv-001"
+              ? "2026-04-19T08:00:00Z"
+              : "2026-04-19T10:00:00Z",
+          updated_at:
+            payload.id === "conv-001"
+              ? "2026-04-19T09:00:00Z"
+              : "2026-04-19T11:00:00Z",
+          summary:
+            payload.id === "conv-001"
+              ? "Memory workflow one"
+              : "Memory workflow two",
+          storage_path: `C:/Users/demo/.claude/projects/${payload.id}.jsonl`,
+          resume_command: `claude --resume ${payload.id}`,
+          messages: [],
+          file_changes: [],
+        });
+      }
+
+      if (command === "get_repo_memory_health") {
+        return Promise.resolve({
+          repo_root: "D:/VSP/agentswap-gui",
+          canonical_repo_root: "D:/VSP/agentswap-gui",
+          approved_memory_count: 1,
+          pending_candidate_count: 1,
+          search_document_count: 0,
+          indexed_chunk_count: 0,
+          inherited_repo_roots: [],
+          conversation_counts_by_agent: [],
+          repo_aliases: [],
+          warnings: [],
+        });
+      }
+
+      return baseImplementation(command, payload);
+    });
+
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("Memory workflow one"))[0]);
+
+    await waitFor(() => {
+      expect(
+        mockInvoke.mock.calls.filter(
+          ([command, callPayload]) =>
+            command === "scan_repo_conversations" &&
+            callPayload?.repoRoot === "D:/VSP/agentswap-gui",
+        ),
+      ).toHaveLength(1);
+    });
+
+    fireEvent.click((await screen.findAllByText("Memory workflow two"))[0]);
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Memory workflow two" })).toBeTruthy();
+    });
+
+    expect(
+      mockInvoke.mock.calls.filter(
+        ([command, callPayload]) =>
+          command === "scan_repo_conversations" &&
+          callPayload?.repoRoot === "D:/VSP/agentswap-gui",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("still loads memory drawer data when repo health load fails", async () => {
     const baseImplementation = mockInvoke.getMockImplementation();
     if (!baseImplementation) {
@@ -373,5 +479,8 @@ describe("Memory workspace", () => {
     expect(await screen.findByRole("complementary", { name: "Project Memory" })).toBeTruthy();
     expect(screen.getByText("Review pending memory")).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Approved 1" })).toBeTruthy();
+    expect(mockInvoke).not.toHaveBeenCalledWith("scan_repo_conversations", {
+      repoRoot: "D:/VSP/agentswap-gui",
+    });
   });
 });
