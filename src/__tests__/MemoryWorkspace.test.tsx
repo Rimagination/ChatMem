@@ -34,6 +34,18 @@ function renderApp() {
   );
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+
+  return { promise, resolve, reject };
+}
+
 describe("Memory workspace", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
@@ -263,6 +275,74 @@ describe("Memory workspace", () => {
       expect(mockInvoke).toHaveBeenCalledWith("scan_repo_conversations", {
         repoRoot: "D:/VSP/agentswap-gui",
       });
+    });
+  });
+
+  it("shows bootstrap scan status copy while auto-import is still running", async () => {
+    const scanDeferred = createDeferred<{
+      repo_root: string;
+      canonical_repo_root: string;
+      scanned_conversation_count: number;
+      linked_conversation_count: number;
+      skipped_conversation_count: number;
+      source_agents: { source_agent: string; conversation_count: number }[];
+      warnings: string[];
+    }>();
+    const baseImplementation = mockInvoke.getMockImplementation();
+    if (!baseImplementation) {
+      throw new Error("Missing base invoke mock implementation");
+    }
+
+    mockInvoke.mockImplementation((command: string, payload?: Record<string, unknown>) => {
+      if (
+        command === "get_repo_memory_health" &&
+        payload?.repoRoot === "D:/VSP/agentswap-gui"
+      ) {
+        return Promise.resolve({
+          repo_root: "D:/VSP/agentswap-gui",
+          canonical_repo_root: "D:/VSP/agentswap-gui",
+          approved_memory_count: 1,
+          pending_candidate_count: 1,
+          search_document_count: 0,
+          indexed_chunk_count: 0,
+          inherited_repo_roots: [],
+          conversation_counts_by_agent: [],
+          repo_aliases: [],
+          warnings: [],
+        });
+      }
+
+      if (
+        command === "scan_repo_conversations" &&
+        payload?.repoRoot === "D:/VSP/agentswap-gui"
+      ) {
+        return scanDeferred.promise;
+      }
+
+      return baseImplementation(command, payload);
+    });
+
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
+
+    expect(
+      await screen.findByText(
+        "Importing local history for this project. Older conversations may not be fully searchable yet. When indexing finishes, you can ask what was discussed before.",
+      ),
+    ).toBeTruthy();
+
+    const scanningButton = screen.getByRole("button", { name: "Scanning..." });
+    expect((scanningButton as HTMLButtonElement).disabled).toBe(true);
+
+    scanDeferred.resolve({
+      repo_root: "D:/VSP/agentswap-gui",
+      canonical_repo_root: "D:/VSP/agentswap-gui",
+      scanned_conversation_count: 1,
+      linked_conversation_count: 1,
+      skipped_conversation_count: 0,
+      source_agents: [{ source_agent: "claude", conversation_count: 1 }],
+      warnings: [],
     });
   });
 
