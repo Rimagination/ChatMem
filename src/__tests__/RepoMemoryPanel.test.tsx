@@ -33,12 +33,20 @@ beforeAll(() => {
   }
 });
 
+function mockScrollIntoView() {
+  const scrollIntoView = vi.fn<
+    Parameters<HTMLElement["scrollIntoView"]>,
+    ReturnType<HTMLElement["scrollIntoView"]>
+  >();
+  const scrollSpy = vi.spyOn(HTMLElement.prototype, "scrollIntoView");
+  scrollSpy.mockImplementation((...args) => scrollIntoView(...args));
+
+  return { scrollIntoView, scrollSpy };
+}
+
 describe("RepoMemoryPanel autofocus", () => {
   it("focus executes once for a single autofocus request in StrictMode", () => {
-    const scrollIntoView = vi.fn();
-    const scrollSpy = vi
-      .spyOn(HTMLElement.prototype, "scrollIntoView" as keyof HTMLElement)
-      .mockImplementation(scrollIntoView as () => void);
+    const { scrollIntoView, scrollSpy } = mockScrollIntoView();
     const onAutoFocusHandled = vi.fn();
 
     render(
@@ -66,10 +74,7 @@ describe("RepoMemoryPanel autofocus", () => {
   });
 
   it("keeps the same autofocus request idempotent across rerender in StrictMode", () => {
-    const scrollIntoView = vi.fn();
-    const scrollSpy = vi
-      .spyOn(HTMLElement.prototype, "scrollIntoView" as keyof HTMLElement)
-      .mockImplementation(scrollIntoView as () => void);
+    const { scrollIntoView, scrollSpy } = mockScrollIntoView();
     const onAutoFocusHandled = vi.fn();
     const onReverify = vi.fn();
 
@@ -108,10 +113,7 @@ describe("RepoMemoryPanel autofocus", () => {
   });
 
   it("loading defers focus until rerender with loading false", () => {
-    const scrollIntoView = vi.fn();
-    const scrollSpy = vi
-      .spyOn(HTMLElement.prototype, "scrollIntoView" as keyof HTMLElement)
-      .mockImplementation(scrollIntoView as () => void);
+    const { scrollIntoView, scrollSpy } = mockScrollIntoView();
     const onAutoFocusHandled = vi.fn();
 
     const { rerender } = render(
@@ -149,10 +151,7 @@ describe("RepoMemoryPanel autofocus", () => {
   });
 
   it("empty list clears autofocus quietly without scrolling or focusing", () => {
-    const scrollIntoView = vi.fn();
-    const scrollSpy = vi
-      .spyOn(HTMLElement.prototype, "scrollIntoView" as keyof HTMLElement)
-      .mockImplementation(scrollIntoView as () => void);
+    const { scrollIntoView, scrollSpy } = mockScrollIntoView();
     const onAutoFocusHandled = vi.fn();
 
     render(
