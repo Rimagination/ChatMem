@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import { I18nProvider } from "../i18n/I18nProvider";
@@ -319,6 +319,17 @@ describe("Memory workspace", () => {
       expect(mockInvoke).toHaveBeenCalledWith("scan_repo_conversations", {
         repoRoot: "D:/VSP/agentswap-gui",
       });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Rescan local history" })).toBeTruthy();
+    });
+
+    const localHistoryPanel = screen.getByText("Local history").closest("section");
+    expect(localHistoryPanel).toBeTruthy();
+
+    await waitFor(() => {
+      expect(within(localHistoryPanel!).getByText("8")).toBeTruthy();
     });
 
     expect(
