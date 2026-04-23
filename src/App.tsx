@@ -671,6 +671,8 @@ function App() {
   const [bootstrapReadyConversationId, setBootstrapReadyConversationId] = useState<string | null>(
     null,
   );
+  const [pendingApprovedMemoryAutofocusConversationId, setPendingApprovedMemoryAutofocusConversationId] =
+    useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [copyState, setCopyState] = useState<CopyState>({ target: null, status: "idle" });
   const [appSettings, setAppSettings] = useState<AppSettings>(() => loadSettings());
@@ -771,6 +773,9 @@ function App() {
     setBootstrapReadyConversationId((current) =>
       current === activeConversationId ? current : null,
     );
+    setPendingApprovedMemoryAutofocusConversationId((current) =>
+      current === activeConversationId ? current : null,
+    );
   }, [activeConversationId]);
 
   useEffect(() => {
@@ -810,7 +815,9 @@ function App() {
       ) {
         setRepoMemoryHealth(nextHealth);
         if (shouldAnnounceBootstrapReady) {
-          setBootstrapReadyConversationId(options?.requestConversationId ?? null);
+          const readyConversationId = options?.requestConversationId ?? null;
+          setBootstrapReadyConversationId(readyConversationId);
+          setPendingApprovedMemoryAutofocusConversationId(readyConversationId);
         }
       }
       return nextHealth;
@@ -824,6 +831,22 @@ function App() {
     },
     [],
   );
+
+  const closeMemoryDrawer = useCallback(() => {
+    setMemoryDrawerOpen(false);
+    setPendingApprovedMemoryAutofocusConversationId((current) =>
+      current === activeConversationIdRef.current ? null : current,
+    );
+  }, []);
+
+  const handleMemoryDrawerTabChange = useCallback((nextTab: MemoryDrawerTab) => {
+    setMemoryDrawerTab(nextTab);
+    if (nextTab === "inbox") {
+      setPendingApprovedMemoryAutofocusConversationId((current) =>
+        current === activeConversationIdRef.current ? null : current,
+      );
+    }
+  }, []);
 
   useEffect(() => {
     if (!appSettings.autoCheckUpdates) {
@@ -867,6 +890,7 @@ function App() {
       setRepoMemoryHealth(null);
       setRepoHealthLoading(false);
       setMemoryDrawerOpen(false);
+      setPendingApprovedMemoryAutofocusConversationId(null);
       return;
     }
 
@@ -2494,6 +2518,10 @@ function App() {
       },
       { id: "wiki", label: locale === "en" ? "Wiki" : "Wiki", count: wikiPages.length },
     ];
+    const shouldAutoFocusFirstApprovedMemory =
+      memoryDrawerOpen &&
+      memoryDrawerTab === "approved" &&
+      pendingApprovedMemoryAutofocusConversationId === activeConversationId;
 
     const renderWikiTab = () => (
       <section className="memory-panel">
@@ -2537,6 +2565,12 @@ function App() {
             loading={memoryLoading}
             locale={locale}
             onReverify={(memoryId) => void handleReverifyMemory(memoryId)}
+            autoFocusFirstMemory={shouldAutoFocusFirstApprovedMemory || undefined}
+            onAutoFocusHandled={
+              shouldAutoFocusFirstApprovedMemory
+                ? () => setPendingApprovedMemoryAutofocusConversationId(null)
+                : undefined
+            }
           />
         );
       }
@@ -2558,7 +2592,7 @@ function App() {
     };
 
     return (
-      <div className="memory-drawer-overlay" onMouseDown={() => setMemoryDrawerOpen(false)}>
+      <div className="memory-drawer-overlay" onMouseDown={closeMemoryDrawer}>
         <aside
           className="memory-drawer"
           role="complementary"
@@ -2575,7 +2609,7 @@ function App() {
               type="button"
               className="icon-button"
               aria-label={locale === "en" ? "Close memory drawer" : "\u5173\u95ed\u8bb0\u5fc6\u62bd\u5c49"}
-              onClick={() => setMemoryDrawerOpen(false)}
+              onClick={closeMemoryDrawer}
             >
               <WindowButtonIcon type="close" />
             </button>
@@ -2589,7 +2623,7 @@ function App() {
                 role="tab"
                 aria-selected={memoryDrawerTab === tab.id}
                 className={`memory-drawer-tab ${memoryDrawerTab === tab.id ? "active" : ""}`}
-                onClick={() => setMemoryDrawerTab(tab.id)}
+                onClick={() => handleMemoryDrawerTabChange(tab.id)}
               >
                 <span>{tab.label}</span>
                 <span className="memory-drawer-tab-count">{tab.count}</span>
@@ -2650,7 +2684,7 @@ function App() {
               aria-label={memoryButtonLabel}
               className={memoryButtonClassName}
               onClick={() => {
-                setMemoryDrawerTab(memoryAttentionCount > 0 ? "inbox" : "approved");
+                handleMemoryDrawerTabChange(memoryAttentionCount > 0 ? "inbox" : "approved");
                 setMemoryDrawerOpen(true);
               }}
             >
