@@ -78,11 +78,13 @@ The ChatMem skill lives at:
 
 The skill does not replace MCP. It only teaches the agent to:
 
-- call `get_repo_memory` before substantial repo work
+- call `get_project_context` before substantial repo work, using `intent="startup"`, `intent="recall"`, or `intent="continue_work"` as appropriate
+- treat approved memory as durable guidance and history hits as evidence that may still need verification
 - search targeted history with `search_repo_history`, which now uses hybrid keyword/vector retrieval
 - inspect related concepts with `list_entity_graph`
 - review contradictory pending candidates with `list_memory_conflicts`
 - create durable candidates with `create_memory_candidate`
+- draft memory rewrites with `propose_memory_merge` when a candidate should update an approved memory
 - use checkpoints and handoff packets instead of raw transcript transfer
 - avoid assuming ChatMem appears as an `@chatmem` chat mention
 
@@ -96,6 +98,7 @@ Language convention:
 
 The core MCP tools include:
 
+- `get_project_context`
 - `get_repo_memory`
 - `search_repo_history`
 - `list_entity_graph`
@@ -124,7 +127,7 @@ If the process stays alive and waits on stdio, the MCP server is healthy.
 Use a short prompt like this in a new agent thread:
 
 ```text
-Use ChatMem to load repo memory for D:\VSP\agentswap-gui, then continue from the latest checkpoint or handoff if one exists.
+Use ChatMem to load project context for D:\VSP\agentswap-gui with intent continue_work, then continue from the latest checkpoint or handoff if one exists.
 ```
 
 Do not paste full historical transcripts unless MCP is unavailable and there is no smaller memory export.
