@@ -1390,6 +1390,12 @@ button {
   color: var(--text-secondary);
 }
 
+.project-index-note.is-ready {
+  border-color: rgba(58, 143, 100, 0.14);
+  background: rgba(237, 248, 241, 0.82);
+  color: var(--accent-strong);
+}
+
 .project-index-note p {
   margin: 0;
   line-height: 1.5;

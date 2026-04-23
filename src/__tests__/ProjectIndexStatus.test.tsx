@@ -78,6 +78,7 @@ describe("ProjectIndexStatus", () => {
 
     render(
       <ProjectIndexStatus
+        bootstrapReady={false}
         health={emptyHealthFixture}
         loading={false}
         scanning={false}
@@ -101,6 +102,7 @@ describe("ProjectIndexStatus", () => {
 
     render(
       <ProjectIndexStatus
+        bootstrapReady={false}
         health={emptyHealthFixture}
         loading={false}
         scanning
@@ -133,6 +135,7 @@ describe("ProjectIndexStatus", () => {
 
     render(
       <ProjectIndexStatus
+        bootstrapReady={false}
         health={legacyHealth as RepoMemoryHealth}
         loading={false}
         scanning={false}
@@ -147,5 +150,94 @@ describe("ProjectIndexStatus", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Rescan local history" }));
     expect(onScan).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the ready notice when automatic bootstrap just completed", () => {
+    render(
+      <ProjectIndexStatus
+        bootstrapReady
+        health={healthFixture}
+        loading={false}
+        scanning={false}
+        locale="en"
+        onScan={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        "Local history is ready for this project. You can now ask what was discussed before.",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.queryByText(
+        "Local history has not been indexed for this project yet, so older conversations may not be fully searchable. After indexing, you can ask what was discussed before.",
+      ),
+    ).toBeNull();
+  });
+
+  it("hides the ready notice while chunks are still zero even if bootstrapReady is true", () => {
+    render(
+      <ProjectIndexStatus
+        bootstrapReady
+        health={emptyHealthFixture}
+        loading={false}
+        scanning={false}
+        locale="en"
+        onScan={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.queryByText(
+        "Local history is ready for this project. You can now ask what was discussed before.",
+      ),
+    ).toBeNull();
+    expect(
+      screen.getByText(
+        "Local history has not been indexed for this project yet, so older conversations may not be fully searchable. After indexing, you can ask what was discussed before.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("keeps nonzero-chunk states free of idle and ready notes until bootstrapReady becomes true", () => {
+    const { rerender } = render(
+      <ProjectIndexStatus
+        bootstrapReady={false}
+        health={healthFixture}
+        loading={false}
+        scanning={false}
+        locale="en"
+        onScan={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.queryByText(
+        "Local history has not been indexed for this project yet, so older conversations may not be fully searchable. After indexing, you can ask what was discussed before.",
+      ),
+    ).toBeNull();
+    expect(
+      screen.queryByText(
+        "Local history is ready for this project. You can now ask what was discussed before.",
+      ),
+    ).toBeNull();
+
+    rerender(
+      <ProjectIndexStatus
+        bootstrapReady
+        health={healthFixture}
+        loading={false}
+        scanning={false}
+        locale="en"
+        onScan={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        "Local history is ready for this project. You can now ask what was discussed before.",
+      ),
+    ).toBeTruthy();
   });
 });

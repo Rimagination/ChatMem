@@ -2,6 +2,7 @@ import type { RepoMemoryHealth } from "../chatmem-memory/types";
 import type { Locale } from "../i18n/types";
 
 type ProjectIndexStatusProps = {
+  bootstrapReady?: boolean;
   health: RepoMemoryHealth | null;
   loading: boolean;
   scanning: boolean;
@@ -10,6 +11,7 @@ type ProjectIndexStatusProps = {
 };
 
 export default function ProjectIndexStatus({
+  bootstrapReady = false,
   health,
   loading,
   scanning,
@@ -27,6 +29,8 @@ export default function ProjectIndexStatus({
   const effectiveIndexedChunkCount =
     health?.indexed_chunk_count ?? health?.search_document_count ?? 0;
   const showBootstrapNote = effectiveIndexedChunkCount === 0;
+  const showBootstrapReadyNotice =
+    bootstrapReady && effectiveIndexedChunkCount > 0 && !showBootstrapNote;
 
   const copy = isEnglish
     ? {
@@ -43,6 +47,8 @@ export default function ProjectIndexStatus({
           "Local history has not been indexed for this project yet, so older conversations may not be fully searchable. After indexing, you can ask what was discussed before.",
         bootstrapScanning:
           "Importing local history for this project. Older conversations may not be fully searchable yet. When indexing finishes, you can ask what was discussed before.",
+        bootstrapReady:
+          "Local history is ready for this project. You can now ask what was discussed before.",
       }
     : {
         title: "本地历史",
@@ -58,7 +64,19 @@ export default function ProjectIndexStatus({
           "这个项目的本地历史还没有建立索引，所以旧对话暂时可能找不全。完成导入后，你可以直接问以前讨论过什么。",
         bootstrapScanning:
           "正在导入这个项目的本地历史。索引完成前，旧对话可能还找不全。完成后，你可以直接问以前讨论过什么。",
+        bootstrapReady:
+          "这个项目的本地历史已经就绪，现在可以直接问以前讨论过什么。",
       };
+  const noteBody = showBootstrapNote
+    ? scanning
+      ? copy.bootstrapScanning
+      : copy.bootstrapIdle
+    : showBootstrapReadyNotice
+      ? copy.bootstrapReady
+      : null;
+  const noteClassName = showBootstrapReadyNotice
+    ? "project-index-note is-ready"
+    : "project-index-note";
 
   if (loading && !health) {
     return (
@@ -91,9 +109,9 @@ export default function ProjectIndexStatus({
         </button>
       </div>
 
-      {showBootstrapNote ? (
-        <div className="project-index-note">
-          <p>{scanning ? copy.bootstrapScanning : copy.bootstrapIdle}</p>
+      {noteBody ? (
+        <div className={noteClassName}>
+          <p>{noteBody}</p>
         </div>
       ) : null}
 
