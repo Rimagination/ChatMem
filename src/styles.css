@@ -1382,6 +1382,19 @@ button {
   gap: 14px;
 }
 
+.project-index-note {
+  padding: 11px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(22, 32, 24, 0.08);
+  background: rgba(244, 248, 244, 0.92);
+  color: var(--text-secondary);
+}
+
+.project-index-note p {
+  margin: 0;
+  line-height: 1.5;
+}
+
 .project-index-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

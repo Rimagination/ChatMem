@@ -31,6 +31,19 @@ const healthFixture: RepoMemoryHealth = {
   warnings: ["Ancestor repo alias detected and merged into current index."],
 };
 
+const emptyHealthFixture: RepoMemoryHealth = {
+  repo_root: "D:/VSP/agentswap-gui",
+  canonical_repo_root: "D:/VSP/agentswap-gui",
+  approved_memory_count: 0,
+  pending_candidate_count: 0,
+  search_document_count: 0,
+  indexed_chunk_count: 0,
+  inherited_repo_roots: [],
+  conversation_counts_by_agent: [],
+  repo_aliases: [],
+  warnings: [],
+};
+
 describe("ProjectIndexStatus", () => {
   it("shows local history metrics and triggers a rescan", () => {
     const onScan = vi.fn();
@@ -50,9 +63,59 @@ describe("ProjectIndexStatus", () => {
     expect(screen.getByText("31")).toBeTruthy();
     expect(screen.getByText("3")).toBeTruthy();
     expect(screen.getByText(/ancestor repo/i)).toBeTruthy();
+    expect(
+      screen.queryByText(
+        "Local history has not been indexed for this project yet, so older conversations may not be fully searchable. After indexing, you can ask what was discussed before.",
+      ),
+    ).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Rescan local history" }));
     expect(onScan).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the idle bootstrap note when indexed history is empty", () => {
+    const onScan = vi.fn();
+
+    render(
+      <ProjectIndexStatus
+        health={emptyHealthFixture}
+        loading={false}
+        scanning={false}
+        locale="en"
+        onScan={onScan}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        "Local history has not been indexed for this project yet, so older conversations may not be fully searchable. After indexing, you can ask what was discussed before.",
+      ),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Rescan local history" }));
+    expect(onScan).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the scanning bootstrap note when indexed history is empty", () => {
+    const onScan = vi.fn();
+
+    render(
+      <ProjectIndexStatus
+        health={emptyHealthFixture}
+        loading={false}
+        scanning
+        locale="en"
+        onScan={onScan}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        "Importing local history for this project. Older conversations may not be fully searchable yet. When indexing finishes, you can ask what was discussed before.",
+      ),
+    ).toBeTruthy();
+
+    expect(screen.getByRole("button", { name: "Scanning..." }).hasAttribute("disabled")).toBe(true);
   });
 
   it("renders legacy repo health payloads without optional arrays", () => {
