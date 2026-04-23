@@ -722,6 +722,10 @@ button {
 
 .memory-drawer-trigger {
   position: relative;
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: max-content;
+  align-items: center;
   gap: 8px;
 }
 
@@ -740,13 +744,20 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-width: 52px;
   color: var(--accent-strong);
   font-size: 12px;
   font-weight: 700;
   line-height: 1;
+  visibility: hidden;
+}
+
+.memory-drawer-trigger-ready.is-visible {
+  visibility: visible;
 }
 
 .memory-drawer-trigger-ready-dot {
+  flex: 0 0 auto;
   width: 8px;
   height: 8px;
   border-radius: 999px;

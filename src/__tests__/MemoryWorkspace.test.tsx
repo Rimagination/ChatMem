@@ -192,14 +192,14 @@ describe("Memory workspace", () => {
 
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: "Memory workflow" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Memory 1" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Memory" })).toBeTruthy();
     });
 
     expect(screen.queryByRole("complementary", { name: "Project Memory" })).toBeNull();
     expect(screen.queryByText("Primary verification")).toBeNull();
     expect(screen.queryByText("Review pending memory")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Memory 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Memory" }));
 
     expect(await screen.findByRole("complementary", { name: "Project Memory" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Inbox 1" })).toBeTruthy();
@@ -218,7 +218,7 @@ describe("Memory workspace", () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
-    fireEvent.click(await screen.findByRole("button", { name: "Memory 1" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Memory" }));
     expect(await screen.findByText("Review pending memory")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
@@ -237,7 +237,7 @@ describe("Memory workspace", () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
-    fireEvent.click(await screen.findByRole("button", { name: "Memory 1" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Memory" }));
     expect(await screen.findByText("Suggested rewrite")).toBeTruthy();
     expect(screen.getByText("Merge proposed by codex")).toBeTruthy();
     expect(screen.getByText(/npm run test:run/)).toBeTruthy();
@@ -952,10 +952,10 @@ describe("Memory workspace", () => {
     fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Memory 1" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Memory" })).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Memory 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Memory" }));
     expect(await screen.findByRole("complementary", { name: "Project Memory" })).toBeTruthy();
     expect(screen.getByText("Review pending memory")).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Approved 1" })).toBeTruthy();

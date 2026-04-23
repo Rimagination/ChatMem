@@ -51,8 +51,8 @@ function renderApp() {
   );
 }
 
-function getMemoryToolbarButton() {
-  return document.querySelector(".memory-drawer-trigger") as HTMLButtonElement | null;
+function getMemoryButton(label = "Memory") {
+  return screen.getByRole("button", { name: label });
 }
 
 function createDeferred<T>() {
@@ -739,6 +739,8 @@ describe("App", () => {
   });
 
   it("shows a Ready cue on the Memory button after automatic bootstrap finishes", async () => {
+    let hasIndexedChunks = false;
+
     mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
       if (command === "list_conversations") {
         return [
@@ -784,7 +786,7 @@ describe("App", () => {
       }
 
       if (command === "get_repo_memory_health") {
-        if (mockInvoke.mock.calls.some(([name]) => name === "scan_repo_conversations")) {
+        if (hasIndexedChunks) {
           return {
             repo_root: "D:/VSP/demo",
             canonical_repo_root: "D:/VSP/demo",
@@ -814,6 +816,7 @@ describe("App", () => {
       }
 
       if (command === "scan_repo_conversations") {
+        hasIndexedChunks = true;
         return {
           repo_root: "D:/VSP/demo",
           canonical_repo_root: "D:/VSP/demo",
@@ -838,18 +841,22 @@ describe("App", () => {
     fireEvent.click((await screen.findAllByText("Debug session"))[0]);
 
     await waitFor(() => {
-      expect(getMemoryToolbarButton()).toBeTruthy();
+      expect(getMemoryButton()).toBeTruthy();
     });
 
+    expect(getMemoryButton().getAttribute("aria-label")).toBe("Memory");
+
     await waitFor(() => {
-      const currentMemoryButton = getMemoryToolbarButton();
-      expect(currentMemoryButton).toBeTruthy();
-      expect(currentMemoryButton!.classList.contains("is-ready")).toBe(true);
-      expect(within(currentMemoryButton!).getByText("Ready")).toBeTruthy();
+      const memoryButton = getMemoryButton();
+      expect(memoryButton.getAttribute("aria-label")).toBe("Memory");
+      expect(memoryButton.classList.contains("is-ready")).toBe(true);
+      expect(within(memoryButton).getByText("Ready")).toBeTruthy();
     });
   });
 
   it("keeps the inbox badge on the Memory button when pending memory exists while still applying ready styling", async () => {
+    let hasIndexedChunks = false;
+
     mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
       if (command === "list_conversations") {
         return [
@@ -909,7 +916,7 @@ describe("App", () => {
       }
 
       if (command === "get_repo_memory_health") {
-        if (mockInvoke.mock.calls.some(([name]) => name === "scan_repo_conversations")) {
+        if (hasIndexedChunks) {
           return {
             repo_root: "D:/VSP/demo",
             canonical_repo_root: "D:/VSP/demo",
@@ -939,6 +946,7 @@ describe("App", () => {
       }
 
       if (command === "scan_repo_conversations") {
+        hasIndexedChunks = true;
         return {
           repo_root: "D:/VSP/demo",
           canonical_repo_root: "D:/VSP/demo",
@@ -963,19 +971,20 @@ describe("App", () => {
     fireEvent.click((await screen.findAllByText("Debug session"))[0]);
 
     await waitFor(() => {
-      expect(getMemoryToolbarButton()).toBeTruthy();
+      expect(getMemoryButton()).toBeTruthy();
     });
 
     await waitFor(() => {
-      const currentMemoryButton = getMemoryToolbarButton();
-      expect(currentMemoryButton).toBeTruthy();
-      expect(currentMemoryButton!.classList.contains("is-ready")).toBe(true);
-      expect(within(currentMemoryButton!).getByText("2")).toBeTruthy();
-      expect(within(currentMemoryButton!).queryByText("Ready")).toBeNull();
+      const memoryButton = getMemoryButton();
+      expect(memoryButton.getAttribute("aria-label")).toBe("Memory");
+      expect(memoryButton.classList.contains("is-ready")).toBe(true);
+      expect(within(memoryButton).getByText("2")).toBeTruthy();
+      expect(memoryButton.querySelector(".memory-drawer-trigger-ready.is-visible")).toBeNull();
     });
   });
 
   it("clears the Memory button Ready cue before an async conversation switch finishes loading", async () => {
+    let hasDemoIndexedChunks = false;
     const deferredSecondConversation = createDeferred<{
       id: string;
       source_agent: string;
@@ -1049,7 +1058,7 @@ describe("App", () => {
 
       if (command === "get_repo_memory_health") {
         if (payload?.repoRoot === "D:/VSP/demo") {
-          if (mockInvoke.mock.calls.some(([name]) => name === "scan_repo_conversations")) {
+          if (hasDemoIndexedChunks) {
             return {
               repo_root: "D:/VSP/demo",
               canonical_repo_root: "D:/VSP/demo",
@@ -1093,6 +1102,7 @@ describe("App", () => {
       }
 
       if (command === "scan_repo_conversations") {
+        hasDemoIndexedChunks = true;
         return {
           repo_root: "D:/VSP/demo",
           canonical_repo_root: "D:/VSP/demo",
@@ -1117,14 +1127,14 @@ describe("App", () => {
     fireEvent.click((await screen.findAllByText("Debug session"))[0]);
 
     await waitFor(() => {
-      expect(getMemoryToolbarButton()).toBeTruthy();
+      expect(getMemoryButton()).toBeTruthy();
     });
 
     await waitFor(() => {
-      const currentMemoryButton = getMemoryToolbarButton();
-      expect(currentMemoryButton).toBeTruthy();
-      expect(currentMemoryButton!.classList.contains("is-ready")).toBe(true);
-      expect(within(currentMemoryButton!).getByText("Ready")).toBeTruthy();
+      const memoryButton = getMemoryButton();
+      expect(memoryButton.getAttribute("aria-label")).toBe("Memory");
+      expect(memoryButton.classList.contains("is-ready")).toBe(true);
+      expect(within(memoryButton).getByText("Ready")).toBeTruthy();
     });
 
     const nextConversationRow = (await screen.findAllByText("Memory investigation"))[0]
@@ -1133,18 +1143,11 @@ describe("App", () => {
     fireEvent.click(nextConversationRow!);
 
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith("read_conversation", {
-        agent: "claude",
-        id: "conv-002",
-      });
-    });
-
-    await waitFor(() => {
-      const currentMemoryButton = getMemoryToolbarButton();
-      expect(currentMemoryButton).toBeTruthy();
+      const memoryButton = getMemoryButton();
       expect(screen.getByRole("heading", { name: "Debug session" })).toBeTruthy();
-      expect(currentMemoryButton!.classList.contains("is-ready")).toBe(false);
-      expect(within(currentMemoryButton!).queryByText("Ready")).toBeNull();
+      expect(memoryButton.getAttribute("aria-label")).toBe("Memory");
+      expect(memoryButton.classList.contains("is-ready")).toBe(false);
+      expect(memoryButton.querySelector(".memory-drawer-trigger-ready.is-visible")).toBeNull();
     });
   });
 

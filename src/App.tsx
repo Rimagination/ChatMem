@@ -2647,6 +2647,7 @@ function App() {
           <div className="conversation-toolbar-actions">
             <button
               type="button"
+              aria-label={memoryButtonLabel}
               className={memoryButtonClassName}
               onClick={() => {
                 setMemoryDrawerTab(memoryAttentionCount > 0 ? "inbox" : "approved");
@@ -2654,14 +2655,17 @@ function App() {
               }}
             >
               <span>{memoryButtonLabel}</span>
-              {showMemoryReadyText ? (
-                <span className="memory-drawer-trigger-ready">
-                  <span className="memory-drawer-trigger-ready-dot" aria-hidden="true" />
-                  <span>{memoryReadyLabel}</span>
-                </span>
-              ) : null}
+              <span
+                className={`memory-drawer-trigger-ready ${showMemoryReadyText ? "is-visible" : ""}`}
+                aria-hidden="true"
+              >
+                <span className="memory-drawer-trigger-ready-dot" />
+                <span>{memoryReadyLabel}</span>
+              </span>
               {memoryAttentionCount > 0 ? (
-                <span className="memory-drawer-trigger-badge">{memoryAttentionCount}</span>
+                <span className="memory-drawer-trigger-badge" aria-hidden="true">
+                  {memoryAttentionCount}
+                </span>
               ) : null}
             </button>
             <button
