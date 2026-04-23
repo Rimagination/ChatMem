@@ -349,6 +349,7 @@ describe("Memory workspace", () => {
   });
 
   it("auto bootstraps local history only once per repo in a session", async () => {
+    let healthCallCount = 0;
     const baseImplementation = mockInvoke.getMockImplementation();
     if (!baseImplementation) {
       throw new Error("Missing base invoke mock implementation");
@@ -408,6 +409,7 @@ describe("Memory workspace", () => {
       }
 
       if (command === "get_repo_memory_health") {
+        healthCallCount += 1;
         return Promise.resolve({
           repo_root: "D:/VSP/agentswap-gui",
           canonical_repo_root: "D:/VSP/agentswap-gui",
@@ -439,11 +441,39 @@ describe("Memory workspace", () => {
       ).toHaveLength(1);
     });
 
+    const localHistoryLabel = await screen.findByText("Local history");
+    const localHistoryPanel = localHistoryLabel.closest("section");
+    expect(localHistoryPanel).toBeTruthy();
+
+    await waitFor(() => {
+      expect(
+        mockInvoke.mock.calls.filter(
+          ([command, callPayload]) =>
+            command === "get_repo_memory_health" &&
+            callPayload?.repoRoot === "D:/VSP/agentswap-gui",
+        ),
+      ).toHaveLength(2);
+    });
+
+    await waitFor(() => {
+      expect(within(localHistoryPanel!).getAllByText("0").length).toBeGreaterThan(0);
+    });
+
+    expect(healthCallCount).toBe(2);
+
     fireEvent.click((await screen.findAllByText("Memory workflow two"))[0]);
 
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: "Memory workflow two" })).toBeTruthy();
     });
+
+    expect(
+      mockInvoke.mock.calls.filter(
+        ([command, callPayload]) =>
+          command === "get_repo_memory_health" &&
+          callPayload?.repoRoot === "D:/VSP/agentswap-gui",
+      ),
+    ).toHaveLength(2);
 
     expect(
       mockInvoke.mock.calls.filter(
