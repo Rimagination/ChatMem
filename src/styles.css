@@ -725,9 +725,33 @@ button {
   gap: 8px;
 }
 
+.memory-drawer-trigger.is-ready {
+  border-color: rgba(58, 143, 100, 0.24);
+  background: rgba(237, 248, 241, 0.92);
+  color: var(--accent-strong);
+}
+
 .memory-drawer-trigger.has-memory-alert {
   border-color: rgba(146, 112, 21, 0.26);
   background: rgba(251, 247, 235, 0.92);
+}
+
+.memory-drawer-trigger-ready {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.memory-drawer-trigger-ready-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 0 3px rgba(58, 143, 100, 0.14);
 }
 
 .memory-drawer-trigger-badge {

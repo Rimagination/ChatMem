@@ -657,6 +657,7 @@ function App() {
   const [selectedAgent, setSelectedAgent] = useState<AgentType>("claude");
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
+  const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
   const [showMigrateModal, setShowMigrateModal] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [memoryDrawerOpen, setMemoryDrawerOpen] = useState(false);
@@ -958,6 +959,7 @@ function App() {
     if (id !== activeConversationIdRef.current) {
       setBootstrapReadyConversationId(null);
     }
+    setLoadingConversationId(id);
     setDetailLoading(true);
     try {
       const result = await invoke<Conversation>("read_conversation", {
@@ -968,6 +970,7 @@ function App() {
     } catch (error) {
       console.error("Failed to load conversation:", error);
     } finally {
+      setLoadingConversationId((current) => (current === id ? null : current));
       setDetailLoading(false);
     }
   };
@@ -2618,6 +2621,20 @@ function App() {
     const visibleConversationTitle = truncateWorkspaceTitle(conversationTitle);
     const memoryAttentionCount = memoryCandidates.length;
     const memoryButtonLabel = locale === "en" ? "Memory" : "\u8bb0\u5fc6";
+    const showMemoryReadyCue =
+      bootstrapReadyConversationId === selectedConversation.id &&
+      loadingConversationId !== selectedConversation.id;
+    const showMemoryReadyText = showMemoryReadyCue && memoryAttentionCount === 0;
+    const memoryReadyLabel = locale === "en" ? "Ready" : "\u5df2\u5c31\u7eea";
+    const memoryButtonClassName = [
+      "btn",
+      "btn-secondary",
+      "memory-drawer-trigger",
+      memoryAttentionCount > 0 ? "has-memory-alert" : "",
+      showMemoryReadyCue ? "is-ready" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
 
     return (
       <div className="conversation-workspace">
@@ -2630,15 +2647,19 @@ function App() {
           <div className="conversation-toolbar-actions">
             <button
               type="button"
-              className={`btn btn-secondary memory-drawer-trigger ${
-                memoryAttentionCount > 0 ? "has-memory-alert" : ""
-              }`}
+              className={memoryButtonClassName}
               onClick={() => {
                 setMemoryDrawerTab(memoryAttentionCount > 0 ? "inbox" : "approved");
                 setMemoryDrawerOpen(true);
               }}
             >
               <span>{memoryButtonLabel}</span>
+              {showMemoryReadyText ? (
+                <span className="memory-drawer-trigger-ready">
+                  <span className="memory-drawer-trigger-ready-dot" aria-hidden="true" />
+                  <span>{memoryReadyLabel}</span>
+                </span>
+              ) : null}
               {memoryAttentionCount > 0 ? (
                 <span className="memory-drawer-trigger-badge">{memoryAttentionCount}</span>
               ) : null}

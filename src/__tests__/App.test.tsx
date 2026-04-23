@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import { I18nProvider } from "../i18n/I18nProvider";
@@ -49,6 +49,10 @@ function renderApp() {
       <App />
     </I18nProvider>,
   );
+}
+
+function getMemoryToolbarButton() {
+  return document.querySelector(".memory-drawer-trigger") as HTMLButtonElement | null;
 }
 
 function createDeferred<T>() {
@@ -731,6 +735,416 @@ describe("App", () => {
             callPayload?.repoRoot === "D:/PV/service",
         ),
       ).toHaveLength(1);
+    });
+  });
+
+  it("shows a Ready cue on the Memory button after automatic bootstrap finishes", async () => {
+    mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
+      if (command === "list_conversations") {
+        return [
+          {
+            id: "conv-001",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/VSP/demo",
+            created_at: "2026-04-08T08:00:00Z",
+            updated_at: "2026-04-08T09:00:00Z",
+            summary: "Debug session",
+            message_count: 2,
+            file_count: 1,
+          },
+        ];
+      }
+
+      if (command === "read_conversation") {
+        return {
+          id: "conv-001",
+          source_agent: payload?.agent ?? "claude",
+          project_dir: "D:/VSP/demo",
+          created_at: "2026-04-08T08:00:00Z",
+          updated_at: "2026-04-08T09:00:00Z",
+          summary: "Debug session",
+          storage_path: "C:/Users/demo/.codex/sessions/2026/04/08/rollout-conv-001.jsonl",
+          resume_command: "codex resume conv-001",
+          messages: [],
+          file_changes: [],
+        };
+      }
+
+      if (
+        command === "list_repo_memories" ||
+        command === "list_memory_candidates" ||
+        command === "list_handoffs" ||
+        command === "list_checkpoints" ||
+        command === "list_runs" ||
+        command === "list_artifacts" ||
+        command === "list_episodes" ||
+        command === "rebuild_repo_wiki"
+      ) {
+        return [];
+      }
+
+      if (command === "get_repo_memory_health") {
+        if (mockInvoke.mock.calls.some(([name]) => name === "scan_repo_conversations")) {
+          return {
+            repo_root: "D:/VSP/demo",
+            canonical_repo_root: "D:/VSP/demo",
+            approved_memory_count: 0,
+            pending_candidate_count: 0,
+            search_document_count: 4,
+            indexed_chunk_count: 8,
+            inherited_repo_roots: [],
+            conversation_counts_by_agent: [{ source_agent: "claude", conversation_count: 1 }],
+            repo_aliases: [],
+            warnings: [],
+          };
+        }
+
+        return {
+          repo_root: "D:/VSP/demo",
+          canonical_repo_root: "D:/VSP/demo",
+          approved_memory_count: 0,
+          pending_candidate_count: 0,
+          search_document_count: 0,
+          indexed_chunk_count: 0,
+          inherited_repo_roots: [],
+          conversation_counts_by_agent: [],
+          repo_aliases: [],
+          warnings: [],
+        };
+      }
+
+      if (command === "scan_repo_conversations") {
+        return {
+          repo_root: "D:/VSP/demo",
+          canonical_repo_root: "D:/VSP/demo",
+          scanned_conversation_count: 1,
+          linked_conversation_count: 1,
+          skipped_conversation_count: 0,
+          source_agents: [{ source_agent: "claude", conversation_count: 1 }],
+          warnings: [],
+        };
+      }
+
+      return [];
+    });
+
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+    );
+
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("Debug session"))[0]);
+
+    await waitFor(() => {
+      expect(getMemoryToolbarButton()).toBeTruthy();
+    });
+
+    await waitFor(() => {
+      const currentMemoryButton = getMemoryToolbarButton();
+      expect(currentMemoryButton).toBeTruthy();
+      expect(currentMemoryButton!.classList.contains("is-ready")).toBe(true);
+      expect(within(currentMemoryButton!).getByText("Ready")).toBeTruthy();
+    });
+  });
+
+  it("keeps the inbox badge on the Memory button when pending memory exists while still applying ready styling", async () => {
+    mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
+      if (command === "list_conversations") {
+        return [
+          {
+            id: "conv-001",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/VSP/demo",
+            created_at: "2026-04-08T08:00:00Z",
+            updated_at: "2026-04-08T09:00:00Z",
+            summary: "Debug session",
+            message_count: 2,
+            file_count: 1,
+          },
+        ];
+      }
+
+      if (command === "read_conversation") {
+        return {
+          id: "conv-001",
+          source_agent: payload?.agent ?? "claude",
+          project_dir: "D:/VSP/demo",
+          created_at: "2026-04-08T08:00:00Z",
+          updated_at: "2026-04-08T09:00:00Z",
+          summary: "Debug session",
+          storage_path: "C:/Users/demo/.codex/sessions/2026/04/08/rollout-conv-001.jsonl",
+          resume_command: "codex resume conv-001",
+          messages: [],
+          file_changes: [],
+        };
+      }
+
+      if (command === "list_repo_memories" || command === "rebuild_repo_wiki") {
+        return [];
+      }
+
+      if (command === "list_memory_candidates") {
+        return [
+          {
+            id: "cand-001",
+            title: "Pending memory 1",
+          },
+          {
+            id: "cand-002",
+            title: "Pending memory 2",
+          },
+        ];
+      }
+
+      if (
+        command === "list_handoffs" ||
+        command === "list_checkpoints" ||
+        command === "list_runs" ||
+        command === "list_artifacts" ||
+        command === "list_episodes"
+      ) {
+        return [];
+      }
+
+      if (command === "get_repo_memory_health") {
+        if (mockInvoke.mock.calls.some(([name]) => name === "scan_repo_conversations")) {
+          return {
+            repo_root: "D:/VSP/demo",
+            canonical_repo_root: "D:/VSP/demo",
+            approved_memory_count: 0,
+            pending_candidate_count: 2,
+            search_document_count: 4,
+            indexed_chunk_count: 8,
+            inherited_repo_roots: [],
+            conversation_counts_by_agent: [{ source_agent: "claude", conversation_count: 1 }],
+            repo_aliases: [],
+            warnings: [],
+          };
+        }
+
+        return {
+          repo_root: "D:/VSP/demo",
+          canonical_repo_root: "D:/VSP/demo",
+          approved_memory_count: 0,
+          pending_candidate_count: 2,
+          search_document_count: 0,
+          indexed_chunk_count: 0,
+          inherited_repo_roots: [],
+          conversation_counts_by_agent: [],
+          repo_aliases: [],
+          warnings: [],
+        };
+      }
+
+      if (command === "scan_repo_conversations") {
+        return {
+          repo_root: "D:/VSP/demo",
+          canonical_repo_root: "D:/VSP/demo",
+          scanned_conversation_count: 1,
+          linked_conversation_count: 1,
+          skipped_conversation_count: 0,
+          source_agents: [{ source_agent: "claude", conversation_count: 1 }],
+          warnings: [],
+        };
+      }
+
+      return [];
+    });
+
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+    );
+
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("Debug session"))[0]);
+
+    await waitFor(() => {
+      expect(getMemoryToolbarButton()).toBeTruthy();
+    });
+
+    await waitFor(() => {
+      const currentMemoryButton = getMemoryToolbarButton();
+      expect(currentMemoryButton).toBeTruthy();
+      expect(currentMemoryButton!.classList.contains("is-ready")).toBe(true);
+      expect(within(currentMemoryButton!).getByText("2")).toBeTruthy();
+      expect(within(currentMemoryButton!).queryByText("Ready")).toBeNull();
+    });
+  });
+
+  it("clears the Memory button Ready cue before an async conversation switch finishes loading", async () => {
+    const deferredSecondConversation = createDeferred<{
+      id: string;
+      source_agent: string;
+      project_dir: string;
+      created_at: string;
+      updated_at: string;
+      summary: string;
+      storage_path: string;
+      resume_command: string;
+      messages: never[];
+      file_changes: never[];
+    }>();
+
+    mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
+      if (command === "list_conversations") {
+        return [
+          {
+            id: "conv-001",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/VSP/demo",
+            created_at: "2026-04-08T08:00:00Z",
+            updated_at: "2026-04-08T09:00:00Z",
+            summary: "Debug session",
+            message_count: 2,
+            file_count: 1,
+          },
+          {
+            id: "conv-002",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/PV/service",
+            created_at: "2026-04-08T10:00:00Z",
+            updated_at: "2026-04-08T11:00:00Z",
+            summary: "Memory investigation",
+            message_count: 4,
+            file_count: 0,
+          },
+        ];
+      }
+
+      if (command === "read_conversation") {
+        if (payload?.id === "conv-002") {
+          return deferredSecondConversation.promise;
+        }
+
+        return {
+          id: "conv-001",
+          source_agent: payload?.agent ?? "claude",
+          project_dir: "D:/VSP/demo",
+          created_at: "2026-04-08T08:00:00Z",
+          updated_at: "2026-04-08T09:00:00Z",
+          summary: "Debug session",
+          storage_path: "C:/Users/demo/.codex/sessions/2026/04/08/rollout-conv-001.jsonl",
+          resume_command: "codex resume conv-001",
+          messages: [],
+          file_changes: [],
+        };
+      }
+
+      if (
+        command === "list_repo_memories" ||
+        command === "list_memory_candidates" ||
+        command === "list_handoffs" ||
+        command === "list_checkpoints" ||
+        command === "list_runs" ||
+        command === "list_artifacts" ||
+        command === "list_episodes" ||
+        command === "rebuild_repo_wiki"
+      ) {
+        return [];
+      }
+
+      if (command === "get_repo_memory_health") {
+        if (payload?.repoRoot === "D:/VSP/demo") {
+          if (mockInvoke.mock.calls.some(([name]) => name === "scan_repo_conversations")) {
+            return {
+              repo_root: "D:/VSP/demo",
+              canonical_repo_root: "D:/VSP/demo",
+              approved_memory_count: 0,
+              pending_candidate_count: 0,
+              search_document_count: 4,
+              indexed_chunk_count: 8,
+              inherited_repo_roots: [],
+              conversation_counts_by_agent: [{ source_agent: "claude", conversation_count: 1 }],
+              repo_aliases: [],
+              warnings: [],
+            };
+          }
+
+          return {
+            repo_root: "D:/VSP/demo",
+            canonical_repo_root: "D:/VSP/demo",
+            approved_memory_count: 0,
+            pending_candidate_count: 0,
+            search_document_count: 0,
+            indexed_chunk_count: 0,
+            inherited_repo_roots: [],
+            conversation_counts_by_agent: [],
+            repo_aliases: [],
+            warnings: [],
+          };
+        }
+
+        return {
+          repo_root: "D:/PV/service",
+          canonical_repo_root: "D:/PV/service",
+          approved_memory_count: 0,
+          pending_candidate_count: 0,
+          search_document_count: 0,
+          indexed_chunk_count: 0,
+          inherited_repo_roots: [],
+          conversation_counts_by_agent: [],
+          repo_aliases: [],
+          warnings: [],
+        };
+      }
+
+      if (command === "scan_repo_conversations") {
+        return {
+          repo_root: "D:/VSP/demo",
+          canonical_repo_root: "D:/VSP/demo",
+          scanned_conversation_count: 1,
+          linked_conversation_count: 1,
+          skipped_conversation_count: 0,
+          source_agents: [{ source_agent: "claude", conversation_count: 1 }],
+          warnings: [],
+        };
+      }
+
+      return [];
+    });
+
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+    );
+
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("Debug session"))[0]);
+
+    await waitFor(() => {
+      expect(getMemoryToolbarButton()).toBeTruthy();
+    });
+
+    await waitFor(() => {
+      const currentMemoryButton = getMemoryToolbarButton();
+      expect(currentMemoryButton).toBeTruthy();
+      expect(currentMemoryButton!.classList.contains("is-ready")).toBe(true);
+      expect(within(currentMemoryButton!).getByText("Ready")).toBeTruthy();
+    });
+
+    const nextConversationRow = (await screen.findAllByText("Memory investigation"))[0]
+      .closest("button") as HTMLButtonElement | null;
+    expect(nextConversationRow).toBeTruthy();
+    fireEvent.click(nextConversationRow!);
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("read_conversation", {
+        agent: "claude",
+        id: "conv-002",
+      });
+    });
+
+    await waitFor(() => {
+      const currentMemoryButton = getMemoryToolbarButton();
+      expect(currentMemoryButton).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Debug session" })).toBeTruthy();
+      expect(currentMemoryButton!.classList.contains("is-ready")).toBe(false);
+      expect(within(currentMemoryButton!).queryByText("Ready")).toBeNull();
     });
   });
 
