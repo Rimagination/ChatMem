@@ -876,7 +876,6 @@ function App() {
         const bootstrapKey = nextHealth.canonical_repo_root || requestRepoRoot;
         if (
           nextHealth.indexed_chunk_count === 0 &&
-          repoScanActiveCountRef.current === 0 &&
           autoBootstrapAttemptedReposRef.current[bootstrapKey] !== true
         ) {
           autoBootstrapAttemptedReposRef.current[bootstrapKey] = true;
