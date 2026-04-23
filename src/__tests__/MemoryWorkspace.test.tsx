@@ -348,8 +348,8 @@ describe("Memory workspace", () => {
     ).toHaveLength(2);
   });
 
-  it("auto bootstraps local history only once per repo in a session", async () => {
-    let healthCallCount = 0;
+  it("auto bootstraps local history only once per repo across repo revisits in a session", async () => {
+    let repoAHealthCallCount = 0;
     const baseImplementation = mockInvoke.getMockImplementation();
     if (!baseImplementation) {
       throw new Error("Missing base invoke mock implementation");
@@ -364,17 +364,27 @@ describe("Memory workspace", () => {
             project_dir: "D:/VSP/agentswap-gui",
             created_at: "2026-04-19T08:00:00Z",
             updated_at: "2026-04-19T09:00:00Z",
-            summary: "Memory workflow one",
+            summary: "Repo A first conversation",
             message_count: 3,
             file_count: 2,
           },
           {
             id: "conv-002",
             source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/VSP/another-repo",
+            created_at: "2026-04-19T09:30:00Z",
+            updated_at: "2026-04-19T09:45:00Z",
+            summary: "Repo B conversation",
+            message_count: 4,
+            file_count: 1,
+          },
+          {
+            id: "conv-003",
+            source_agent: payload?.agent ?? "claude",
             project_dir: "D:/VSP/agentswap-gui",
             created_at: "2026-04-19T10:00:00Z",
             updated_at: "2026-04-19T11:00:00Z",
-            summary: "Memory workflow two",
+            summary: "Repo A second conversation",
             message_count: 5,
             file_count: 4,
           },
@@ -383,24 +393,31 @@ describe("Memory workspace", () => {
 
       if (
         command === "read_conversation" &&
-        (payload?.id === "conv-001" || payload?.id === "conv-002")
+        (payload?.id === "conv-001" || payload?.id === "conv-002" || payload?.id === "conv-003")
       ) {
         return Promise.resolve({
           id: payload.id,
           source_agent: payload?.agent ?? "claude",
-          project_dir: "D:/VSP/agentswap-gui",
+          project_dir:
+            payload.id === "conv-002" ? "D:/VSP/another-repo" : "D:/VSP/agentswap-gui",
           created_at:
             payload.id === "conv-001"
               ? "2026-04-19T08:00:00Z"
-              : "2026-04-19T10:00:00Z",
+              : payload.id === "conv-002"
+                ? "2026-04-19T09:30:00Z"
+                : "2026-04-19T10:00:00Z",
           updated_at:
             payload.id === "conv-001"
               ? "2026-04-19T09:00:00Z"
-              : "2026-04-19T11:00:00Z",
+              : payload.id === "conv-002"
+                ? "2026-04-19T09:45:00Z"
+                : "2026-04-19T11:00:00Z",
           summary:
             payload.id === "conv-001"
-              ? "Memory workflow one"
-              : "Memory workflow two",
+              ? "Repo A first conversation"
+              : payload.id === "conv-002"
+                ? "Repo B conversation"
+                : "Repo A second conversation",
           storage_path: `C:/Users/demo/.claude/projects/${payload.id}.jsonl`,
           resume_command: `claude --resume ${payload.id}`,
           messages: [],
@@ -408,8 +425,11 @@ describe("Memory workspace", () => {
         });
       }
 
-      if (command === "get_repo_memory_health") {
-        healthCallCount += 1;
+      if (
+        command === "get_repo_memory_health" &&
+        payload?.repoRoot === "D:/VSP/agentswap-gui"
+      ) {
+        repoAHealthCallCount += 1;
         return Promise.resolve({
           repo_root: "D:/VSP/agentswap-gui",
           canonical_repo_root: "D:/VSP/agentswap-gui",
@@ -424,12 +444,45 @@ describe("Memory workspace", () => {
         });
       }
 
+      if (
+        command === "get_repo_memory_health" &&
+        payload?.repoRoot === "D:/VSP/another-repo"
+      ) {
+        return Promise.resolve({
+          repo_root: "D:/VSP/another-repo",
+          canonical_repo_root: "D:/VSP/another-repo",
+          approved_memory_count: 2,
+          pending_candidate_count: 0,
+          search_document_count: 6,
+          indexed_chunk_count: 12,
+          inherited_repo_roots: [],
+          conversation_counts_by_agent: [{ source_agent: "claude", conversation_count: 1 }],
+          repo_aliases: [],
+          warnings: [],
+        });
+      }
+
+      if (
+        command === "scan_repo_conversations" &&
+        payload?.repoRoot === "D:/VSP/another-repo"
+      ) {
+        return Promise.resolve({
+          repo_root: "D:/VSP/another-repo",
+          canonical_repo_root: "D:/VSP/another-repo",
+          scanned_conversation_count: 1,
+          linked_conversation_count: 1,
+          skipped_conversation_count: 0,
+          source_agents: [{ source_agent: "claude", conversation_count: 1 }],
+          warnings: [],
+        });
+      }
+
       return baseImplementation(command, payload);
     });
 
     renderApp();
 
-    fireEvent.click((await screen.findAllByText("Memory workflow one"))[0]);
+    fireEvent.click((await screen.findAllByText("Repo A first conversation"))[0]);
 
     await waitFor(() => {
       expect(
@@ -459,21 +512,39 @@ describe("Memory workspace", () => {
       expect(within(localHistoryPanel!).getAllByText("0").length).toBeGreaterThan(0);
     });
 
-    expect(healthCallCount).toBe(2);
+    expect(repoAHealthCallCount).toBe(2);
 
-    fireEvent.click((await screen.findAllByText("Memory workflow two"))[0]);
+    fireEvent.click((await screen.findAllByText("Repo B conversation"))[0]);
 
     await waitFor(() => {
-      expect(screen.getByRole("heading", { name: "Memory workflow two" })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Repo B conversation" })).toBeTruthy();
     });
 
     expect(
       mockInvoke.mock.calls.filter(
         ([command, callPayload]) =>
-          command === "get_repo_memory_health" &&
-          callPayload?.repoRoot === "D:/VSP/agentswap-gui",
+          command === "scan_repo_conversations" &&
+          callPayload?.repoRoot === "D:/VSP/another-repo",
       ),
-    ).toHaveLength(2);
+    ).toHaveLength(0);
+
+    fireEvent.click((await screen.findAllByText("Repo A second conversation"))[0]);
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Repo A second conversation" })).toBeTruthy();
+    });
+
+    await waitFor(() => {
+      expect(
+        mockInvoke.mock.calls.filter(
+          ([command, callPayload]) =>
+            command === "get_repo_memory_health" &&
+            callPayload?.repoRoot === "D:/VSP/agentswap-gui",
+        ),
+      ).toHaveLength(3);
+    });
+
+    expect(repoAHealthCallCount).toBe(3);
 
     expect(
       mockInvoke.mock.calls.filter(
