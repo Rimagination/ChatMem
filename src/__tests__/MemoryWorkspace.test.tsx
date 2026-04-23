@@ -266,6 +266,77 @@ describe("Memory workspace", () => {
     });
   });
 
+  it("auto bootstraps local history when the repo has no indexed chunks", async () => {
+    let healthCallCount = 0;
+    const baseImplementation = mockInvoke.getMockImplementation();
+    if (!baseImplementation) {
+      throw new Error("Missing base invoke mock implementation");
+    }
+
+    mockInvoke.mockImplementation((command: string, payload?: Record<string, unknown>) => {
+      if (
+        command === "get_repo_memory_health" &&
+        payload?.repoRoot === "D:/VSP/agentswap-gui"
+      ) {
+        healthCallCount += 1;
+        if (healthCallCount === 1) {
+          return Promise.resolve({
+            repo_root: "D:/VSP/agentswap-gui",
+            canonical_repo_root: "D:/VSP/agentswap-gui",
+            approved_memory_count: 1,
+            pending_candidate_count: 1,
+            search_document_count: 0,
+            indexed_chunk_count: 0,
+            inherited_repo_roots: [],
+            conversation_counts_by_agent: [],
+            repo_aliases: [],
+            warnings: [],
+          });
+        }
+
+        return Promise.resolve({
+          repo_root: "D:/VSP/agentswap-gui",
+          canonical_repo_root: "D:/VSP/agentswap-gui",
+          approved_memory_count: 1,
+          pending_candidate_count: 1,
+          search_document_count: 4,
+          indexed_chunk_count: 8,
+          inherited_repo_roots: [],
+          conversation_counts_by_agent: [{ source_agent: "claude", conversation_count: 1 }],
+          repo_aliases: [],
+          warnings: [],
+        });
+      }
+
+      return baseImplementation(command, payload);
+    });
+
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("scan_repo_conversations", {
+        repoRoot: "D:/VSP/agentswap-gui",
+      });
+    });
+
+    expect(
+      mockInvoke.mock.calls.filter(
+        ([command, payload]) =>
+          command === "scan_repo_conversations" &&
+          payload?.repoRoot === "D:/VSP/agentswap-gui",
+      ),
+    ).toHaveLength(1);
+    expect(
+      mockInvoke.mock.calls.filter(
+        ([command, payload]) =>
+          command === "get_repo_memory_health" &&
+          payload?.repoRoot === "D:/VSP/agentswap-gui",
+      ),
+    ).toHaveLength(2);
+  });
+
   it("still loads memory drawer data when repo health load fails", async () => {
     const baseImplementation = mockInvoke.getMockImplementation();
     if (!baseImplementation) {

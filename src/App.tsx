@@ -772,6 +772,29 @@ function App() {
     }
   }, [activeRepoRoot]);
 
+  const runRepoScan = useCallback(async (requestRepoRoot: string) => {
+    const requestId = ++repoScanRequestIdRef.current;
+    repoScanActiveCountRef.current += 1;
+    setRepoScanRunning(true);
+    try {
+      await scanRepoConversations(requestRepoRoot);
+      const nextHealth = await getRepoMemoryHealth(requestRepoRoot);
+      if (
+        activeRepoRootRef.current === requestRepoRoot &&
+        requestId === repoScanRequestIdRef.current
+      ) {
+        setRepoMemoryHealth(nextHealth);
+      }
+      return nextHealth;
+    } catch (error) {
+      console.error("Failed to scan repo conversations:", error);
+      return null;
+    } finally {
+      repoScanActiveCountRef.current = Math.max(0, repoScanActiveCountRef.current - 1);
+      setRepoScanRunning(repoScanActiveCountRef.current > 0);
+    }
+  }, []);
+
   useEffect(() => {
     if (!appSettings.autoCheckUpdates) {
       return;
@@ -849,6 +872,12 @@ function App() {
           return;
         }
         setRepoMemoryHealth(nextHealth);
+        if (
+          nextHealth.indexed_chunk_count === 0 &&
+          repoScanActiveCountRef.current === 0
+        ) {
+          void runRepoScan(requestRepoRoot);
+        }
       } catch (error) {
         console.error("Failed to load repo memory health:", error);
       } finally {
@@ -863,31 +892,13 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeRepoRoot]);
+  }, [activeRepoRoot, runRepoScan]);
 
   const handleScanRepoConversations = async () => {
     if (!activeRepoRoot) {
       return;
     }
-    const requestRepoRoot = activeRepoRoot;
-    const requestId = ++repoScanRequestIdRef.current;
-    repoScanActiveCountRef.current += 1;
-    setRepoScanRunning(true);
-    try {
-      await scanRepoConversations(requestRepoRoot);
-      const nextHealth = await getRepoMemoryHealth(requestRepoRoot);
-      if (
-        activeRepoRootRef.current === requestRepoRoot &&
-        requestId === repoScanRequestIdRef.current
-      ) {
-        setRepoMemoryHealth(nextHealth);
-      }
-    } catch (error) {
-      console.error("Failed to scan repo conversations:", error);
-    } finally {
-      repoScanActiveCountRef.current = Math.max(0, repoScanActiveCountRef.current - 1);
-      setRepoScanRunning(repoScanActiveCountRef.current > 0);
-    }
+    await runRepoScan(activeRepoRoot);
   };
 
   const loadConversations = async (query = searchQuery, agent = selectedAgent) => {

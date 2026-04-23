@@ -51,6 +51,16 @@ function renderApp() {
   );
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("App", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
@@ -386,6 +396,171 @@ describe("App", () => {
 
     expect(await screen.findByRole("complementary", { name: "Project Memory" })).toBeTruthy();
     expect(screen.getByText("Use ChatMem for cross-agent continuation")).toBeTruthy();
+  });
+
+  it("does not let an auto scan from a stale repo overwrite the active repo history state", async () => {
+    const deferredScan = createDeferred<{
+      repo_root: string;
+      canonical_repo_root: string;
+      scanned_conversation_count: number;
+      linked_conversation_count: number;
+      skipped_conversation_count: number;
+      source_agents: Array<{ source_agent: string; conversation_count: number }>;
+      warnings: string[];
+    }>();
+
+    mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
+      if (command === "list_conversations") {
+        return [
+          {
+            id: "conv-001",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/VSP/demo",
+            created_at: "2026-04-08T08:00:00Z",
+            updated_at: "2026-04-08T09:00:00Z",
+            summary: "Debug session",
+            message_count: 2,
+            file_count: 1,
+          },
+          {
+            id: "conv-002",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/PV/service",
+            created_at: "2026-04-08T10:00:00Z",
+            updated_at: "2026-04-08T11:00:00Z",
+            summary: "Memory investigation",
+            message_count: 4,
+            file_count: 0,
+          },
+        ];
+      }
+
+      if (command === "read_conversation") {
+        if (payload?.id === "conv-002") {
+          return {
+            id: "conv-002",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/PV/service",
+            created_at: "2026-04-08T10:00:00Z",
+            updated_at: "2026-04-08T11:00:00Z",
+            summary: "Memory investigation",
+            storage_path: "C:/Users/demo/.codex/sessions/2026/04/08/rollout-conv-002.jsonl",
+            resume_command: "codex resume conv-002",
+            messages: [],
+            file_changes: [],
+          };
+        }
+
+        return {
+          id: "conv-001",
+          source_agent: payload?.agent ?? "claude",
+          project_dir: "D:/VSP/demo",
+          created_at: "2026-04-08T08:00:00Z",
+          updated_at: "2026-04-08T09:00:00Z",
+          summary: "Debug session",
+          storage_path: "C:/Users/demo/.codex/sessions/2026/04/08/rollout-conv-001.jsonl",
+          resume_command: "codex resume conv-001",
+          messages: [],
+          file_changes: [],
+        };
+      }
+
+      if (command === "list_repo_memories") {
+        return [];
+      }
+
+      if (
+        command === "list_memory_candidates" ||
+        command === "list_handoffs" ||
+        command === "list_checkpoints" ||
+        command === "list_runs" ||
+        command === "list_artifacts" ||
+        command === "list_episodes" ||
+        command === "rebuild_repo_wiki"
+      ) {
+        return [];
+      }
+
+      if (command === "get_repo_memory_health") {
+        if (payload?.repoRoot === "D:/VSP/demo") {
+          return {
+            repo_root: "D:/VSP/demo",
+            canonical_repo_root: "D:/VSP/demo",
+            approved_memory_count: 0,
+            pending_candidate_count: 0,
+            search_document_count: 0,
+            indexed_chunk_count: 0,
+            inherited_repo_roots: [],
+            conversation_counts_by_agent: [],
+            repo_aliases: [],
+            warnings: [],
+          };
+        }
+
+        if (payload?.repoRoot === "D:/PV/service") {
+          return {
+            repo_root: "D:/PV/service",
+            canonical_repo_root: "D:/PV/service",
+            approved_memory_count: 0,
+            pending_candidate_count: 0,
+            search_document_count: 4,
+            indexed_chunk_count: 8,
+            inherited_repo_roots: [],
+            conversation_counts_by_agent: [{ source_agent: "claude", conversation_count: 1 }],
+            repo_aliases: [],
+            warnings: [],
+          };
+        }
+      }
+
+      if (command === "scan_repo_conversations" && payload?.repoRoot === "D:/VSP/demo") {
+        return deferredScan.promise;
+      }
+
+      return [];
+    });
+
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+    );
+
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("Debug session"))[0]);
+
+    await screen.findByRole("heading", { name: "Debug session" });
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { level: 2, name: "D:/VSP/demo" })).toBeTruthy();
+      expect(mockInvoke).toHaveBeenCalledWith("scan_repo_conversations", {
+        repoRoot: "D:/VSP/demo",
+      });
+    });
+
+    fireEvent.click((await screen.findAllByText("Memory investigation"))[0]);
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Memory investigation" })).toBeTruthy();
+      expect(screen.getByRole("heading", { level: 2, name: "D:/PV/service" })).toBeTruthy();
+    });
+
+    await act(async () => {
+      deferredScan.resolve({
+        repo_root: "D:/VSP/demo",
+        canonical_repo_root: "D:/VSP/demo",
+        scanned_conversation_count: 1,
+        linked_conversation_count: 1,
+        skipped_conversation_count: 0,
+        source_agents: [{ source_agent: "claude", conversation_count: 1 }],
+        warnings: [],
+      });
+      await deferredScan.promise;
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { level: 2, name: "D:/PV/service" })).toBeTruthy();
+    });
+    expect(screen.queryByRole("heading", { level: 2, name: "D:/VSP/demo" })).toBeNull();
   });
 
   it("truncates very long workspace titles while keeping the full title available", async () => {
