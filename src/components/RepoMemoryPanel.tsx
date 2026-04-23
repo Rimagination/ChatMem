@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import type { ApprovedMemory } from "../chatmem-memory/types";
 import type { Locale } from "../i18n/types";
 
@@ -6,6 +7,8 @@ type RepoMemoryPanelProps = {
   loading: boolean;
   locale: Locale;
   onReverify: (memoryId: string) => void;
+  autoFocusFirstMemory?: boolean;
+  onAutoFocusHandled?: () => void;
 };
 
 function formatFreshnessLabel(status: string, locale: Locale) {
@@ -49,7 +52,11 @@ export default function RepoMemoryPanel({
   loading,
   locale,
   onReverify,
+  autoFocusFirstMemory = false,
+  onAutoFocusHandled,
 }: RepoMemoryPanelProps) {
+  const firstMemoryRef = useRef<HTMLElement | null>(null);
+  const autoFocusHandledRef = useRef(false);
   const isEnglish = locale === "en";
   const copy = {
     empty: isEnglish
@@ -62,6 +69,33 @@ export default function RepoMemoryPanel({
     freshnessScore: isEnglish ? "Freshness score" : "\u65b0\u9c9c\u5ea6\u5206\u6570",
     reverify: isEnglish ? "Re-verify" : "\u91cd\u65b0\u9a8c\u8bc1",
   };
+
+  useEffect(() => {
+    if (!autoFocusFirstMemory) {
+      autoFocusHandledRef.current = false;
+      return;
+    }
+
+    if (autoFocusHandledRef.current || loading) {
+      return;
+    }
+
+    if (memories.length === 0) {
+      autoFocusHandledRef.current = true;
+      onAutoFocusHandled?.();
+      return;
+    }
+
+    const firstMemoryCard = firstMemoryRef.current;
+    if (!firstMemoryCard) {
+      return;
+    }
+
+    firstMemoryCard.scrollIntoView({ block: "nearest" });
+    firstMemoryCard.focus();
+    autoFocusHandledRef.current = true;
+    onAutoFocusHandled?.();
+  }, [autoFocusFirstMemory, loading, memories.length, onAutoFocusHandled]);
 
   if (loading) {
     return (
@@ -91,12 +125,18 @@ export default function RepoMemoryPanel({
         <p>{copy.subtitle}</p>
       </div>
       <div className="memory-card-list">
-        {memories.map((memory) => {
+        {memories.map((memory, index) => {
           const freshnessState = memory.freshness_status || "unknown";
           const freshnessScore = Number.isFinite(memory.freshness_score) ? memory.freshness_score : 0;
+          const isFirstCard = index === 0;
 
           return (
-            <article key={memory.memory_id} className="memory-card">
+            <article
+              key={memory.memory_id}
+              ref={isFirstCard ? firstMemoryRef : undefined}
+              className="memory-card"
+              tabIndex={isFirstCard ? -1 : undefined}
+            >
             <div className="memory-card-header">
               <div>
                 <strong>{memory.title}</strong>

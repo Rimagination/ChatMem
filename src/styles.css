@@ -985,6 +985,13 @@ button {
   background: rgba(255, 255, 255, 0.72);
 }
 
+.memory-card:focus,
+.memory-card:focus-visible {
+  outline: 2px solid rgba(58, 143, 100, 0.52);
+  outline-offset: 2px;
+  border-color: rgba(58, 143, 100, 0.26);
+}
+
 .memory-card-source {
   border-left: 3px solid rgba(58, 143, 100, 0.5);
 }
