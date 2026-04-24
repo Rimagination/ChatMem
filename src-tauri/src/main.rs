@@ -3,7 +3,7 @@
     windows_subsystem = "windows"
 )]
 
-use std::time::Duration;
+use std::{fs, path::PathBuf, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use tauri::command;
@@ -116,6 +116,26 @@ struct WebDavConversationUpload {
     file_name: String,
     remote_file: String,
     body: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncSettingsPayload {
+    provider: String,
+    webdav_scheme: String,
+    webdav_host: String,
+    webdav_path: String,
+    username: String,
+    remote_path: String,
+    download_mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppSettingsPayload {
+    locale: String,
+    auto_check_updates: bool,
+    sync: SyncSettingsPayload,
 }
 
 fn get_adapter(agent: &str) -> Result<Box<dyn AgentAdapter>, String> {
@@ -344,6 +364,19 @@ fn open_memory_store() -> Result<MemoryStore, String> {
     MemoryStore::open_app().map_err(|e| e.to_string())
 }
 
+fn app_settings_path() -> Result<PathBuf, String> {
+    let base = dirs::config_dir()
+        .or_else(dirs::data_local_dir)
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| "Unable to resolve a settings directory for ChatMem".to_string())?;
+    Ok(base.join("ChatMem").join("settings.json"))
+}
+
+fn webdav_credential_entry(username: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new("com.chatmem.app.webdav", username)
+        .map_err(|error| format!("Cannot open OS credential store: {error}"))
+}
+
 fn build_webdav_probe_url(
     scheme: &str,
     host: &str,
@@ -511,6 +544,62 @@ async fn put_webdav_json(
 #[command]
 async fn get_agent_card() -> Result<AgentCard, String> {
     Ok(AgentCard::chatmem_default())
+}
+
+#[command]
+async fn load_app_settings() -> Result<Option<AppSettingsPayload>, String> {
+    let path = app_settings_path()?;
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let raw = fs::read_to_string(&path)
+        .map_err(|error| format!("Cannot read settings file {}: {error}", path.display()))?;
+    serde_json::from_str::<AppSettingsPayload>(&raw)
+        .map(Some)
+        .map_err(|error| format!("Cannot parse settings file {}: {error}", path.display()))
+}
+
+#[command]
+async fn save_app_settings(settings: AppSettingsPayload) -> Result<(), String> {
+    let path = app_settings_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Cannot create settings directory {}: {error}", parent.display()))?;
+    }
+
+    let body = serde_json::to_vec_pretty(&settings)
+        .map_err(|error| format!("Cannot serialize settings: {error}"))?;
+    fs::write(&path, body)
+        .map_err(|error| format!("Cannot write settings file {}: {error}", path.display()))
+}
+
+#[command]
+async fn load_webdav_password(username: String) -> Result<Option<String>, String> {
+    let username = username.trim();
+    if username.is_empty() {
+        return Ok(None);
+    }
+
+    let entry = webdav_credential_entry(username)?;
+    match entry.get_password() {
+        Ok(password) => Ok(Some(password)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(format!("Cannot read WebDAV password from OS credential store: {error}")),
+    }
+}
+
+#[command]
+async fn save_webdav_password(username: String, password: String) -> Result<(), String> {
+    let username = username.trim();
+    if username.is_empty() || password.is_empty() {
+        return Ok(());
+    }
+
+    let entry = webdav_credential_entry(username)?;
+    entry
+        .set_password(&password)
+        .map_err(|error| format!("Cannot save WebDAV password to OS credential store: {error}"))
 }
 
 #[command]
@@ -995,6 +1084,10 @@ fn main() {
             delete_conversation,
             check_agent_available,
             get_agent_card,
+            load_app_settings,
+            save_app_settings,
+            load_webdav_password,
+            save_webdav_password,
             verify_webdav_server,
             sync_webdav_now,
             list_repo_memories,

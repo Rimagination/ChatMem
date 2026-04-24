@@ -16,7 +16,16 @@ import ProjectIndexStatus from "./components/ProjectIndexStatus";
 import RepoMemoryPanel from "./components/RepoMemoryPanel";
 import { useI18n } from "./i18n/I18nProvider";
 import type { Locale } from "./i18n/types";
-import { loadSettings, updateSettings, type AppSettings } from "./settings/storage";
+import {
+  loadNativeSettings,
+  loadSettings,
+  loadWebDavPassword,
+  saveSettings,
+  saveNativeSettings,
+  saveWebDavPassword,
+  updateSettings,
+  type AppSettings,
+} from "./settings/storage";
 import { installAvailableUpdate, runUpdateCheck, type UpdateState } from "./updater/updater";
 import { formatDateTime, formatDistanceToNow } from "./utils/dateUtils";
 import {
@@ -846,6 +855,30 @@ function App() {
         current === activeConversationIdRef.current ? null : current,
       );
     }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void loadNativeSettings().then((nativeSettings) => {
+      if (cancelled) {
+        return;
+      }
+
+      if (nativeSettings) {
+        saveSettings(nativeSettings);
+        setAppSettings(nativeSettings);
+        if (nativeSettings.locale !== locale) {
+          setLocale(nativeSettings.locale);
+        }
+      } else {
+        void saveNativeSettings(appSettings);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -3123,6 +3156,8 @@ function App() {
         }}
         onVerifyWebDavServer={handleVerifyWebDavServer}
         onSyncWebDavNow={handleSyncWebDavNow}
+        onLoadWebDavPassword={loadWebDavPassword}
+        onSaveWebDavPassword={({ username, password }) => saveWebDavPassword(username, password)}
         onCheckUpdates={async () => {
           setUpdateState({ kind: "checking" });
           try {

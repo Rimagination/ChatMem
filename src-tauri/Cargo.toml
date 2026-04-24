@@ -1,6 +1,6 @@
 [package]
 name = "chatmem"
-version = "1.0.4"
+version = "1.0.5"
 default-run = "chatmem"
 description = "ChatMem - Your AI conversations, forever remembered"
 authors = ["ChatMem"]
@@ -24,6 +24,7 @@ rmcp = { version = "1.5.0", features = ["server", "macros", "transport-io"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std"] }
 schemars = "1"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
+keyring = "3"
 
 # Vendored AgentSwap parser crates for standalone CI builds
 agentswap-core = { path = "../crates/agentswap-core" }

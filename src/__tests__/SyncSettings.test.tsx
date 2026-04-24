@@ -92,6 +92,65 @@ describe("Sync settings", () => {
     });
   });
 
+  it("restores WebDAV sync settings from the native settings file when browser storage was reset", async () => {
+    localStorage.clear();
+    mockInvoke.mockImplementation((command: string) => {
+      if (command === "load_app_settings") {
+        return Promise.resolve({
+          locale: "en",
+          autoCheckUpdates: false,
+          sync: {
+            provider: "webdav",
+            webdavScheme: "https",
+            webdavHost: "dav.example.com",
+            webdavPath: "remote.php/dav/files/liang",
+            username: "liang@example.com",
+            remotePath: "chatmem",
+            downloadMode: "as-needed",
+          },
+        });
+      }
+      if (command === "load_webdav_password") {
+        return Promise.resolve("saved-secret");
+      }
+      return Promise.resolve([]);
+    });
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+
+    await waitFor(() => {
+      expect(
+        (screen.getByLabelText("Conversation data sync method:") as HTMLInputElement).checked,
+      ).toBe(true);
+      expect((screen.getByLabelText("Server and path") as HTMLInputElement).value).toBe(
+        "dav.example.com/remote.php/dav/files/liang",
+      );
+      expect((screen.getByLabelText("Username") as HTMLInputElement).value).toBe(
+        "liang@example.com",
+      );
+      expect((screen.getByLabelText("Password") as HTMLInputElement).value).toBe("saved-secret");
+      expect((screen.getByLabelText("Download files") as HTMLSelectElement).value).toBe(
+        "as-needed",
+      );
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("load_app_settings");
+    expect(mockInvoke).toHaveBeenCalledWith("load_webdav_password", {
+      username: "liang@example.com",
+    });
+    expect(JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY) ?? "{}").sync).toEqual({
+      provider: "webdav",
+      webdavScheme: "https",
+      webdavHost: "dav.example.com",
+      webdavPath: "remote.php/dav/files/liang",
+      username: "liang@example.com",
+      remotePath: "chatmem",
+      downloadMode: "as-needed",
+    });
+  });
+
   it("verifies the WebDAV server with the entered password and shows success", async () => {
     renderApp();
 
@@ -119,6 +178,10 @@ describe("Sync settings", () => {
         webdavHost: "example.com",
         webdavPath: "webdav",
         remotePath: "chatmem",
+        username: "liang@example.com",
+        password: "local-secret",
+      });
+      expect(mockInvoke).toHaveBeenCalledWith("save_webdav_password", {
         username: "liang@example.com",
         password: "local-secret",
       });

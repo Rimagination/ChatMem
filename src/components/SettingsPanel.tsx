@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Locale } from "../i18n/types";
 import type { SyncSettings } from "../settings/storage";
 import type { UpdateState } from "../updater/updater";
@@ -62,6 +62,8 @@ type SettingsPanelProps = {
   onSyncSettingsChange: (patch: Partial<SyncSettings>) => void;
   onVerifyWebDavServer: (input: WebDavVerificationInput) => Promise<void>;
   onSyncWebDavNow: (input: WebDavVerificationInput) => Promise<WebDavSyncResult>;
+  onLoadWebDavPassword: (username: string) => Promise<string | null>;
+  onSaveWebDavPassword: (input: { username: string; password: string }) => Promise<void>;
   onCheckUpdates: () => void;
   onInstallUpdate: () => void;
 };
@@ -117,6 +119,8 @@ export default function SettingsPanel({
   onSyncSettingsChange,
   onVerifyWebDavServer,
   onSyncWebDavNow,
+  onLoadWebDavPassword,
+  onSaveWebDavPassword,
   onCheckUpdates,
   onInstallUpdate,
 }: SettingsPanelProps) {
@@ -141,6 +145,11 @@ export default function SettingsPanel({
     onSyncSettingsChange(patch);
   };
 
+  const handleUsernameChange = (nextUsername: string) => {
+    setPassword("");
+    handleSyncSettingsChange({ username: nextUsername });
+  };
+
   const handlePasswordChange = (nextPassword: string) => {
     setWebDavVerification({ kind: "idle" });
     setWebDavSync({ kind: "idle" });
@@ -156,6 +165,7 @@ export default function SettingsPanel({
     setWebDavVerification({ kind: "checking" });
     try {
       await onVerifyWebDavServer({ syncSettings, password });
+      await onSaveWebDavPassword({ username: syncSettings.username, password });
       setWebDavVerification({ kind: "success" });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -175,6 +185,7 @@ export default function SettingsPanel({
     setWebDavSync({ kind: "syncing" });
     try {
       const result = await onSyncWebDavNow({ syncSettings, password });
+      await onSaveWebDavPassword({ username: syncSettings.username, password });
       setWebDavSync({
         kind: "success",
         uploadedCount: result.uploadedCount,
@@ -188,6 +199,24 @@ export default function SettingsPanel({
       });
     }
   };
+
+  useEffect(() => {
+    if (!open || !fileSyncEnabled || !syncSettings.username.trim()) {
+      return;
+    }
+
+    let cancelled = false;
+    void onLoadWebDavPassword(syncSettings.username).then((savedPassword) => {
+      if (cancelled || !savedPassword) {
+        return;
+      }
+      setPassword((currentPassword) => currentPassword || savedPassword);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [fileSyncEnabled, onLoadWebDavPassword, open, syncSettings.username]);
 
   if (!open) {
     return null;
@@ -279,7 +308,7 @@ export default function SettingsPanel({
                   type="text"
                   value={syncSettings.username}
                   autoComplete="username"
-                  onChange={(event) => handleSyncSettingsChange({ username: event.target.value })}
+                  onChange={(event) => handleUsernameChange(event.target.value)}
                 />
               </label>
 
