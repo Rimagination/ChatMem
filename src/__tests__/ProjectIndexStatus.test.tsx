@@ -73,6 +73,82 @@ describe("ProjectIndexStatus", () => {
     expect(onScan).toHaveBeenCalledTimes(1);
   });
 
+  it("explains pending candidates as non-blocking startup memory review in English", () => {
+    render(
+      <ProjectIndexStatus
+        health={{
+          ...healthFixture,
+          approved_memory_count: 3,
+          pending_candidate_count: 10,
+          search_document_count: 647,
+          indexed_chunk_count: 647,
+          conversation_counts_by_agent: [
+            {
+              source_agent: "claude",
+              conversation_count: 78,
+            },
+          ],
+          warnings: [
+            "10 pending memory candidate(s) need review before they become startup memory.",
+          ],
+        }}
+        loading={false}
+        scanning={false}
+        locale="en"
+        onScan={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Review queue")).toBeTruthy();
+    expect(screen.getByText("Startup memory")).toBeTruthy();
+    expect(screen.getByText("Note")).toBeTruthy();
+    expect(
+      screen.getByText((content) =>
+        content.includes("10 candidate memories are waiting for review") &&
+        content.includes("indexed conversations remain searchable"),
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/pending memory candidate/i)).toBeNull();
+  });
+
+  it("explains pending candidates as non-blocking startup memory review in Chinese", () => {
+    render(
+      <ProjectIndexStatus
+        health={{
+          ...healthFixture,
+          approved_memory_count: 3,
+          pending_candidate_count: 10,
+          search_document_count: 647,
+          indexed_chunk_count: 647,
+          conversation_counts_by_agent: [
+            {
+              source_agent: "claude",
+              conversation_count: 78,
+            },
+          ],
+          warnings: [
+            "10 pending memory candidate(s) need review before they become startup memory.",
+          ],
+        }}
+        loading={false}
+        scanning={false}
+        locale="zh-CN"
+        onScan={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("\u5f85\u786e\u8ba4\u5019\u9009")).toBeTruthy();
+    expect(screen.getByText("\u542f\u52a8\u8bb0\u5fc6")).toBeTruthy();
+    expect(screen.getByText("\u63d0\u793a")).toBeTruthy();
+    expect(
+      screen.getByText((content) =>
+        content.includes("\u6709 10 \u6761\u5019\u9009\u8bb0\u5fc6\u7b49\u5f85\u786e\u8ba4") &&
+        content.includes("78 \u6bb5\u5bf9\u8bdd\u548c 647 \u4e2a\u5206\u5757\u5df2\u7ecf\u53ef\u7528\u4e8e\u56de\u5fc6"),
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/pending memory candidate/i)).toBeNull();
+  });
+
   it("shows the idle bootstrap note when indexed history is empty", () => {
     const onScan = vi.fn();
 

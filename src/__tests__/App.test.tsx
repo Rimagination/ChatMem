@@ -15,6 +15,7 @@ const mockStartDragging = vi.fn();
 const mockIsMaximized = vi.fn();
 const mockIsFullscreen = vi.fn();
 const mockOnResized = vi.fn();
+const appVersionPattern = /ChatMem v\d+\.\d+\.\d+/;
 const longConversationTitle =
   "You are Task 6 的独立代码质量 reviewer。请在工作树 D:\\VSP\\agentswap-gui\\.worktrees\\chatmem-control-plane-v2 review 最新提交，重点寻找真实风险，而不是泛泛建议。";
 
@@ -255,7 +256,7 @@ describe("App", () => {
 
     renderApp();
 
-    expect(await screen.findByText("ChatMem v1.0.0")).toBeTruthy();
+    expect(await screen.findByText(appVersionPattern)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Continue Work" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Needs Review" })).toBeNull();
     expect(screen.queryByRole("button", { name: "History" })).toBeNull();
@@ -344,7 +345,7 @@ describe("App", () => {
 
     renderApp();
 
-    const title = await screen.findByText("ChatMem v1.0.0");
+    const title = await screen.findByText(appVersionPattern);
     const topbar = title.closest(".app-topbar");
     expect(topbar).toBeTruthy();
 
@@ -364,7 +365,7 @@ describe("App", () => {
 
     const { container } = renderApp();
 
-    await screen.findByText("ChatMem v1.0.0");
+    await screen.findByText(appVersionPattern);
 
     await waitFor(() => {
       expect(container.querySelector(".app-shell")?.classList.contains("is-window-filled")).toBe(

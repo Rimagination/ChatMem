@@ -11,7 +11,7 @@ import SettingsPanel, {
 } from "./components/SettingsPanel";
 import HandoffComposerModal from "./components/HandoffComposerModal";
 import LibraryPanel from "./components/LibraryPanel";
-import MemoryInboxPanel from "./components/MemoryInboxPanel";
+import MemoryInboxPanel, { type MemoryCandidateApprovalDraft } from "./components/MemoryInboxPanel";
 import ProjectIndexStatus from "./components/ProjectIndexStatus";
 import RepoMemoryPanel from "./components/RepoMemoryPanel";
 import { useI18n } from "./i18n/I18nProvider";
@@ -1106,18 +1106,32 @@ function App() {
     });
   };
 
-  const handleApproveCandidate = async (candidate: MemoryCandidate) => {
+  const handleApproveCandidate = async (
+    candidate: MemoryCandidate,
+    reviewDraft?: MemoryCandidateApprovalDraft,
+  ) => {
     if (!activeRepoRoot) {
       return;
     }
+
+    const editedTitle = reviewDraft?.title ?? candidate.summary;
+    const editedValue = reviewDraft?.value ?? candidate.value;
+    const editedUsageHint = reviewDraft?.usageHint ?? candidate.why_it_matters;
+    const hasEditedDraft = Boolean(
+      reviewDraft &&
+        (editedTitle !== candidate.summary ||
+          editedValue !== candidate.value ||
+          editedUsageHint !== candidate.why_it_matters),
+    );
 
     setMemoryLoading(true);
     try {
       await reviewMemoryCandidate({
         candidateId: candidate.candidate_id,
-        action: "approve",
-        editedTitle: candidate.summary,
-        editedUsageHint: candidate.why_it_matters,
+        action: hasEditedDraft ? "approve_with_edit" : "approve",
+        editedTitle,
+        ...(hasEditedDraft ? { editedValue } : {}),
+        editedUsageHint,
       });
       const [nextCandidates, nextMemories, nextWikiPages] = await Promise.all([
         listMemoryCandidates(activeRepoRoot, "pending_review"),
@@ -2584,7 +2598,7 @@ function App() {
           candidates={memoryCandidates}
           loading={memoryLoading}
           locale={locale}
-          onApprove={(candidate) => void handleApproveCandidate(candidate)}
+          onApprove={(candidate, reviewDraft) => void handleApproveCandidate(candidate, reviewDraft)}
           onApproveMerge={(candidate) => void handleApproveMergeCandidate(candidate)}
           onReject={(candidateId) => void handleRejectCandidate(candidateId)}
         />
