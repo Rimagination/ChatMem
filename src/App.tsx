@@ -2686,6 +2686,17 @@ function App() {
 
     return (
       <div className="conversation-workspace">
+        {activeRepoRoot ? (
+          <ProjectIndexStatus
+            health={repoMemoryHealth}
+            loading={repoHealthLoading}
+            scanning={repoScanRunning}
+            bootstrapReady={bootstrapReadyConversationId === selectedConversation.id}
+            locale={locale}
+            onScan={() => void handleScanRepoConversations()}
+          />
+        ) : null}
+
         <header className="conversation-toolbar">
           <div className="conversation-title-block">
             <p className="page-eyebrow">{getAgentHeading(selectedAgent, locale)}</p>
@@ -2742,17 +2753,6 @@ function App() {
             </button>
           </div>
         </header>
-
-        {activeRepoRoot ? (
-          <ProjectIndexStatus
-            health={repoMemoryHealth}
-            loading={repoHealthLoading}
-            scanning={repoScanRunning}
-            bootstrapReady={bootstrapReadyConversationId === selectedConversation.id}
-            locale={locale}
-            onScan={() => void handleScanRepoConversations()}
-          />
-        ) : null}
 
         <div className="conversation-meta-strip compact">
           <div className="meta-block">

@@ -269,9 +269,14 @@ describe("Memory workspace", () => {
     });
 
     const localHistoryPanel = (await screen.findByText("Local history")).closest("section");
+    const conversationToolbar = document.querySelector(".conversation-toolbar");
     const conversationMetaStrip = document.querySelector(".conversation-meta-strip.compact");
     expect(localHistoryPanel).toBeTruthy();
+    expect(conversationToolbar).toBeTruthy();
     expect(conversationMetaStrip).toBeTruthy();
+    expect(
+      Boolean(localHistoryPanel!.compareDocumentPosition(conversationToolbar!) & Node.DOCUMENT_POSITION_FOLLOWING),
+    ).toBe(true);
     expect(
       Boolean(localHistoryPanel!.compareDocumentPosition(conversationMetaStrip!) & Node.DOCUMENT_POSITION_FOLLOWING),
     ).toBe(true);
