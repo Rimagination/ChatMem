@@ -2743,6 +2743,17 @@ function App() {
           </div>
         </header>
 
+        {activeRepoRoot ? (
+          <ProjectIndexStatus
+            health={repoMemoryHealth}
+            loading={repoHealthLoading}
+            scanning={repoScanRunning}
+            bootstrapReady={bootstrapReadyConversationId === selectedConversation.id}
+            locale={locale}
+            onScan={() => void handleScanRepoConversations()}
+          />
+        ) : null}
+
         <div className="conversation-meta-strip compact">
           <div className="meta-block">
             <span className="meta-label">{shell.fileLocation}</span>
@@ -2757,17 +2768,6 @@ function App() {
             </span>
           </div>
         </div>
-
-        {activeRepoRoot ? (
-          <ProjectIndexStatus
-            health={repoMemoryHealth}
-            loading={repoHealthLoading}
-            scanning={repoScanRunning}
-            bootstrapReady={bootstrapReadyConversationId === selectedConversation.id}
-            locale={locale}
-            onScan={() => void handleScanRepoConversations()}
-          />
-        ) : null}
 
         <div className="conversation-content-grid">
           <ConversationDetail conversation={selectedConversation} />

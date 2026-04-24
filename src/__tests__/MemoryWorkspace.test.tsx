@@ -268,7 +268,13 @@ describe("Memory workspace", () => {
       });
     });
 
-    expect(await screen.findByText("Local history")).toBeTruthy();
+    const localHistoryPanel = (await screen.findByText("Local history")).closest("section");
+    const conversationMetaStrip = document.querySelector(".conversation-meta-strip.compact");
+    expect(localHistoryPanel).toBeTruthy();
+    expect(conversationMetaStrip).toBeTruthy();
+    expect(
+      Boolean(localHistoryPanel!.compareDocumentPosition(conversationMetaStrip!) & Node.DOCUMENT_POSITION_FOLLOWING),
+    ).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: "Rescan local history" }));
 
