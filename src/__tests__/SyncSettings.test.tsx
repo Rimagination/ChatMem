@@ -52,7 +52,10 @@ describe("Sync settings", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
 
-    expect(await screen.findByRole("heading", { name: "Acknowledgements" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "About ChatMem" })).toBeTruthy();
+    expect(screen.getByText(/local-first memory layer/i)).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Acknowledgements" })).toBeNull();
+    fireEvent.click(screen.getByText("Design references and acknowledgements"));
     expect(screen.getByText(/mem0/)).toBeTruthy();
     expect(screen.getByText(/Letta/)).toBeTruthy();
     expect(screen.getByText(/Zep/)).toBeTruthy();

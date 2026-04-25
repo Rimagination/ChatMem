@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use agentswap_core::adapter::AgentAdapter;
+use agentswap_core::files::move_path_to_trash;
 use agentswap_core::tool_mapping::map_tool;
 use agentswap_core::types::*;
 
@@ -1030,10 +1031,7 @@ impl AgentAdapter for CodexAdapter {
 
         // Delete the rollout file
         let rollout_path = PathBuf::from(&thread.rollout_path);
-        if rollout_path.exists() {
-            fs::remove_file(&rollout_path)
-                .with_context(|| format!("Failed to delete rollout file: {}", rollout_path.display()))?;
-        }
+        move_path_to_trash(&rollout_path)?;
 
         // Delete from database
         let conn = self.open_db_rw()?;

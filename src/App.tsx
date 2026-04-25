@@ -117,7 +117,7 @@ interface FileChange {
   message_id: string;
 }
 
-type AgentType = "claude" | "codex" | "gemini";
+type AgentType = "claude" | "codex" | "gemini" | "opencode";
 type TopPage = "continue" | "review" | "history" | "help";
 type HistoryView = "conversations" | "recovery" | "transfers" | "outputs";
 type MemoryDrawerTab = "inbox" | "approved" | "wiki" | "continuation";
@@ -232,6 +232,19 @@ type ShellCopy = {
   restoreProjects: string;
   openOrganizer: string;
   refreshList: string;
+  bulkSelect: string;
+  cancelBulkSelect: string;
+  bulkSelectionToolbar: string;
+  selectConversation: string;
+  selectVisible: string;
+  clearSelection: string;
+  selectedCount: (count: number) => string;
+  moveSelectedToTrash: (count: number) => string;
+  confirmTrashSingle: (title: string) => string;
+  confirmTrashBulk: (count: number) => string;
+  trashSuccessSingle: string;
+  trashSuccessBulk: (count: number) => string;
+  trashFailed: string;
   migrate: string;
   delete: string;
   helpHowItWorks: string;
@@ -283,6 +296,18 @@ const TARGET_PROFILE_OPTIONS: Record<string, HandoffTargetProfileOption[]> = {
       description: "Focus on history, related context, and cross-cutting background information.",
     },
   ],
+  opencode: [
+    {
+      value: "opencode_execution",
+      label: "OpenCode Execution",
+      description: "Emphasize terminal-ready commands, touched files, and the next concrete step.",
+    },
+    {
+      value: "opencode_review",
+      label: "OpenCode Review",
+      description: "Highlight evidence, risks, and verification notes for an OpenCode session.",
+    },
+  ],
 };
 
 function getAgentHeading(agent: AgentType, locale: Locale) {
@@ -297,13 +322,22 @@ function getAgentHeading(agent: AgentType, locale: Locale) {
       return "CODEX 对话";
     case "gemini":
       return "GEMINI 对话";
+    case "opencode":
+      return "OPENCODE \u5bf9\u8bdd";
     default:
       return "对话";
   }
 }
 
+const AGENT_LABELS: Record<string, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  gemini: "Gemini",
+  opencode: "OpenCode",
+};
+
 function getAgentLabel(agent: string) {
-  return agent.charAt(0).toUpperCase() + agent.slice(1);
+  return AGENT_LABELS[agent.toLowerCase()] ?? agent.charAt(0).toUpperCase() + agent.slice(1);
 }
 
 function getCurrentConversationLabel(agent: AgentType, locale: Locale) {
@@ -312,6 +346,21 @@ function getCurrentConversationLabel(agent: AgentType, locale: Locale) {
   }
 
   return `${agent.toUpperCase()} \u5f53\u524d\u5bf9\u8bdd`;
+}
+
+function getAgentConfigLocation(agent: AgentType) {
+  switch (agent) {
+    case "claude":
+      return "~/.claude";
+    case "codex":
+      return "~/.codex/config.toml";
+    case "gemini":
+      return "~/.gemini";
+    case "opencode":
+      return "$XDG_DATA_HOME/opencode or ~/.local/share/opencode";
+    default:
+      return "--";
+  }
 }
 
 function getProjectLabel(projectDir: string) {
@@ -479,6 +528,12 @@ function isProjectConversation(
   return getConversationProjectDir(conversation).length > 0;
 }
 
+function getConversationKey(
+  conversation: Pick<ConversationSummary, "id" | "source_agent"> | Pick<Conversation, "id" | "source_agent">,
+) {
+  return `${conversation.source_agent}:${conversation.id}`;
+}
+
 function sortConversations(conversations: ConversationSummary[], sortMode: LibrarySort) {
   const field = sortMode === "created" ? "created_at" : "updated_at";
   return [...conversations].sort((left, right) =>
@@ -580,6 +635,23 @@ function getShellCopy(locale: Locale): ShellCopy {
       restoreProjects: "Restore previous expansion",
       openOrganizer: "Filter, sort, and organize conversations",
       refreshList: "Refresh conversations",
+      bulkSelect: "Select conversations",
+      cancelBulkSelect: "Cancel selection",
+      bulkSelectionToolbar: "Bulk conversation actions",
+      selectConversation: "Select",
+      selectVisible: "Select visible",
+      clearSelection: "Clear",
+      selectedCount: (count) => `${count} selected`,
+      moveSelectedToTrash: (count) =>
+        count > 0 ? `Move ${count} selected to Trash` : "Move selected to Trash",
+      confirmTrashSingle: (title) =>
+        `Move this conversation to Trash?\n\n"${title}"\n\nThe local conversation file will be moved to the system Trash when possible.`,
+      confirmTrashBulk: (count) =>
+        `Move ${count} conversation${count === 1 ? "" : "s"} to Trash?\n\nThe local files will be moved to the system Trash when possible and removed from this list.`,
+      trashSuccessSingle: "Conversation moved to Trash.",
+      trashSuccessBulk: (count) =>
+        `${count} conversation${count === 1 ? "" : "s"} moved to Trash.`,
+      trashFailed: "Could not move conversation to Trash",
       migrate: "Migrate",
       delete: "Delete",
       helpHowItWorks: "How ChatMem works in the background",
@@ -678,6 +750,22 @@ function getShellCopy(locale: Locale): ShellCopy {
     restoreProjects: "恢复之前展开的分组",
     openOrganizer: "筛选、排序和整理对话",
     refreshList: "刷新会话列表",
+    bulkSelect: "\u6279\u91cf\u9009\u62e9",
+    cancelBulkSelect: "\u53d6\u6d88\u9009\u62e9",
+    bulkSelectionToolbar: "\u6279\u91cf\u5bf9\u8bdd\u64cd\u4f5c",
+    selectConversation: "\u9009\u62e9",
+    selectVisible: "\u9009\u4e2d\u5f53\u524d\u5217\u8868",
+    clearSelection: "\u6e05\u7a7a",
+    selectedCount: (count) => `\u5df2\u9009 ${count}`,
+    moveSelectedToTrash: (count) =>
+      count > 0 ? `\u79fb\u5230\u5783\u573e\u7bb1 ${count}` : "\u79fb\u5230\u5783\u573e\u7bb1",
+    confirmTrashSingle: (title) =>
+      `\u786e\u5b9a\u8981\u628a\u8fd9\u6bb5\u5bf9\u8bdd\u79fb\u5230\u5783\u573e\u7bb1\u5417\uff1f\n\n"${title}"\n\n\u4f1a\u5c3d\u91cf\u628a\u672c\u5730\u5bf9\u8bdd\u6587\u4ef6\u79fb\u5165\u7cfb\u7edf\u5783\u573e\u7bb1\u3002`,
+    confirmTrashBulk: (count) =>
+      `\u786e\u5b9a\u8981\u628a ${count} \u6bb5\u5bf9\u8bdd\u79fb\u5230\u5783\u573e\u7bb1\u5417\uff1f\n\n\u4f1a\u5c3d\u91cf\u628a\u672c\u5730\u5bf9\u8bdd\u6587\u4ef6\u79fb\u5165\u7cfb\u7edf\u5783\u573e\u7bb1\uff0c\u5e76\u4ece\u5f53\u524d\u5217\u8868\u79fb\u9664\u3002`,
+    trashSuccessSingle: "\u5bf9\u8bdd\u5df2\u79fb\u5230\u5783\u573e\u7bb1\u3002",
+    trashSuccessBulk: (count) => `${count} \u6bb5\u5bf9\u8bdd\u5df2\u79fb\u5230\u5783\u573e\u7bb1\u3002`,
+    trashFailed: "\u79fb\u5230\u5783\u573e\u7bb1\u5931\u8d25",
     migrate: "迁移",
     delete: "删除",
     helpHowItWorks: "了解后台工作方式",
@@ -750,6 +838,7 @@ function WindowButtonIcon({
     | "collapseAll"
     | "restoreExpansion"
     | "organize"
+    | "bulkSelect"
     | "chevron";
 }) {
   if (type === "minimize") {
@@ -807,6 +896,17 @@ function WindowButtonIcon({
     );
   }
 
+  if (type === "bulkSelect") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <rect x="3" y="3" width="4" height="4" rx="0.8" />
+        <path d="M9 5h4" />
+        <rect x="3" y="9" width="4" height="4" rx="0.8" />
+        <path d="M9 11h4" />
+      </svg>
+    );
+  }
+
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true">
       <path d="M6 4l4 4-4 4" />
@@ -828,6 +928,9 @@ function App() {
   const [listLoading, setListLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
+  const [bulkSelectionMode, setBulkSelectionMode] = useState(false);
+  const [selectedConversationKeys, setSelectedConversationKeys] = useState<string[]>([]);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const [memoryLoading, setMemoryLoading] = useState(false);
   const [repoMemoryHealth, setRepoMemoryHealth] = useState<RepoMemoryHealth | null>(null);
   const [lastLocalHistoryImportReport, setLastLocalHistoryImportReport] =
@@ -877,7 +980,7 @@ function App() {
   const repoScanActiveCountRef = useRef(0);
   const autoBootstrapAttemptedReposRef = useRef<Record<string, true>>({});
   const globalHistoryImportAttemptedRef = useRef(false);
-  const availableHandoffTargets = ["claude", "codex", "gemini"].filter(
+  const availableHandoffTargets = ["claude", "codex", "gemini", "opencode"].filter(
     (agent) => agent !== selectedAgent,
   );
 
@@ -931,7 +1034,10 @@ function App() {
 
   useEffect(() => {
     setSelectedConversation(null);
+    setShowSettings(false);
     setCopyState({ target: null, status: "idle" });
+    setBulkSelectionMode(false);
+    setSelectedConversationKeys([]);
     setActivePage("continue");
     setHistoryView("conversations");
   }, [selectedAgent]);
@@ -939,6 +1045,11 @@ function App() {
   useEffect(() => {
     void loadConversations(searchQuery, selectedAgent);
   }, [searchQuery, selectedAgent]);
+
+  useEffect(() => {
+    const availableKeys = new Set(conversations.map(getConversationKey));
+    setSelectedConversationKeys((current) => current.filter((key) => availableKeys.has(key)));
+  }, [conversations]);
 
   useEffect(() => {
     setCopyState({ target: null, status: "idle" });
@@ -1226,6 +1337,7 @@ function App() {
     if (id !== activeConversationIdRef.current) {
       setBootstrapReadyConversationId(null);
     }
+    setShowSettings(false);
     setDetailLoading(true);
     try {
       const result = await invoke<Conversation>("read_conversation", {
@@ -1269,6 +1381,62 @@ function App() {
     }
   };
 
+  const moveConversationsToTrash = async (
+    targets: Array<
+      Pick<ConversationSummary, "id" | "source_agent" | "summary"> |
+        Pick<Conversation, "id" | "source_agent" | "summary">
+    >,
+  ) => {
+    if (targets.length === 0) {
+      return;
+    }
+
+    const isBulk = targets.length > 1;
+    const confirmMessage = isBulk
+      ? shell.confirmTrashBulk(targets.length)
+      : shell.confirmTrashSingle(targets[0].summary || targets[0].id);
+    if (!confirm(confirmMessage)) {
+      return;
+    }
+
+    const deletingSelectedConversation = selectedConversation
+      ? targets.some((conversation) => conversation.id === selectedConversation.id)
+      : false;
+
+    if (isBulk) {
+      setBulkDeleting(true);
+    } else {
+      setDeletingConversationId(targets[0].id);
+    }
+    if (deletingSelectedConversation) {
+      setDetailLoading(true);
+    }
+    try {
+      for (const conversation of targets) {
+        await invoke("trash_conversation", {
+          agent: conversation.source_agent || selectedAgent,
+          id: conversation.id,
+        });
+      }
+      alert(isBulk ? shell.trashSuccessBulk(targets.length) : shell.trashSuccessSingle);
+      if (deletingSelectedConversation) {
+        setSelectedConversation(null);
+      }
+      setSelectedConversationKeys([]);
+      setBulkSelectionMode(false);
+      await loadConversations();
+    } catch (error) {
+      console.error("Failed to move conversation to Trash:", error);
+      alert(shell.trashFailed);
+    } finally {
+      setDeletingConversationId(null);
+      setBulkDeleting(false);
+      if (deletingSelectedConversation) {
+        setDetailLoading(false);
+      }
+    }
+  };
+
   const handleDeleteConversation = async (
     conversation: Pick<ConversationSummary, "id" | "source_agent" | "summary"> | Pick<Conversation, "id" | "source_agent" | "summary"> | null =
       selectedConversation,
@@ -1277,35 +1445,7 @@ function App() {
       return;
     }
 
-    const isDeletingSelectedConversation = selectedConversation?.id === conversation.id;
-    const confirmMessage = `确定要删除这段对话吗？\n\n"${conversation.summary || conversation.id}"\n\n此操作不可撤销。`;
-    if (!confirm(confirmMessage)) {
-      return;
-    }
-
-    setDeletingConversationId(conversation.id);
-    if (isDeletingSelectedConversation) {
-      setDetailLoading(true);
-    }
-    try {
-      await invoke("delete_conversation", {
-        agent: conversation.source_agent || selectedAgent,
-        id: conversation.id,
-      });
-      alert("对话已删除");
-      if (isDeletingSelectedConversation) {
-        setSelectedConversation(null);
-      }
-      await loadConversations();
-    } catch (error) {
-      console.error("Failed to delete conversation:", error);
-      alert("删除失败");
-    } finally {
-      setDeletingConversationId(null);
-      if (isDeletingSelectedConversation) {
-        setDetailLoading(false);
-      }
-    }
+    await moveConversationsToTrash([conversation]);
   };
 
   const handleDelete = async () => {
@@ -1710,6 +1850,26 @@ function App() {
     });
   }, [projectFilters, sortedConversations]);
 
+  const selectedConversationKeySet = useMemo(
+    () => new Set(selectedConversationKeys),
+    [selectedConversationKeys],
+  );
+
+  const selectedConversationsForBulkAction = useMemo(
+    () =>
+      filteredConversations.filter((conversation) =>
+        selectedConversationKeySet.has(getConversationKey(conversation)),
+      ),
+    [filteredConversations, selectedConversationKeySet],
+  );
+
+  const selectedConversationCount = selectedConversationsForBulkAction.length;
+  const allVisibleConversationsSelected =
+    filteredConversations.length > 0 &&
+    filteredConversations.every((conversation) =>
+      selectedConversationKeySet.has(getConversationKey(conversation)),
+    );
+
   const projectConversations = useMemo(
     () => filteredConversations.filter(isProjectConversation),
     [filteredConversations],
@@ -1976,6 +2136,44 @@ function App() {
     setCollapsedSnapshot(null);
   };
 
+  const handleToggleBulkSelectionMode = () => {
+    setShowOrganizeMenu(false);
+    setBulkSelectionMode((current) => {
+      if (current) {
+        setSelectedConversationKeys([]);
+      }
+      return !current;
+    });
+  };
+
+  const handleToggleConversationSelection = (
+    conversation: Pick<ConversationSummary, "id" | "source_agent">,
+  ) => {
+    const key = getConversationKey(conversation);
+    setSelectedConversationKeys((current) =>
+      current.includes(key)
+        ? current.filter((item) => item !== key)
+        : [...current, key],
+    );
+  };
+
+  const handleSelectVisibleConversations = () => {
+    const visibleKeys = filteredConversations.map(getConversationKey);
+    setSelectedConversationKeys((current) => {
+      const next = new Set(current);
+      visibleKeys.forEach((key) => next.add(key));
+      return Array.from(next);
+    });
+  };
+
+  const handleClearConversationSelection = () => {
+    setSelectedConversationKeys([]);
+  };
+
+  const handleBulkTrash = async () => {
+    await moveConversationsToTrash(selectedConversationsForBulkAction);
+  };
+
   const renderConversationRow = (
     conversation: ConversationSummary,
     extraClassName = "",
@@ -1983,16 +2181,35 @@ function App() {
     const title = normalizeConversationTitle(conversation.summary) || conversation.id;
     const visibleTitle = truncateSidebarTitle(title);
     const isSelected = selectedConversation?.id === conversation.id;
+    const conversationKey = getConversationKey(conversation);
+    const isBulkSelected = selectedConversationKeySet.has(conversationKey);
 
     return (
       <div
         key={`${conversation.project_dir}-${conversation.id}`}
-        className={`conversation-item ${isSelected ? "selected" : ""} ${extraClassName}`.trim()}
+        className={`conversation-item ${isSelected ? "selected" : ""} ${
+          bulkSelectionMode ? "selection-mode" : ""
+        } ${isBulkSelected ? "is-bulk-selected" : ""} ${extraClassName}`.trim()}
       >
+        {bulkSelectionMode ? (
+          <label className="conversation-item-checkbox">
+            <input
+              type="checkbox"
+              aria-label={`${shell.selectConversation} ${title}`}
+              checked={isBulkSelected}
+              onChange={() => handleToggleConversationSelection(conversation)}
+            />
+            <span aria-hidden="true"></span>
+          </label>
+        ) : null}
         <button
           type="button"
           className="conversation-item-select"
-          onClick={() => void loadConversationDetail(conversation.id)}
+          onClick={() =>
+            bulkSelectionMode
+              ? handleToggleConversationSelection(conversation)
+              : void loadConversationDetail(conversation.id)
+          }
         >
           <div className="conversation-item-row">
             <div className="conversation-item-main">
@@ -2006,19 +2223,21 @@ function App() {
             <div className="conversation-item-time">{formatDistanceToNow(conversation.updated_at)}</div>
           </div>
         </button>
-        <button
-          type="button"
-          className="conversation-item-delete"
-          aria-label={`${shell.delete} ${title}`}
-          title={shell.delete}
-          disabled={deletingConversationId === conversation.id}
-          onClick={(event) => {
-            event.stopPropagation();
-            void handleDeleteConversation(conversation);
-          }}
-        >
-          {shell.delete}
-        </button>
+        {!bulkSelectionMode ? (
+          <button
+            type="button"
+            className="conversation-item-delete"
+            aria-label={`${shell.delete} ${title}`}
+            title={shell.delete}
+            disabled={deletingConversationId === conversation.id}
+            onClick={(event) => {
+              event.stopPropagation();
+              void handleDeleteConversation(conversation);
+            }}
+          >
+            {shell.delete}
+          </button>
+        ) : null}
       </div>
     );
   };
@@ -2058,7 +2277,9 @@ function App() {
       return (
         <div className="page-layout page-layout-empty">
           <div className="empty-state empty-state-page quiet-empty-state">
-            <div className="empty-state-icon">○</div>
+            <div className="empty-state-icon brand-empty-icon" aria-hidden="true">
+              <img src={brandIcon} alt="" />
+            </div>
             <h1>{shell.chooseConversation}</h1>
             <div className="empty-state-text">{shell.noProgressBody}</div>
           </div>
@@ -2819,7 +3040,7 @@ function App() {
             </div>
             <div className="meta-block">
               <span className="meta-label">{shell.configLocations}</span>
-              <span className="meta-value">~/.codex/config.toml</span>
+              <span className="meta-value">{getAgentConfigLocation(selectedAgent)}</span>
             </div>
             <div className="meta-block">
               <span className="meta-label">{shell.relatedPaths}</span>
@@ -3126,7 +3347,9 @@ function App() {
     if (!selectedConversation) {
       return (
         <div className="conversation-empty-state">
-          <div className="empty-state-icon">○</div>
+          <div className="empty-state-icon brand-empty-icon" aria-hidden="true">
+            <img src={brandIcon} alt="" />
+          </div>
           <h1>{shell.chooseConversation}</h1>
           <div className="empty-state-text">{shell.noProgressBody}</div>
         </div>
@@ -3293,6 +3516,73 @@ function App() {
     }, 0);
   };
 
+  const renderSettingsPanel = () => (
+    <SettingsPanel
+      open={showSettings}
+      title={t("settings.title")}
+      closeLabel={locale === "en" ? "Back" : "返回"}
+      languageLabel={t("settings.language")}
+      locale={appSettings.locale}
+      autoCheckUpdates={appSettings.autoCheckUpdates}
+      autoCheckLabel={t("settings.autoCheck")}
+      checkUpdatesLabel={t("settings.checkUpdates")}
+      checkingLabel={t("settings.checking")}
+      upToDateLabel={t("settings.upToDate")}
+      updateAvailablePrefix={t("settings.updateAvailablePrefix")}
+      installUpdateLabel={t("settings.updateNow")}
+      installingLabel={t("settings.installing")}
+      updateState={updateState}
+      syncSettings={appSettings.sync}
+      syncCopy={syncCopy}
+      onClose={() => setShowSettings(false)}
+      onLocaleChange={(nextLocale: Locale) => {
+        setLocale(nextLocale);
+        const nextSettings = { ...appSettings, locale: nextLocale };
+        setAppSettings(nextSettings);
+      }}
+      onAutoCheckChange={(autoCheckUpdates: boolean) => {
+        const nextSettings = updateSettings({ autoCheckUpdates });
+        setAppSettings(nextSettings);
+      }}
+      onSyncSettingsChange={(patch) => {
+        const nextSettings = updateSettings({
+          sync: {
+            ...appSettings.sync,
+            ...patch,
+          },
+        });
+        setAppSettings(nextSettings);
+      }}
+      onVerifyWebDavServer={handleVerifyWebDavServer}
+      onSyncWebDavNow={handleSyncWebDavNow}
+      onRunUpgradeReadinessCheck={handleRunUpgradeReadinessCheck}
+      onLoadWebDavPassword={loadWebDavPassword}
+      onSaveWebDavPassword={({ username, password }) => saveWebDavPassword(username, password)}
+      onCheckUpdates={async () => {
+        setUpdateState({ kind: "checking" });
+        try {
+          const nextState = await runUpdateCheck();
+          setUpdateState(nextState);
+        } catch {
+          setUpdateState({ kind: "error", message: t("settings.updateError") });
+        }
+      }}
+      onInstallUpdate={async () => {
+        if (updateState.kind !== "available") {
+          return;
+        }
+
+        setUpdateState({ kind: "installing", version: updateState.version });
+        try {
+          const nextState = await installAvailableUpdate(updateState.version);
+          setUpdateState(nextState);
+        } catch {
+          setUpdateState({ kind: "error", message: t("settings.updateError") });
+        }
+      }}
+    />
+  );
+
   return (
     <div className={`app-shell ${isWindowFilled ? "is-window-filled" : ""}`}>
       <header className="app-topbar" data-tauri-drag-region="true" onMouseDown={handleTopbarMouseDown}>
@@ -3357,6 +3647,13 @@ function App() {
                 >
                   Gemini
                 </button>
+                <button
+                  type="button"
+                  className={`agent-tab ${selectedAgent === "opencode" ? "active" : ""}`}
+                  onClick={() => setSelectedAgent("opencode")}
+                >
+                  OpenCode
+                </button>
               </div>
 
               <input
@@ -3401,6 +3698,18 @@ function App() {
                     <WindowButtonIcon type="organize" />
                     <span className="sidebar-action-tooltip" aria-hidden="true">
                       {shell.openOrganizer}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`icon-button sidebar-action-button ${bulkSelectionMode ? "is-active" : ""}`}
+                    aria-label={bulkSelectionMode ? shell.cancelBulkSelect : shell.bulkSelect}
+                    title={bulkSelectionMode ? shell.cancelBulkSelect : shell.bulkSelect}
+                    onClick={handleToggleBulkSelectionMode}
+                  >
+                    <WindowButtonIcon type="bulkSelect" />
+                    <span className="sidebar-action-tooltip" aria-hidden="true">
+                      {bulkSelectionMode ? shell.cancelBulkSelect : shell.bulkSelect}
                     </span>
                   </button>
                   {showOrganizeMenu && (
@@ -3472,6 +3781,42 @@ function App() {
                 </div>
               ) : null}
 
+              {bulkSelectionMode ? (
+                <div
+                  className="bulk-selection-bar"
+                  role="toolbar"
+                  aria-label={shell.bulkSelectionToolbar}
+                >
+                  <span className="bulk-selection-count">
+                    {shell.selectedCount(selectedConversationCount)}
+                  </span>
+                  <button
+                    type="button"
+                    className="bulk-selection-action"
+                    onClick={handleSelectVisibleConversations}
+                    disabled={allVisibleConversationsSelected || filteredConversations.length === 0}
+                  >
+                    {shell.selectVisible}
+                  </button>
+                  <button
+                    type="button"
+                    className="bulk-selection-action"
+                    onClick={handleClearConversationSelection}
+                    disabled={selectedConversationCount === 0 || bulkDeleting}
+                  >
+                    {shell.clearSelection}
+                  </button>
+                  <button
+                    type="button"
+                    className="bulk-selection-action danger"
+                    onClick={() => void handleBulkTrash()}
+                    disabled={selectedConversationCount === 0 || bulkDeleting}
+                  >
+                    {shell.moveSelectedToTrash(selectedConversationCount)}
+                  </button>
+                </div>
+              ) : null}
+
               {listLoading ? (
                 <div className="loading">
                   <div className="spinner"></div>
@@ -3538,13 +3883,19 @@ function App() {
             ) : null}
           </div>
 
-          <button type="button" className="settings-row" onClick={() => setShowSettings(true)}>
+          <button
+            type="button"
+            className={`settings-row ${showSettings ? "active" : ""}`}
+            onClick={() => setShowSettings(true)}
+          >
             {shell.settings}
           </button>
         </aside>
 
-        <main className="workspace">
-          <section className="workspace-surface">{renderWorkspace()}</section>
+        <main className={`workspace ${showSettings ? "settings-workspace" : ""}`}>
+          <section className="workspace-surface">
+            {showSettings ? renderSettingsPanel() : renderWorkspace()}
+          </section>
         </main>
       </div>
 
@@ -3593,70 +3944,6 @@ function App() {
         />
       ) : null}
 
-      <SettingsPanel
-        open={showSettings}
-        title={t("settings.title")}
-        closeLabel={t("common.close")}
-        languageLabel={t("settings.language")}
-        locale={appSettings.locale}
-        autoCheckUpdates={appSettings.autoCheckUpdates}
-        autoCheckLabel={t("settings.autoCheck")}
-        checkUpdatesLabel={t("settings.checkUpdates")}
-        checkingLabel={t("settings.checking")}
-        upToDateLabel={t("settings.upToDate")}
-        updateAvailablePrefix={t("settings.updateAvailablePrefix")}
-        installUpdateLabel={t("settings.updateNow")}
-        installingLabel={t("settings.installing")}
-        updateState={updateState}
-        syncSettings={appSettings.sync}
-        syncCopy={syncCopy}
-        onClose={() => setShowSettings(false)}
-        onLocaleChange={(nextLocale: Locale) => {
-          setLocale(nextLocale);
-          const nextSettings = { ...appSettings, locale: nextLocale };
-          setAppSettings(nextSettings);
-        }}
-        onAutoCheckChange={(autoCheckUpdates: boolean) => {
-          const nextSettings = updateSettings({ autoCheckUpdates });
-          setAppSettings(nextSettings);
-        }}
-        onSyncSettingsChange={(patch) => {
-          const nextSettings = updateSettings({
-            sync: {
-              ...appSettings.sync,
-              ...patch,
-            },
-          });
-          setAppSettings(nextSettings);
-        }}
-        onVerifyWebDavServer={handleVerifyWebDavServer}
-        onSyncWebDavNow={handleSyncWebDavNow}
-        onRunUpgradeReadinessCheck={handleRunUpgradeReadinessCheck}
-        onLoadWebDavPassword={loadWebDavPassword}
-        onSaveWebDavPassword={({ username, password }) => saveWebDavPassword(username, password)}
-        onCheckUpdates={async () => {
-          setUpdateState({ kind: "checking" });
-          try {
-            const nextState = await runUpdateCheck();
-            setUpdateState(nextState);
-          } catch {
-            setUpdateState({ kind: "error", message: t("settings.updateError") });
-          }
-        }}
-        onInstallUpdate={async () => {
-          if (updateState.kind !== "available") {
-            return;
-          }
-
-          setUpdateState({ kind: "installing", version: updateState.version });
-          try {
-            const nextState = await installAvailableUpdate(updateState.version);
-            setUpdateState(nextState);
-          } catch {
-            setUpdateState({ kind: "error", message: t("settings.updateError") });
-          }
-        }}
-      />
     </div>
   );
 }

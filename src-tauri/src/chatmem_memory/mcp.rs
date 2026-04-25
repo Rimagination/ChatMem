@@ -235,7 +235,7 @@ impl ChatMemMcpService {
 
     #[tool(
         name = "import_all_local_history",
-        description = "Import all available Claude, Codex, and Gemini local conversations into the local history index. Use this after first install, after changing history locations, or when recall misses because history has not been imported."
+        description = "Import all available Claude, Codex, Gemini, and OpenCode local conversations into the local history index. Use this after first install, after changing history locations, or when recall misses because history has not been imported."
     )]
     async fn import_all_local_history(
         &self,

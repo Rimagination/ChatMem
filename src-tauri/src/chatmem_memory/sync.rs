@@ -2,6 +2,7 @@ use agentswap_claude::ClaudeAdapter;
 use agentswap_codex::CodexAdapter;
 use agentswap_core::{adapter::AgentAdapter, types::Conversation};
 use agentswap_gemini::GeminiAdapter;
+use agentswap_opencode::OpenCodeAdapter;
 use rusqlite::Connection;
 use std::collections::{BTreeSet, HashMap};
 use walkdir::WalkDir;
@@ -18,6 +19,7 @@ pub fn build_resume_command(agent: &str, id: &str) -> Option<String> {
         "claude" => Some(format!("claude --resume {}", id)),
         "codex" => Some(format!("codex resume {}", id)),
         "gemini" => Some(format!("gemini --resume {}", id)),
+        "opencode" => Some(format!("opencode --session {}", id)),
         _ => None,
     }
 }
@@ -83,11 +85,21 @@ pub fn resolve_gemini_storage_path(id: &str) -> Option<String> {
         })
 }
 
+pub fn resolve_opencode_storage_path(id: &str) -> Option<String> {
+    let adapter = OpenCodeAdapter::new();
+    if !adapter.is_available() {
+        return None;
+    }
+    adapter.read_conversation(id).ok()?;
+    Some(adapter.db_path().display().to_string())
+}
+
 pub fn resolve_storage_path(agent: &str, id: &str) -> Option<String> {
     match agent {
         "claude" => resolve_claude_storage_path(id),
         "codex" => resolve_codex_storage_path(id),
         "gemini" => resolve_gemini_storage_path(id),
+        "opencode" => resolve_opencode_storage_path(id),
         _ => None,
     }
 }
@@ -97,6 +109,7 @@ fn get_adapter(agent: &str) -> Option<Box<dyn AgentAdapter>> {
         "claude" => Some(Box::new(ClaudeAdapter::new())),
         "codex" => Some(Box::new(CodexAdapter::new())),
         "gemini" => Some(Box::new(GeminiAdapter::new())),
+        "opencode" => Some(Box::new(OpenCodeAdapter::new())),
         _ => None,
     }
 }
@@ -190,7 +203,7 @@ pub fn sync_repo_conversations(store: &MemoryStore, repo_root: &str) -> anyhow::
 
 pub fn import_all_local_history(store: &MemoryStore) -> anyhow::Result<LocalHistoryImportReport> {
     let mut adapters = Vec::new();
-    for agent in ["claude", "codex", "gemini"] {
+    for agent in ["claude", "codex", "gemini", "opencode"] {
         let Some(adapter) = get_adapter(agent) else {
             continue;
         };
@@ -312,7 +325,7 @@ pub fn scan_repo_conversations(
     let mut source_agent_counts: HashMap<String, usize> = HashMap::new();
     let mut unmatched_project_root_counts: HashMap<(String, String), usize> = HashMap::new();
 
-    for agent in ["claude", "codex", "gemini"] {
+    for agent in ["claude", "codex", "gemini", "opencode"] {
         let Some(adapter) = get_adapter(agent) else {
             continue;
         };
@@ -587,6 +600,7 @@ mod tests {
                 AgentKind::Claude => "Claude",
                 AgentKind::Codex => "Codex",
                 AgentKind::Gemini => "Gemini",
+                AgentKind::OpenCode => "OpenCode",
             }
         }
 

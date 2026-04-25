@@ -31,6 +31,7 @@ use agentswap_codex::CodexAdapter;
 use agentswap_core::adapter::AgentAdapter;
 use agentswap_core::types::{AgentKind, Conversation, ConversationSummary};
 use agentswap_gemini::GeminiAdapter;
+use agentswap_opencode::OpenCodeAdapter;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ConversationSummaryResponse {
@@ -171,6 +172,7 @@ fn get_adapter(agent: &str) -> Result<Box<dyn AgentAdapter>, String> {
         "claude" => Ok(Box::new(ClaudeAdapter::new())),
         "codex" => Ok(Box::new(CodexAdapter::new())),
         "gemini" => Ok(Box::new(GeminiAdapter::new())),
+        "opencode" => Ok(Box::new(OpenCodeAdapter::new())),
         _ => Err(format!("Unknown agent: {}", agent)),
     }
 }
@@ -180,6 +182,7 @@ fn agent_key(agent: &AgentKind) -> &'static str {
         AgentKind::Claude => "claude",
         AgentKind::Codex => "codex",
         AgentKind::Gemini => "gemini",
+        AgentKind::OpenCode => "opencode",
     }
 }
 
@@ -905,7 +908,7 @@ async fn sync_webdav_now(
 
     let mut uploads = Vec::new();
 
-    for agent in ["claude", "codex", "gemini"] {
+    for agent in ["claude", "codex", "gemini", "opencode"] {
         let adapter = get_adapter(agent)?;
         if !adapter.is_available() {
             continue;
@@ -961,7 +964,7 @@ async fn sync_webdav_now(
     let mut manifest_entries = Vec::new();
     let mut uploaded_count = 0usize;
 
-    for agent in ["claude", "codex", "gemini"] {
+    for agent in ["claude", "codex", "gemini", "opencode"] {
         let agent_url = build_webdav_child_url(&conversations_url, &[agent.to_string()], true)?;
         ensure_webdav_collection(&client, &agent_url, &username, &password).await?;
 
@@ -1104,6 +1107,11 @@ async fn migrate_conversation(
 
 #[command]
 async fn delete_conversation(agent: String, id: String) -> Result<(), String> {
+    trash_conversation(agent, id).await
+}
+
+#[command]
+async fn trash_conversation(agent: String, id: String) -> Result<(), String> {
     let adapter = get_adapter(&agent)?;
     adapter
         .delete_conversation(&id)
@@ -1380,6 +1388,7 @@ fn main() {
             read_conversation,
             migrate_conversation,
             delete_conversation,
+            trash_conversation,
             check_agent_available,
             get_agent_card,
             load_app_settings,

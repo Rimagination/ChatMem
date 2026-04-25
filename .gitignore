@@ -5,6 +5,7 @@ dist-portable/
 .playwright-cli/
 output/
 src-tauri/target/
+target/
 .worktrees/
 .superpowers/
 __pycache__/

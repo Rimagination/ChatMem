@@ -1,21 +1,22 @@
 import { useState } from "react";
 
-type AgentType = "claude" | "codex" | "gemini";
+type AgentType = "claude" | "codex" | "gemini" | "opencode";
+type MigrationTargetAgent = Exclude<AgentType, "opencode">;
 type MigrateMode = "copy" | "cut";
 
 interface MigrateModalProps {
   sourceAgent: AgentType;
-  onMigrate: (targetAgent: AgentType, mode: MigrateMode) => void;
+  onMigrate: (targetAgent: MigrationTargetAgent, mode: MigrateMode) => void;
   onClose: () => void;
 }
 
 function MigrateModal({ sourceAgent, onMigrate, onClose }: MigrateModalProps) {
-  const [targetAgent, setTargetAgent] = useState<AgentType>(
+  const [targetAgent, setTargetAgent] = useState<MigrationTargetAgent>(
     sourceAgent === "claude" ? "codex" : "claude"
   );
   const [mode, setMode] = useState<MigrateMode>("copy");
 
-  const agents: { value: AgentType; label: string }[] = [
+  const agents: { value: MigrationTargetAgent; label: string }[] = [
     { value: "claude", label: "Claude Code" },
     { value: "codex", label: "Codex CLI" },
     { value: "gemini", label: "Gemini CLI" },
@@ -32,7 +33,7 @@ function MigrateModal({ sourceAgent, onMigrate, onClose }: MigrateModalProps) {
             <label>目标 Agent：</label>
             <select
               value={targetAgent}
-              onChange={(e) => setTargetAgent(e.target.value as AgentType)}
+              onChange={(e) => setTargetAgent(e.target.value as MigrationTargetAgent)}
             >
               {availableTargets.map((agent) => (
                 <option key={agent.value} value={agent.value}>

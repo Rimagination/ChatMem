@@ -274,20 +274,27 @@ button {
 
 .agent-tabs {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
-  padding: 3px;
+  padding: 6px;
   background: rgba(22, 32, 24, 0.05);
-  border-radius: 999px;
+  border-radius: 24px;
 }
 
 .agent-tab {
+  min-width: 0;
+  min-height: 38px;
   appearance: none;
   border: 0;
   background: transparent;
   color: var(--text-secondary);
-  border-radius: 999px;
-  padding: 8px 10px;
+  border-radius: 18px;
+  padding: 0 10px;
+  font-size: 15px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: pointer;
   transition:
     background var(--transition-base),
@@ -629,6 +636,58 @@ button {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
+.conversation-item.selection-mode {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+}
+
+.conversation-item.is-bulk-selected {
+  background: rgba(58, 143, 100, 0.1);
+  border-color: rgba(58, 143, 100, 0.24);
+}
+
+.conversation-item-checkbox {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 42px;
+  cursor: pointer;
+}
+
+.conversation-item-checkbox input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.conversation-item-checkbox span {
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  border: 1px solid rgba(22, 32, 24, 0.22);
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.86);
+  transition:
+    background var(--transition-base),
+    border-color var(--transition-base),
+    box-shadow var(--transition-base);
+}
+
+.conversation-item-checkbox input:checked + span {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow:
+    inset 0 0 0 4px var(--accent),
+    inset 0 0 0 6px #ffffff;
+}
+
+.conversation-item-checkbox:focus-within span {
+  outline: 2px solid rgba(58, 143, 100, 0.28);
+  outline-offset: 2px;
+}
+
 .conversation-item-select {
   width: 100%;
   min-width: 0;
@@ -640,6 +699,10 @@ button {
   display: block;
   padding: 10px 12px;
   text-align: left;
+}
+
+.conversation-item.selection-mode .conversation-item-select {
+  padding-left: 0;
 }
 
 .conversation-item-delete {
@@ -685,6 +748,57 @@ button {
 .conversation-item-delete:disabled {
   cursor: wait;
   opacity: 0.55;
+}
+
+.bulk-selection-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 6px;
+  border: 1px solid rgba(58, 143, 100, 0.16);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.bulk-selection-count {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.bulk-selection-action {
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.bulk-selection-action:hover,
+.bulk-selection-action:focus-visible {
+  color: var(--text-primary);
+  border-color: rgba(58, 143, 100, 0.24);
+  outline: none;
+}
+
+.bulk-selection-action.danger {
+  color: var(--danger);
+  border-color: rgba(190, 67, 67, 0.22);
+}
+
+.bulk-selection-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .conversation-item-row {
@@ -733,6 +847,11 @@ button {
   color: var(--text-primary);
 }
 
+.settings-row.active {
+  background: rgba(237, 248, 241, 0.9);
+  color: var(--accent-strong);
+}
+
 .workspace {
   min-width: 0;
   min-height: 0;
@@ -754,6 +873,12 @@ button {
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-surface);
+}
+
+.settings-workspace .workspace-surface {
+  background:
+    linear-gradient(180deg, rgba(248, 252, 246, 0.98), rgba(255, 255, 255, 0.96)),
+    var(--bg-surface);
 }
 
 .app-shell.is-window-filled .workspace-surface {
@@ -2301,6 +2426,26 @@ button {
   font-size: 24px;
 }
 
+.brand-empty-icon {
+  width: 92px;
+  height: 92px;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  box-shadow: none;
+}
+
+.brand-empty-icon img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}
+
+.conversation-empty-state .brand-empty-icon {
+  margin-bottom: 2px;
+}
+
 .empty-state-text {
   max-width: 340px;
 }
@@ -2599,20 +2744,11 @@ button {
   font-size: 12.5px;
 }
 
-.settings-overlay,
 .modal-overlay {
   position: fixed;
   inset: 0;
   display: flex;
   z-index: 1000;
-}
-
-.settings-overlay {
-  align-items: flex-end;
-  justify-content: flex-start;
-  padding: 0 0 68px 18px;
-  background: transparent;
-  backdrop-filter: none;
 }
 
 .settings-panel,
@@ -2639,6 +2775,26 @@ button {
     0 1px 0 rgba(255, 255, 255, 0.72) inset;
   backdrop-filter: blur(24px) saturate(1.22);
   animation: settings-card-in 150ms ease-out;
+}
+
+.settings-page {
+  width: min(1040px, 100%);
+  max-height: none;
+  min-height: 100%;
+  padding: 30px 42px 44px;
+  margin: 0 auto;
+  gap: 18px;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  animation: none;
+}
+
+.settings-page * {
+  min-width: 0;
 }
 
 .settings-panel::-webkit-scrollbar {
@@ -2669,9 +2825,19 @@ button {
   gap: 12px;
 }
 
+.settings-page .settings-panel-header {
+  padding-bottom: 18px;
+  border-bottom: 1px solid rgba(22, 32, 24, 0.08);
+}
+
 .settings-panel-header h3 {
   font-size: 20px;
   line-height: 1.15;
+}
+
+.settings-page .settings-panel-header h3 {
+  font-size: clamp(28px, 3.4vw, 42px);
+  line-height: 1.02;
 }
 
 .toolbar-button {
@@ -2705,10 +2871,24 @@ button {
   padding: 10px 0;
 }
 
+.settings-page .settings-section {
+  gap: 14px;
+  padding: 20px 0;
+  border-top: 1px solid rgba(22, 32, 24, 0.07);
+}
+
+.settings-page > .settings-field {
+  width: min(360px, 100%);
+}
+
 .settings-section h4 {
   margin: 0;
   color: var(--text-primary);
   font-size: 14px;
+}
+
+.settings-page .settings-section h4 {
+  font-size: 17px;
 }
 
 .settings-helper {
@@ -2724,11 +2904,71 @@ button {
   gap: 12px;
 }
 
-.settings-acknowledgements {
-  padding: 10px;
+.settings-about {
+  padding: 12px;
   border: 1px solid rgba(22, 32, 24, 0.09);
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.42);
+  background:
+    linear-gradient(135deg, rgba(240, 251, 244, 0.82), rgba(255, 255, 255, 0.72)),
+    rgba(255, 255, 255, 0.42);
+}
+
+.settings-page .settings-about {
+  padding: 20px 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.about-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.about-kicker {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.about-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.about-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid rgba(18, 132, 83, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.74);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.2;
+}
+
+.about-acknowledgements {
+  margin-top: 2px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(22, 32, 24, 0.09);
+}
+
+.about-acknowledgements summary {
+  cursor: pointer;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.about-acknowledgements[open] summary {
+  margin-bottom: 8px;
 }
 
 .acknowledgement-list {
@@ -2798,6 +3038,14 @@ button {
   background: rgba(255, 255, 255, 0.44);
 }
 
+.settings-page .webdav-settings-box {
+  width: min(780px, 100%);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
 .webdav-row {
   display: grid;
   grid-template-columns: 74px minmax(0, 1fr);
@@ -2805,14 +3053,26 @@ button {
   gap: 8px;
 }
 
+.settings-page .webdav-row {
+  grid-template-columns: 120px minmax(0, 1fr);
+}
+
 .webdav-url-row {
   grid-template-columns: 74px 84px auto minmax(120px, 1fr);
+}
+
+.settings-page .webdav-url-row {
+  grid-template-columns: 120px 92px auto minmax(180px, 1fr);
 }
 
 .webdav-field-label {
   color: var(--text-primary);
   font-size: 14px;
   text-align: right;
+}
+
+.settings-page .webdav-field-label {
+  text-align: left;
 }
 
 .protocol-select {
@@ -2845,6 +3105,10 @@ button {
   flex-wrap: wrap;
   gap: 8px;
   padding-left: 82px;
+}
+
+.settings-page .webdav-verify-row {
+  padding-left: 120px;
 }
 
 .settings-password-row {
@@ -2913,10 +3177,19 @@ button {
   background: rgba(255, 255, 255, 0.46);
 }
 
+.settings-page .settings-toggle-row {
+  width: min(560px, 100%);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
 .settings-notice {
   padding: 12px 14px;
   border-radius: var(--radius-md);
   background: rgba(22, 32, 24, 0.04);
+  overflow-wrap: anywhere;
 }
 
 .settings-notice.is-success {
@@ -3103,6 +3376,14 @@ button {
     padding: 18px;
   }
 
+  .settings-page {
+    padding: 22px 18px 30px;
+  }
+
+  .settings-page .settings-panel-header {
+    align-items: flex-start;
+  }
+
   .meta-strip,
   .conversation-toolbar,
   .task-panel-header,
@@ -3139,6 +3420,15 @@ button {
 
   .webdav-verify-row {
     padding-left: 0;
+  }
+
+  .settings-page .webdav-suffix {
+    grid-column: auto;
+    margin-top: 0;
+  }
+
+  .settings-page .settings-section-heading {
+    display: grid;
   }
 
   .download-row {

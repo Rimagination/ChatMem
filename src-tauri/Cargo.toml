@@ -1,6 +1,6 @@
 [package]
 name = "chatmem"
-version = "1.0.9"
+version = "1.0.12"
 default-run = "chatmem"
 description = "ChatMem - Your AI conversations, forever remembered"
 authors = ["ChatMem"]
@@ -31,6 +31,7 @@ agentswap-core = { path = "../crates/agentswap-core" }
 agentswap-claude = { path = "../crates/agentswap-claude" }
 agentswap-codex = { path = "../crates/agentswap-codex" }
 agentswap-gemini = { path = "../crates/agentswap-gemini" }
+agentswap-opencode = { path = "../crates/agentswap-opencode" }
 
 [features]
 default = ["custom-protocol"]

@@ -50,10 +50,6 @@ macOS：
 - 简体中文 / English 切换
 - 应用内检查更新
 
-## 设计参考与致谢
-
-ChatMem 参考了许多记忆、agent、知识库和代码 Wiki 项目的思路，但不是任何单一项目的复刻。相关方向包括 mem0、Letta / MemGPT、Zep、Cognee、LangGraph / LangMem、LLM Wiki / DeepWiki / CodeWiki，以及 OpenAI / Claude 原生记忆。完整说明见 [ChatMem Product Strategy](./docs/CHATMEM_PRODUCT_STRATEGY.md#设计参考与致谢)。
-
 ## ChatMem MCP
 
 ChatMem 现在可以作为 Codex 的本地 MCP 记忆服务使用，用来给仓库工作流提供：
@@ -105,6 +101,12 @@ Skill 是可选增强：MCP 提供工具，skill 告诉 agent 什么时候应该
 ```text
 Use ChatMem to load repo memory for D:\your\repo, then continue from the latest checkpoint or handoff if one exists.
 ```
+
+## 关于 ChatMem
+
+ChatMem 是本地优先的 AI 编程对话记忆工具。应用内的“设置 -> 关于 ChatMem”会放置产品说明、设计参考与致谢，避免把低频信息混进主要工作流。
+
+ChatMem 参考了许多记忆、agent、知识库和代码 Wiki 项目的思路，但不是任何单一项目的复刻。完整设计说明见 [ChatMem Product Strategy](./docs/CHATMEM_PRODUCT_STRATEGY.md#设计参考与致谢)。
 
 ## 本地开发
 

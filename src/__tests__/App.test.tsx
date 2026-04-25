@@ -271,9 +271,30 @@ describe("App", () => {
     expect(screen.getByText("Projects")).toBeTruthy();
     expect(screen.queryByText("Chats")).toBeNull();
     expect(screen.getByRole("heading", { name: "Choose a conversation" })).toBeTruthy();
+    expect(document.querySelector(".conversation-empty-state .brand-empty-icon img")).toBeTruthy();
   });
 
-  it("keeps delete available on each sidebar conversation", async () => {
+  it("opens settings as a full workspace page instead of a floating panel", async () => {
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+    );
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+
+    const settingsPanel = document.querySelector(".settings-panel");
+    expect(settingsPanel?.closest(".workspace-surface")).toBeTruthy();
+    expect(document.querySelector(".settings-overlay")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Choose a conversation" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByRole("heading", { name: "Choose a conversation" })).toBeTruthy();
+  });
+
+  it("confirms before moving one sidebar conversation to trash", async () => {
     localStorage.setItem(
       "chatmem.settings",
       JSON.stringify({ locale: "en", autoCheckUpdates: false }),
@@ -288,9 +309,39 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("Debug session"));
-      expect(mockInvoke).toHaveBeenCalledWith("delete_conversation", {
+      expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("Trash"));
+      expect(mockInvoke).toHaveBeenCalledWith("trash_conversation", {
         agent: "claude",
         id: "conv-001",
+      });
+    });
+  });
+
+  it("moves selected sidebar conversations to trash after one bulk confirmation", async () => {
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+    );
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select conversations" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Debug session" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Memory investigation" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Move 2 selected to Trash" }));
+
+    await waitFor(() => {
+      expect(window.confirm).toHaveBeenCalledTimes(1);
+      expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("2 conversations"));
+      expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("Trash"));
+      expect(mockInvoke).toHaveBeenCalledWith("trash_conversation", {
+        agent: "claude",
+        id: "conv-001",
+      });
+      expect(mockInvoke).toHaveBeenCalledWith("trash_conversation", {
+        agent: "claude",
+        id: "conv-002",
       });
     });
   });
@@ -456,6 +507,71 @@ describe("App", () => {
       expect(chatSection?.textContent).not.toContain("VSP project work");
       expect(chatSection?.textContent).not.toContain("Data project work");
     });
+  });
+
+  it("switches the conversation source to OpenCode", async () => {
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+    );
+    mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
+      if (command === "list_conversations") {
+        if (payload?.agent === "opencode") {
+          return [
+            {
+              id: "ses_opencode_001",
+              source_agent: "opencode",
+              project_dir: "D:/VSP/opencode-demo",
+              created_at: "2026-04-26T08:00:00Z",
+              updated_at: "2026-04-26T09:00:00Z",
+              summary: "OpenCode project memory",
+              message_count: 6,
+              file_count: 2,
+            },
+          ];
+        }
+
+        return [];
+      }
+
+      if (command === "read_conversation" && payload?.agent === "opencode") {
+        return {
+          id: "ses_opencode_001",
+          source_agent: "opencode",
+          project_dir: "D:/VSP/opencode-demo",
+          created_at: "2026-04-26T08:00:00Z",
+          updated_at: "2026-04-26T09:00:00Z",
+          summary: "OpenCode project memory",
+          storage_path: "C:/Users/demo/AppData/Local/opencode/opencode.db",
+          resume_command: "opencode --session ses_opencode_001",
+          messages: [],
+          file_changes: [],
+        };
+      }
+
+      if (
+        command === "list_memory_candidates" ||
+        command === "list_handoffs" ||
+        command === "list_checkpoints" ||
+        command === "list_runs" ||
+        command === "list_artifacts" ||
+        command === "list_episodes" ||
+        command === "list_repo_memories"
+      ) {
+        return [];
+      }
+
+      return [];
+    });
+
+    renderApp();
+
+    fireEvent.click(screen.getByRole("button", { name: "OpenCode" }));
+    await screen.findByText("OpenCode project memory");
+
+    expect(mockInvoke).toHaveBeenCalledWith("list_conversations", { agent: "opencode" });
+    fireEvent.click(screen.getByText("OpenCode project memory"));
+    expect(await screen.findByText("Current OPENCODE conversation")).toBeTruthy();
   });
 
   it("switches local history into an independent workspace view", async () => {

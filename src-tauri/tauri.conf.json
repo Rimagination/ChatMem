@@ -7,7 +7,7 @@
   },
   "package": {
     "productName": "ChatMem",
-    "version": "1.0.9"
+    "version": "1.0.12"
   },
   "tauri": {
     "allowlist": {
@@ -32,7 +32,7 @@
         "icons/icon.ico"
       ],
       "shortDescription": "Your AI conversations, forever remembered",
-      "longDescription": "ChatMem helps you manage and migrate conversations from AI coding agents like Claude, Codex, and Gemini."
+      "longDescription": "ChatMem helps you manage and migrate conversations from AI coding agents like Claude, Codex, Gemini, and OpenCode."
     },
     "security": {
       "csp": null

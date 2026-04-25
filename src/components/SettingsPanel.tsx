@@ -111,6 +111,11 @@ const ACKNOWLEDGED_SYSTEMS = [
   "OpenAI / Claude native memory",
 ];
 
+const ABOUT_CHIPS: Record<Locale, string[]> = {
+  "zh-CN": ["本地优先", "历史检索", "启动规则", "Wiki 上下文"],
+  en: ["Local-first", "History search", "Startup rules", "Wiki context"],
+};
+
 function joinServerPath(syncSettings: SyncSettings) {
   return [syncSettings.webdavHost, syncSettings.webdavPath]
     .filter(Boolean)
@@ -280,14 +285,11 @@ export default function SettingsPanel({
   }
 
   return (
-    <div className="settings-overlay" role="presentation" onClick={onClose}>
-      <section
-        className="settings-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="settings-title"
-        onClick={(event) => event.stopPropagation()}
-      >
+    <section
+      className="settings-panel settings-page"
+      role="region"
+      aria-labelledby="settings-title"
+    >
         <div className="settings-panel-header">
           <h3 id="settings-title">{title}</h3>
           <button type="button" className="toolbar-button" onClick={onClose}>
@@ -307,30 +309,50 @@ export default function SettingsPanel({
           </select>
         </label>
 
-        <section
-          className="settings-section settings-acknowledgements"
-          aria-labelledby="settings-acknowledgements-title"
-        >
-          <div>
-            <h4 id="settings-acknowledgements-title">
-              {locale === "en" ? "Acknowledgements" : "设计参考与致谢"}
-            </h4>
+        <section className="settings-section settings-about" aria-labelledby="settings-about-title">
+          <div className="about-copy">
+            <span className="about-kicker">{isEnglish ? "About" : "关于"}</span>
+            <h4 id="settings-about-title">{isEnglish ? "About ChatMem" : "关于 ChatMem"}</h4>
             <p className="settings-helper">
-              {locale === "en"
-                ? "ChatMem draws from memory, agent, and wiki systems; it is not a clone of a single project."
-                : "ChatMem 借鉴了多类记忆、Agent 和 Wiki 项目的设计，不是某一个项目的复刻。"}
+              {isEnglish
+                ? "ChatMem is a local-first memory layer for AI coding conversations."
+                : "ChatMem 是面向 AI 编程对话的本地优先记忆层。"}
+            </p>
+            <p className="settings-helper">
+              {isEnglish
+                ? "It indexes local Claude, Codex, Gemini, and OpenCode history, keeps durable startup rules small, and turns project evidence into searchable context."
+                : "它索引本机 Claude、Codex、Gemini 和 OpenCode 历史，只把稳定规则带进新任务，并把项目证据整理成可检索上下文。"}
             </p>
           </div>
-          <ul
-            className="acknowledgement-list"
-            aria-label={locale === "en" ? "Acknowledged projects" : "致谢项目"}
-          >
-            {ACKNOWLEDGED_SYSTEMS.map((system) => (
-              <li key={system} className="acknowledgement-pill">
-                {system}
-              </li>
+
+          <div className="about-chip-list" aria-label={isEnglish ? "ChatMem areas" : "ChatMem 范围"}>
+            {ABOUT_CHIPS[locale].map((chip) => (
+              <span key={chip} className="about-chip">
+                {chip}
+              </span>
             ))}
-          </ul>
+          </div>
+
+          <details className="about-acknowledgements">
+            <summary>
+              {isEnglish ? "Design references and acknowledgements" : "设计参考与致谢"}
+            </summary>
+            <p className="settings-helper">
+              {isEnglish
+                ? "These are design references, not dependencies, clones, or endorsements."
+                : "这些是设计参考，不表示依赖、复刻或由相关项目背书。"}
+            </p>
+            <ul
+              className="acknowledgement-list"
+              aria-label={isEnglish ? "Acknowledged projects" : "致谢项目"}
+            >
+              {ACKNOWLEDGED_SYSTEMS.map((system) => (
+                <li key={system} className="acknowledgement-pill">
+                  {system}
+                </li>
+              ))}
+            </ul>
+          </details>
         </section>
 
         <section className="settings-section file-sync-section" aria-labelledby="settings-sync-title">
@@ -558,6 +580,5 @@ export default function SettingsPanel({
           <p className="settings-notice is-danger">{updateState.message}</p>
         )}
       </section>
-    </div>
   );
 }

@@ -10,6 +10,7 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 
 use agentswap_core::adapter::AgentAdapter;
+use agentswap_core::files::move_path_to_trash;
 use agentswap_core::tool_mapping::map_tool;
 use agentswap_core::types::*;
 
@@ -871,8 +872,7 @@ impl AgentAdapter for ClaudeAdapter {
 
     fn delete_conversation(&self, id: &str) -> Result<()> {
         let path = self.find_session_file(id)?;
-        fs::remove_file(&path)
-            .with_context(|| format!("Failed to delete session file: {}", path.display()))?;
+        move_path_to_trash(&path)?;
         Ok(())
     }
 }

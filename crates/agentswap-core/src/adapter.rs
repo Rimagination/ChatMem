@@ -17,7 +17,7 @@ pub trait AgentAdapter {
     /// Writes a conversation into the agent's native format, returning the new id.
     fn write_conversation(&self, conv: &Conversation) -> Result<String>;
 
-    /// Deletes a conversation by its identifier.
+    /// Moves a conversation's local files to the system Trash and removes it from the agent index.
     fn delete_conversation(&self, id: &str) -> Result<()>;
 
     /// Renders a conversation as a human-readable prompt string.
