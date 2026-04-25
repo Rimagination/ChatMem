@@ -2,6 +2,12 @@
 
 ChatMem 是一个面向 Windows 和 macOS 的桌面应用，用来浏览、搜索、恢复和迁移本地 AI 编程对话记录。当前支持 Claude、Codex 和 Gemini 三类来源。
 
+更准确地说，ChatMem 是一个本地优先的 AI 编程项目记忆控制台：先把用户机器上已经存在的历史对话变成可检索资源，再把稳定知识沉淀为 Wiki、启动规则和交接包，让不同 agent 可以带着证据继续工作。
+
+产品定位、记忆分层和设计参考见：
+
+- [ChatMem Product Strategy](./docs/CHATMEM_PRODUCT_STRATEGY.md)
+
 ## 下载
 
 发布页会提供 Windows 和 macOS 包。
@@ -40,14 +46,20 @@ macOS：
 - 对话详情、工具调用和文件变更查看
 - 一键复制会话文件位置与恢复命令
 - Claude / Codex / Gemini 之间的对话迁移
+- 本地历史索引、项目 Wiki、启动规则和 agent 交接包
 - 简体中文 / English 切换
 - 应用内检查更新
+
+## 设计参考与致谢
+
+ChatMem 参考了许多记忆、agent、知识库和代码 Wiki 项目的思路，但不是任何单一项目的复刻。相关方向包括 mem0、Letta / MemGPT、Zep、Cognee、LangGraph / LangMem、LLM Wiki / DeepWiki / CodeWiki，以及 OpenAI / Claude 原生记忆。完整说明见 [ChatMem Product Strategy](./docs/CHATMEM_PRODUCT_STRATEGY.md#设计参考与致谢)。
 
 ## ChatMem MCP
 
 ChatMem 现在可以作为 Codex 的本地 MCP 记忆服务使用，用来给仓库工作流提供：
 
 - 仓库启动记忆
+- 全量本地历史导入、当前项目扫描和路径别名修复
 - 历史工作搜索
 - 记忆候选沉淀
 - agent handoff 交接包

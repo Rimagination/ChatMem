@@ -52,6 +52,11 @@ describe("Sync settings", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
 
+    expect(await screen.findByRole("heading", { name: "Acknowledgements" })).toBeTruthy();
+    expect(screen.getByText(/mem0/)).toBeTruthy();
+    expect(screen.getByText(/Letta/)).toBeTruthy();
+    expect(screen.getByText(/Zep/)).toBeTruthy();
+    expect(screen.getByText(/LLM Wiki/)).toBeTruthy();
     expect(await screen.findByRole("heading", { name: "Conversation Data Sync" })).toBeTruthy();
     expect(screen.queryByText(/Use a generic WebDAV server/)).toBeNull();
     expect(screen.queryByText(/Account details/)).toBeNull();
@@ -224,6 +229,52 @@ describe("Sync settings", () => {
       });
       expect(screen.getByText("Synced 2 files to WebDAV")).toBeTruthy();
       expect(screen.getByText("Remote folder: https://example.com/webdav/chatmem/")).toBeTruthy();
+    });
+  });
+
+  it("runs an upgrade readiness check from settings", async () => {
+    mockInvoke.mockImplementation((command: string) => {
+      if (command === "run_upgrade_readiness_check") {
+        return Promise.resolve({
+          status: "warning",
+          summary: "Upgrade check found 1 item that needs attention.",
+          checks: [
+            {
+              key: "settings",
+              label: "Native settings file",
+              status: "ok",
+              detail: "Settings file is available.",
+            },
+            {
+              key: "webdav_password",
+              label: "WebDAV password",
+              status: "warning",
+              detail: "Password is not in the OS credential store.",
+            },
+            {
+              key: "memory_store",
+              label: "Memory database",
+              status: "ok",
+              detail: "Memory database can be opened.",
+            },
+          ],
+          warnings: ["Password is not in the OS credential store."],
+        });
+      }
+      return Promise.resolve([]);
+    });
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Run upgrade check" }));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("run_upgrade_readiness_check");
+      expect(screen.getByText("Upgrade check found 1 item that needs attention.")).toBeTruthy();
+      expect(screen.getByText("Native settings file")).toBeTruthy();
+      expect(screen.getByText("WebDAV password")).toBeTruthy();
+      expect(screen.getByText("Memory database")).toBeTruthy();
     });
   });
 });

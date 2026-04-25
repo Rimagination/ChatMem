@@ -35,6 +35,10 @@ function renderApp() {
   );
 }
 
+async function openLocalHistoryView() {
+  fireEvent.click(await screen.findByRole("tab", { name: "Local history" }));
+}
+
 describe("Library workspace", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
@@ -198,17 +202,18 @@ describe("Library workspace", () => {
       expect(screen.getByRole("heading", { name: "Library workspace" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Copy location" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Copy resume command" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Memory" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Manage Rules" })).toBeNull();
       expect(screen.getByRole("button", { name: "Migrate" })).toBeTruthy();
       expect(screen.queryByRole("button", { name: "History" })).toBeNull();
     });
 
-    expect(screen.queryByRole("complementary", { name: "Project Memory" })).toBeNull();
+    expect(screen.queryByRole("complementary", { name: "Startup Rules" })).toBeNull();
     expect(screen.queryByText("Test command memory")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Memory" }));
+    await openLocalHistoryView();
+    fireEvent.click(screen.getByRole("button", { name: "Manage Rules" }));
 
-    expect(await screen.findByRole("complementary", { name: "Project Memory" })).toBeTruthy();
+    expect(await screen.findByRole("complementary", { name: "Startup Rules" })).toBeTruthy();
     expect(screen.getByText("Test command memory")).toBeTruthy();
     expect(screen.getByText("Use before packaging")).toBeTruthy();
   });

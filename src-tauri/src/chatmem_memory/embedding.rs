@@ -7,8 +7,8 @@ const DEFAULT_OPENAI_COMPATIBLE_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_OPENAI_COMPATIBLE_MODEL: &str = "text-embedding-3-small";
 
 const STOP_WORDS: &[&str] = &[
-    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "into", "is",
-    "it", "of", "on", "or", "that", "the", "this", "to", "with",
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "into", "is", "it", "of",
+    "on", "or", "that", "the", "this", "to", "with",
 ];
 
 const TOKEN_ALIAS_GROUPS: &[(&[&str], &[&str])] = &[
@@ -388,7 +388,11 @@ fn add_text_features(vector: &mut [f32], text: &str, weight: f32) {
 
     for window in tokens.windows(2) {
         if !is_stop_word(&window[0]) && !is_stop_word(&window[1]) {
-            add_feature(vector, &format!("{} {}", window[0], window[1]), weight * 0.35);
+            add_feature(
+                vector,
+                &format!("{} {}", window[0], window[1]),
+                weight * 0.35,
+            );
         }
     }
 }
@@ -503,16 +507,34 @@ mod tests {
     #[test]
     fn embedding_config_reads_openai_compatible_provider_from_env_like_map() {
         let env = HashMap::from([
-            ("CHATMEM_EMBEDDING_PROVIDER".to_string(), "openai-compatible".to_string()),
-            ("CHATMEM_EMBEDDING_BASE_URL".to_string(), "https://example.com/v1/".to_string()),
-            ("CHATMEM_EMBEDDING_API_KEY".to_string(), "test-key".to_string()),
-            ("CHATMEM_EMBEDDING_MODEL".to_string(), "text-embedding-3-small".to_string()),
-            ("CHATMEM_EMBEDDING_DIMENSIONS".to_string(), "1536".to_string()),
+            (
+                "CHATMEM_EMBEDDING_PROVIDER".to_string(),
+                "openai-compatible".to_string(),
+            ),
+            (
+                "CHATMEM_EMBEDDING_BASE_URL".to_string(),
+                "https://example.com/v1/".to_string(),
+            ),
+            (
+                "CHATMEM_EMBEDDING_API_KEY".to_string(),
+                "test-key".to_string(),
+            ),
+            (
+                "CHATMEM_EMBEDDING_MODEL".to_string(),
+                "text-embedding-3-small".to_string(),
+            ),
+            (
+                "CHATMEM_EMBEDDING_DIMENSIONS".to_string(),
+                "1536".to_string(),
+            ),
         ]);
 
         let config = super::EmbeddingConfig::from_env_map(|key| env.get(key).cloned());
 
-        assert_eq!(config.model_id(), "openai-compatible:text-embedding-3-small:1536");
+        assert_eq!(
+            config.model_id(),
+            "openai-compatible:text-embedding-3-small:1536"
+        );
         assert_eq!(config.dimensions(), 1536);
         assert_eq!(config.provider_label(), "openai-compatible");
     }

@@ -29,7 +29,7 @@ pub fn build_repo_memory_payload(
     }
 
     Ok(RepoMemoryPayload {
-        repo_summary: format!("Repository memory for {repo_root}"),
+        repo_summary: format!("Approved startup rules for {repo_root}"),
         approved_memories,
         priority_gotchas: gotchas,
         recent_handoff: store.latest_handoff(repo_root)?,
@@ -74,10 +74,17 @@ fn prioritize_memories(
         .collect::<Vec<_>>();
 
     scored.sort_by(|left, right| right.0.cmp(&left.0));
-    scored.into_iter().take(3).map(|(_, memory)| memory).collect()
+    scored
+        .into_iter()
+        .take(3)
+        .map(|(_, memory)| memory)
+        .collect()
 }
 
-pub fn trim_search_matches(matches: Vec<SearchHistoryMatch>, limit: usize) -> Vec<SearchHistoryMatch> {
+pub fn trim_search_matches(
+    matches: Vec<SearchHistoryMatch>,
+    limit: usize,
+) -> Vec<SearchHistoryMatch> {
     matches.into_iter().take(limit).collect()
 }
 
@@ -90,7 +97,10 @@ mod tests {
 
     #[test]
     fn repo_memory_tool_returns_compact_startup_payload() {
-        let path = std::env::temp_dir().join(format!("chatmem-search-test-{}.sqlite", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "chatmem-search-test-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
         let store = MemoryStore::new(path.clone()).unwrap();
         let repo_root = "d:/vsp/agentswap-gui";
         store
@@ -125,7 +135,10 @@ mod tests {
 
     #[test]
     fn repo_memory_payload_excludes_non_fresh_approved_memories() {
-        let path = std::env::temp_dir().join(format!("chatmem-search-freshness-test-{}.sqlite", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "chatmem-search-freshness-test-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
         let store = MemoryStore::new(path.clone()).unwrap();
         let repo_root = "d:/vsp/agentswap-gui";
 

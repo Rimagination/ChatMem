@@ -13,7 +13,10 @@ pub struct ConversationChunk {
     pub token_estimate: usize,
 }
 
-pub fn build_conversation_chunks(conversation_id: &str, conversation: &Conversation) -> Vec<ConversationChunk> {
+pub fn build_conversation_chunks(
+    conversation_id: &str,
+    conversation: &Conversation,
+) -> Vec<ConversationChunk> {
     let mut chunks = Vec::new();
     let mut ordinal = 0usize;
 
@@ -116,7 +119,9 @@ fn message_title(text: &str, role: &Role) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentswap_core::types::{AgentKind, ChangeType, Conversation, FileChange, Message, Role, ToolCall, ToolStatus};
+    use agentswap_core::types::{
+        AgentKind, ChangeType, Conversation, FileChange, Message, Role, ToolCall, ToolStatus,
+    };
     use chrono::{TimeZone, Utc};
     use serde_json::json;
     use std::collections::HashMap;
@@ -125,7 +130,14 @@ mod tests {
     const CONVERSATION_ID: &str = "codex:conv-chunks";
     const PROJECT_DIR: &str = "D:/VSP/agentswap-gui";
 
-    fn ts(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> chrono::DateTime<Utc> {
+    fn ts(
+        year: i32,
+        month: u32,
+        day: u32,
+        hour: u32,
+        minute: u32,
+        second: u32,
+    ) -> chrono::DateTime<Utc> {
         Utc.with_ymd_and_hms(year, month, day, hour, minute, second)
             .single()
             .expect("valid timestamp")
@@ -185,7 +197,10 @@ mod tests {
             "message:20000000-0000-0000-0000-000000000001"
         );
         assert_eq!(chunks[16].ordinal, 16);
-        assert_eq!(chunks[16].message_ids, vec!["20000000-0000-0000-0000-000000000001"]);
+        assert_eq!(
+            chunks[16].message_ids,
+            vec!["20000000-0000-0000-0000-000000000001"]
+        );
         assert_eq!(
             chunks[16].body,
             "Late important release signing detail: TAURI_PRIVATE_KEY must be configured."
@@ -225,8 +240,14 @@ mod tests {
         assert_eq!(chunks.len(), 3);
         assert_eq!(chunks[0].chunk_type, "implementation_detail");
         assert_eq!(chunks[0].ordinal, 0);
-        assert_eq!(chunks[0].chunk_id_suffix, "message:30000000-0000-0000-0000-000000000001");
-        assert_eq!(chunks[0].message_ids, vec!["30000000-0000-0000-0000-000000000001"]);
+        assert_eq!(
+            chunks[0].chunk_id_suffix,
+            "message:30000000-0000-0000-0000-000000000001"
+        );
+        assert_eq!(
+            chunks[0].message_ids,
+            vec!["30000000-0000-0000-0000-000000000001"]
+        );
         assert_eq!(chunks[1].chunk_type, "user_request");
         assert_eq!(chunks[2].chunk_type, "assistant_summary");
         assert!(!chunks.iter().any(|chunk| chunk.body.trim().is_empty()));
@@ -256,7 +277,10 @@ mod tests {
         );
         assert!(chunks[0].body.ends_with("\n[truncated]"));
         assert_eq!(chunks[0].body.chars().count(), 2412);
-        assert_eq!(chunks[0].token_estimate, chunks[0].body.chars().count().div_ceil(4).max(1));
+        assert_eq!(
+            chunks[0].token_estimate,
+            chunks[0].body.chars().count().div_ceil(4).max(1)
+        );
     }
 
     #[test]
@@ -283,16 +307,28 @@ mod tests {
             &conversation(vec![], vec![change_b, change_a.clone()]),
         );
 
-        let forward_a = forward.iter().find(|chunk| chunk.title.ends_with("chunks.rs")).unwrap();
-        let reversed_a = reversed.iter().find(|chunk| chunk.title.ends_with("chunks.rs")).unwrap();
+        let forward_a = forward
+            .iter()
+            .find(|chunk| chunk.title.ends_with("chunks.rs"))
+            .unwrap();
+        let reversed_a = reversed
+            .iter()
+            .find(|chunk| chunk.title.ends_with("chunks.rs"))
+            .unwrap();
         assert_eq!(forward_a.chunk_id_suffix, reversed_a.chunk_id_suffix);
         assert_eq!(
             forward_a.chunk_id_suffix,
             "file:bb834231-c437-57d3-a36b-db6cea50759d"
         );
 
-        let forward_b = forward.iter().find(|chunk| chunk.title.ends_with("mod.rs")).unwrap();
-        let reversed_b = reversed.iter().find(|chunk| chunk.title.ends_with("mod.rs")).unwrap();
+        let forward_b = forward
+            .iter()
+            .find(|chunk| chunk.title.ends_with("mod.rs"))
+            .unwrap();
+        let reversed_b = reversed
+            .iter()
+            .find(|chunk| chunk.title.ends_with("mod.rs"))
+            .unwrap();
         assert_eq!(forward_b.chunk_id_suffix, reversed_b.chunk_id_suffix);
         assert_eq!(
             forward_b.chunk_id_suffix,

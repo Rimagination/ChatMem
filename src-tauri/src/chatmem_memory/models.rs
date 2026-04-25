@@ -185,6 +185,13 @@ pub struct AgentConversationCount {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ObservedProjectRootCount {
+    pub source_agent: String,
+    pub project_root: String,
+    pub conversation_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RepoAliasResponse {
     pub alias_root: String,
     pub alias_kind: String,
@@ -199,7 +206,34 @@ pub struct RepoScanReport {
     pub linked_conversation_count: usize,
     pub skipped_conversation_count: usize,
     pub source_agents: Vec<AgentConversationCount>,
+    pub unmatched_project_roots: Vec<ObservedProjectRootCount>,
     pub warnings: Vec<String>,
+    pub scanned_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LocalHistoryImportReport {
+    pub scanned_conversation_count: usize,
+    pub imported_conversation_count: usize,
+    pub skipped_conversation_count: usize,
+    pub indexed_repo_count: usize,
+    pub source_agents: Vec<AgentConversationCount>,
+    pub imported_project_roots: Vec<ObservedProjectRootCount>,
+    pub warnings: Vec<String>,
+    pub imported_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RepoScanSummary {
+    pub repo_root: String,
+    pub canonical_repo_root: String,
+    pub scanned_conversation_count: usize,
+    pub linked_conversation_count: usize,
+    pub skipped_conversation_count: usize,
+    pub source_agents: Vec<AgentConversationCount>,
+    pub unmatched_project_roots: Vec<ObservedProjectRootCount>,
+    pub warnings: Vec<String>,
+    pub scanned_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -213,6 +247,7 @@ pub struct RepoMemoryHealthResponse {
     pub inherited_repo_roots: Vec<String>,
     pub repo_aliases: Vec<RepoAliasResponse>,
     pub conversation_counts_by_agent: Vec<AgentConversationCount>,
+    pub latest_scan: Option<RepoScanSummary>,
     pub warnings: Vec<String>,
 }
 

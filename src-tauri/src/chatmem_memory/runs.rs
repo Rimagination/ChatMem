@@ -156,15 +156,26 @@ fn seed_runs_from_repository_evidence(conn: &Connection, repo_root: &str) -> Res
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
-    for (conversation_id, repo_id, source_agent, summary, source_conversation_id, started_at, updated_at) in
-        conversations
+    for (
+        conversation_id,
+        repo_id,
+        source_agent,
+        summary,
+        source_conversation_id,
+        started_at,
+        updated_at,
+    ) in conversations
     {
         let run_id = format!("run:{conversation_id}");
         let file_paths = file_change_paths(conn, &conversation_id)?;
         let tool_names = tool_call_names(conn, &conversation_id)?;
         let has_failed_tool = has_failed_tool_call(conn, &conversation_id)?;
-        let run_summary =
-            derive_run_summary(conn, &conversation_id, summary.as_deref(), &source_conversation_id)?;
+        let run_summary = derive_run_summary(
+            conn,
+            &conversation_id,
+            summary.as_deref(),
+            &source_conversation_id,
+        )?;
         let task_hint = summary
             .as_deref()
             .map(str::trim)
@@ -381,10 +392,8 @@ mod tests {
     use rusqlite::{params, Connection};
 
     fn open_test_connection() -> Connection {
-        let path = std::env::temp_dir().join(format!(
-            "chatmem-runs-test-{}.sqlite",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("chatmem-runs-test-{}.sqlite", uuid::Uuid::new_v4()));
         db::open_connection(&path).unwrap()
     }
 
@@ -477,8 +486,12 @@ mod tests {
 
         let artifacts = list_artifacts_for_repo(&conn, repo_root).unwrap();
         assert_eq!(artifacts.len(), 2);
-        assert!(artifacts.iter().any(|artifact| artifact.artifact_type == "file_change_set"));
-        assert!(artifacts.iter().any(|artifact| artifact.artifact_type == "tool_output_digest"));
+        assert!(artifacts
+            .iter()
+            .any(|artifact| artifact.artifact_type == "file_change_set"));
+        assert!(artifacts
+            .iter()
+            .any(|artifact| artifact.artifact_type == "tool_output_digest"));
         assert!(artifacts
             .iter()
             .all(|artifact| artifact.trust_state == "pending_review"));

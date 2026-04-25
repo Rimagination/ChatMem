@@ -47,6 +47,14 @@ function hasCjk(text: string) {
   return /[\u3400-\u9fff]/.test(text);
 }
 
+function isAutoExtracted(candidate: MemoryCandidate) {
+  return candidate.proposed_by === "auto_extractor";
+}
+
+function isEnglishOriginal(candidate: MemoryCandidate) {
+  return !hasCjk(candidate.summary) && !hasCjk(candidate.value) && /[a-z]/i.test(`${candidate.summary} ${candidate.value}`);
+}
+
 function localizeCandidateText(text: string, locale: Locale) {
   if (locale === "en" || !text.trim() || hasCjk(text)) {
     return text;
@@ -65,10 +73,10 @@ function localizeUsageHint(candidate: MemoryCandidate, locale: Locale) {
   }
 
   if (/human review/i.test(candidate.why_it_matters)) {
-    return "\u9700\u8981\u4eba\u5de5\u786e\u8ba4\u540e\u624d\u4f1a\u6210\u4e3a\u542f\u52a8\u8bb0\u5fc6\u3002";
+    return "\u9700\u8981\u4eba\u5de5\u786e\u8ba4\u540e\u624d\u4f1a\u6210\u4e3a\u542f\u52a8\u89c4\u5219\u3002";
   }
 
-  return "\u8fd9\u662f\u4ece\u5386\u53f2\u5bf9\u8bdd\u4e2d\u62bd\u53d6\u7684\u542f\u52a8\u8bb0\u5fc6\u5019\u9009\u3002\u6279\u51c6\u540e\u4f1a\u5728\u540e\u7eed\u4efb\u52a1\u5f00\u59cb\u65f6\u63d0\u4f9b\u7ed9 agent\uff0c\u8bf7\u5148\u786e\u8ba4\u5b83\u662f\u957f\u671f\u7a33\u5b9a\u7684\u89c4\u5219\u3002";
+  return "\u8fd9\u662f\u4ece\u5386\u53f2\u5bf9\u8bdd\u4e2d\u62bd\u53d6\u7684\u542f\u52a8\u89c4\u5219\u5019\u9009\u3002\u6279\u51c6\u540e\u4f1a\u5728\u540e\u7eed\u4efb\u52a1\u5f00\u59cb\u65f6\u63d0\u4f9b\u7ed9 agent\uff0c\u8bf7\u5148\u786e\u8ba4\u5b83\u662f\u957f\u671f\u7a33\u5b9a\u7684\u89c4\u5219\u3002";
 }
 
 function buildApprovalDraft(candidate: MemoryCandidate, locale: Locale): MemoryCandidateApprovalDraft {
@@ -114,18 +122,59 @@ function formatProposedBy(proposedBy: string, isEnglish: boolean) {
   return proposedBy;
 }
 
+function formatOrigin(candidate: MemoryCandidate, isEnglish: boolean) {
+  if (isAutoExtracted(candidate)) {
+    return isEnglish ? "Source: auto-extracted suggestion · not enabled" : "\u6765\u6e90\uff1a\u81ea\u52a8\u62bd\u53d6 \u00b7 \u5c1a\u672a\u542f\u7528";
+  }
+
+  return isEnglish
+    ? `Source: ${candidate.proposed_by} · not enabled`
+    : `\u6765\u6e90\uff1a${formatProposedBy(candidate.proposed_by, isEnglish)} \u63d0\u8bae \u00b7 \u5c1a\u672a\u542f\u7528`;
+}
+
 function formatStatus(status: string, isEnglish: boolean) {
   if (isEnglish) {
     return status;
   }
 
   const labels: Record<string, string> = {
-    pending_review: "\u5f85\u786e\u8ba4",
+    pending_review: "\u672a\u542f\u7528",
     approved: "\u5df2\u6279\u51c6",
     rejected: "\u5df2\u62d2\u7edd",
     snoozed: "\u5df2\u6682\u7f13",
   };
   return labels[status] ?? status;
+}
+
+function detectTrigger(candidate: MemoryCandidate) {
+  const source = [
+    candidate.summary,
+    candidate.value,
+    ...candidate.evidence_refs.map((evidence) => evidence.excerpt),
+  ]
+    .map(normalizeText)
+    .join("\n")
+    .toLowerCase();
+
+  const triggers: Array<[string, string]> = [
+    ["remember:", "Remember:"],
+    ["remember that ", "Remember that"],
+    ["rule:", "Rule:"],
+    ["gotcha:", "Gotcha:"],
+    ["note:", "Note:"],
+    ["always ", "Always"],
+    ["must ", "Must"],
+    ["do not ", "Do not"],
+    ["never ", "Never"],
+    ["\u8bb0\u4f4f:", "\u8bb0\u4f4f"],
+    ["\u8bb0\u4f4f\uff1a", "\u8bb0\u4f4f"],
+    ["\u89c4\u5219:", "\u89c4\u5219"],
+    ["\u89c4\u5219\uff1a", "\u89c4\u5219"],
+    ["\u6ce8\u610f:", "\u6ce8\u610f"],
+    ["\u6ce8\u610f\uff1a", "\u6ce8\u610f"],
+  ];
+
+  return triggers.find(([needle]) => source.includes(needle))?.[1] ?? null;
 }
 
 export default function MemoryInboxPanel({
@@ -139,13 +188,12 @@ export default function MemoryInboxPanel({
   const isEnglish = locale === "en";
   const copy = {
     empty: isEnglish
-      ? "No pending startup memory candidates for this repository."
-      : "\u8fd9\u4e2a\u4ed3\u5e93\u6682\u65e0\u5f85\u786e\u8ba4\u7684\u542f\u52a8\u8bb0\u5fc6\u5019\u9009\u3002",
-    heading: isEnglish ? "Memory Inbox" : "\u542f\u52a8\u8bb0\u5fc6\u5019\u9009",
+      ? "No pending startup rule candidates for this repository."
+      : "\u8fd9\u4e2a\u4ed3\u5e93\u6682\u65e0\u5f85\u786e\u8ba4\u5efa\u8bae\u3002",
+    heading: isEnglish ? "Review Suggestions" : "\u5f85\u786e\u8ba4\u5efa\u8bae",
     subtitle: isEnglish
-      ? "Only durable startup memories need review here; indexed local history remains searchable."
-      : "\u672c\u5730\u5386\u53f2\u5df2\u7ecf\u8fdb\u5165\u68c0\u7d22\u7d22\u5f15\uff1b\u8fd9\u91cc\u53ea\u786e\u8ba4\u4ee5\u540e\u542f\u52a8\u65f6\u8981\u5e26\u4e0a\u7684\u7a33\u5b9a\u89c4\u5219\u3002",
-    proposedBy: isEnglish ? "Proposed by" : "\u6765\u6e90",
+      ? "These are suggestions from automation or agents; approval turns them into startup rules. Local history remains searchable without approval."
+      : "\u8fd9\u91cc\u53ea\u653e\u81ea\u52a8\u6216 agent \u63d0\u51fa\u7684\u5efa\u8bae\uff1b\u6279\u51c6\u540e\u624d\u4f1a\u6210\u4e3a\u542f\u52a8\u89c4\u5219\u3002\u672c\u5730\u5386\u53f2\u4e0d\u9700\u8981\u6279\u51c6\u4e5f\u80fd\u68c0\u7d22\u3002",
     noEvidence: isEnglish ? "No linked evidence yet" : "\u6682\u65e0\u5173\u8054\u8bc1\u636e",
     oneEvidence: isEnglish ? "1 linked evidence reference" : "1 \u6761\u5173\u8054\u8bc1\u636e",
     evidenceReady: isEnglish ? "Evidence ready" : "\u8bc1\u636e\u5c31\u7eea",
@@ -153,20 +201,28 @@ export default function MemoryInboxPanel({
     needsEvidence: isEnglish ? "Needs evidence" : "\u9700\u8981\u8bc1\u636e",
     conflictReview: isEnglish ? "Conflict review" : "\u51b2\u7a81\u5ba1\u6838",
     mergeReview: isEnglish ? "Merge-aware review" : "\u5408\u5e76\u5ba1\u6838",
-    netNew: isEnglish ? "Net new candidate" : "\u65b0\u589e\u5019\u9009",
+    netNew: isEnglish ? "New suggestion" : "\u65b0\u589e\u5efa\u8bae",
     possibleConflict: isEnglish ? "Possible conflict with" : "\u53ef\u80fd\u4e0e",
     conflictSuffix: isEnglish ? "." : "\u51b2\u7a81\u3002",
     possibleMerge: isEnglish ? "Potential merge with" : "\u53ef\u4e0e",
     mergeSuffix: isEnglish ? "." : "\u5408\u5e76\u3002",
     suggestedRewrite: isEnglish ? "Suggested rewrite" : "\u5efa\u8bae\u6539\u5199",
     mergeProposedBy: isEnglish ? "Merge proposed by" : "\u5408\u5e76\u5efa\u8bae\u6765\u81ea",
-    mergedValue: isEnglish ? "Memory value" : "\u8bb0\u5fc6\u5185\u5bb9",
+    mergedValue: isEnglish ? "Rule value" : "\u89c4\u5219\u5185\u5bb9",
     mergedUsage: isEnglish ? "Usage hint" : "\u4f7f\u7528\u63d0\u793a",
-    originalCandidate: isEnglish ? "Original candidate" : "\u539f\u59cb\u5019\u9009",
+    originalCandidate: isEnglish ? "Original text" : "\u539f\u6587",
+    englishOriginal: isEnglish
+      ? "English original. Rewrite it before approving if this should be a Chinese startup rule."
+      : "\u82f1\u6587\u539f\u6587\uff0c\u5efa\u8bae\u6539\u5199\u6210\u4e2d\u6587\u540e\u518d\u6279\u51c6\u3002",
+    trigger: isEnglish ? "Trigger" : "\u89e6\u53d1\u8bcd",
+    batchRejectAuto: isEnglish ? "Reject auto suggestions" : "\u6279\u91cf\u5ffd\u7565\u81ea\u52a8\u5efa\u8bae",
     approveMerge: isEnglish ? "Approve merge" : "\u6279\u51c6\u5408\u5e76",
-    approve: isEnglish ? "Approve" : "\u6279\u51c6\u4e3a\u542f\u52a8\u8bb0\u5fc6",
+    approve: isEnglish ? "Approve startup rule" : "\u6279\u51c6\u4e3a\u542f\u52a8\u89c4\u5219",
     reject: isEnglish ? "Reject" : "\u5ffd\u7565\u5019\u9009",
   };
+  const autoSuggestionIds = candidates
+    .filter((candidate) => candidate.status === "pending_review" && isAutoExtracted(candidate))
+    .map((candidate) => candidate.candidate_id);
 
   const renderEvidenceCue = (candidate: MemoryCandidate) => {
     if (candidate.evidence_refs.length === 0) {
@@ -206,13 +262,25 @@ export default function MemoryInboxPanel({
   return (
     <section className="memory-panel">
       <div className="memory-panel-header">
-        <h3>{copy.heading}</h3>
-        <p>{copy.subtitle}</p>
+        <div className="memory-panel-title">
+          <h3>{copy.heading}</h3>
+          <p>{copy.subtitle}</p>
+        </div>
+        {autoSuggestionIds.length > 0 ? (
+          <button
+            type="button"
+            className="btn btn-secondary memory-batch-action"
+            onClick={() => autoSuggestionIds.forEach((candidateId) => onReject(candidateId))}
+          >
+            {copy.batchRejectAuto}
+          </button>
+        ) : null}
       </div>
       <div className="memory-card-list">
         {candidates.map((candidate) => {
           const draft = buildApprovalDraft(candidate, locale);
           const hasReviewDraft = draftDiffers(candidate, draft);
+          const trigger = detectTrigger(candidate);
 
           return (
             <article key={candidate.candidate_id} className="memory-card">
@@ -224,11 +292,13 @@ export default function MemoryInboxPanel({
               </div>
               <div className="memory-card-value">{draft.value}</div>
               <p className="memory-card-copy">{draft.usageHint}</p>
+              {!isEnglish && isAutoExtracted(candidate) && isEnglishOriginal(candidate) ? (
+                <p className="memory-card-warning">{copy.englishOriginal}</p>
+              ) : null}
               <div className="memory-card-meta">
-                <span>
-                  {copy.proposedBy} {formatProposedBy(candidate.proposed_by, isEnglish)}
-                </span>
+                <span>{formatOrigin(candidate, isEnglish)}</span>
                 <span>{formatStatus(candidate.status, isEnglish)}</span>
+                {trigger ? <span>{`${copy.trigger}${isEnglish ? ": " : "\uff1a"}${trigger}`}</span> : null}
                 <span>{renderEvidenceCue(candidate)}</span>
               </div>
               {hasReviewDraft ? (

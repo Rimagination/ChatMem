@@ -5,30 +5,32 @@
 
 use std::{fs, path::PathBuf, time::Duration};
 
-use serde::{Deserialize, Serialize};
-use tauri::command;
 use chatmem::chatmem_memory::{
     a2a::AgentCard,
     checkpoints::{CheckpointRecord, CreateCheckpointInput},
     models::{
         ApprovedMemoryResponse, EmbeddingRebuildReport, EntityGraphPayload, EpisodeResponse,
-        HandoffPacketResponse, MemoryCandidateResponse, MemoryConflictResponse,
-        ProjectContextPayload, RepoMemoryHealthResponse, RepoScanReport, WikiPageResponse,
+        HandoffPacketResponse, LocalHistoryImportReport, MemoryCandidateResponse,
+        MemoryConflictResponse, ProjectContextPayload, RepoAliasResponse, RepoMemoryHealthResponse,
+        RepoScanReport, WikiPageResponse,
     },
     runs::{list_artifacts as load_artifacts, list_runs as load_runs, ArtifactRecord, RunRecord},
     store::{MemoryStore, ReviewAction},
     sync::{
-        build_resume_command, resolve_storage_path,
-        scan_repo_conversations as sync_scan_repo_conversations, sync_conversation_into_store,
+        build_resume_command, import_all_local_history as sync_import_all_local_history,
+        resolve_storage_path, scan_repo_conversations as sync_scan_repo_conversations,
+        sync_conversation_into_store,
     },
 };
+use serde::{Deserialize, Serialize};
+use tauri::command;
 
 // Import AgentSwap adapters
 use agentswap_claude::ClaudeAdapter;
 use agentswap_codex::CodexAdapter;
-use agentswap_gemini::GeminiAdapter;
 use agentswap_core::adapter::AgentAdapter;
-use agentswap_core::types::{Conversation, ConversationSummary, AgentKind};
+use agentswap_core::types::{AgentKind, Conversation, ConversationSummary};
+use agentswap_gemini::GeminiAdapter;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ConversationSummaryResponse {
@@ -138,6 +140,32 @@ struct AppSettingsPayload {
     sync: SyncSettingsPayload,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpgradeReadinessCheck {
+    key: String,
+    label: String,
+    status: String,
+    detail: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpgradeReadinessReport {
+    status: String,
+    summary: String,
+    checks: Vec<UpgradeReadinessCheck>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+enum CredentialCheck {
+    NotNeeded,
+    Present,
+    Missing,
+    Error(String),
+}
+
 fn get_adapter(agent: &str) -> Result<Box<dyn AgentAdapter>, String> {
     match agent {
         "claude" => Ok(Box::new(ClaudeAdapter::new())),
@@ -160,9 +188,9 @@ fn contains_query(haystack: &str, query: &str) -> bool {
 }
 
 fn is_file_like_path_leaf(leaf: &str) -> bool {
-    let extension = leaf.rsplit_once('.').map(|(_, extension)| {
-        extension.to_ascii_lowercase()
-    });
+    let extension = leaf
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase());
 
     matches!(
         extension.as_deref(),
@@ -229,12 +257,12 @@ fn normalize_project_dir(project_dir: &str) -> String {
     }
 
     let bytes = normalized.as_bytes();
-    if bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b'/'
-        && bytes[2] != b'/'
-    {
-        normalized = format!("{}:/{}", normalized.chars().next().unwrap(), &normalized[2..]);
+    if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b'/' && bytes[2] != b'/' {
+        normalized = format!(
+            "{}:/{}",
+            normalized.chars().next().unwrap(),
+            &normalized[2..]
+        );
     }
 
     normalized = normalized.trim_end_matches('/').to_string();
@@ -271,7 +299,11 @@ fn conversation_matches_query(conversation: &Conversation, query: &str) -> bool 
         return true;
     }
 
-    if conversation.file_changes.iter().any(|change| contains_query(&change.path, query)) {
+    if conversation
+        .file_changes
+        .iter()
+        .any(|change| contains_query(&change.path, query))
+    {
         return true;
     }
 
@@ -372,9 +404,199 @@ fn app_settings_path() -> Result<PathBuf, String> {
     Ok(base.join("ChatMem").join("settings.json"))
 }
 
+fn read_app_settings_from_disk() -> Result<Option<AppSettingsPayload>, String> {
+    let path = app_settings_path()?;
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let raw = fs::read_to_string(&path)
+        .map_err(|error| format!("Cannot read settings file {}: {error}", path.display()))?;
+    serde_json::from_str::<AppSettingsPayload>(&raw)
+        .map(Some)
+        .map_err(|error| format!("Cannot parse settings file {}: {error}", path.display()))
+}
+
 fn webdav_credential_entry(username: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new("com.chatmem.app.webdav", username)
         .map_err(|error| format!("Cannot open OS credential store: {error}"))
+}
+
+fn probe_webdav_credential(settings: Option<&AppSettingsPayload>) -> CredentialCheck {
+    let Some(settings) = settings else {
+        return CredentialCheck::NotNeeded;
+    };
+
+    if settings.sync.provider != "webdav" || settings.sync.username.trim().is_empty() {
+        return CredentialCheck::NotNeeded;
+    }
+
+    let entry = match webdav_credential_entry(settings.sync.username.trim()) {
+        Ok(entry) => entry,
+        Err(error) => return CredentialCheck::Error(error),
+    };
+
+    match entry.get_password() {
+        Ok(password) if !password.is_empty() => CredentialCheck::Present,
+        Ok(_) | Err(keyring::Error::NoEntry) => CredentialCheck::Missing,
+        Err(error) => CredentialCheck::Error(error.to_string()),
+    }
+}
+
+fn build_upgrade_readiness_report(
+    settings: Option<AppSettingsPayload>,
+    credential_check: CredentialCheck,
+    memory_store_result: Result<(), String>,
+) -> UpgradeReadinessReport {
+    let mut checks = Vec::new();
+
+    let mut push_check = |key: &str, label: &str, status: &str, detail: String| {
+        checks.push(UpgradeReadinessCheck {
+            key: key.to_string(),
+            label: label.to_string(),
+            status: status.to_string(),
+            detail,
+        });
+    };
+
+    let webdav_enabled = settings
+        .as_ref()
+        .map(|settings| settings.sync.provider == "webdav")
+        .unwrap_or(false);
+
+    match settings.as_ref() {
+        Some(_) => push_check(
+            "settings",
+            "Native settings file",
+            "ok",
+            "Settings file is available and can be parsed.".to_string(),
+        ),
+        None => push_check(
+            "settings",
+            "Native settings file",
+            "warning",
+            "No native settings file was found. ChatMem may still use browser fallback settings until you save settings once."
+                .to_string(),
+        ),
+    }
+
+    if let Some(settings) = settings.as_ref() {
+        if webdav_enabled {
+            let has_profile = !settings.sync.webdav_host.trim().is_empty()
+                && !settings.sync.username.trim().is_empty()
+                && !settings.sync.remote_path.trim().is_empty();
+            push_check(
+                "webdav_profile",
+                "WebDAV profile",
+                if has_profile { "ok" } else { "warning" },
+                if has_profile {
+                    format!(
+                        "{}://{}/{}/{}",
+                        settings.sync.webdav_scheme,
+                        settings.sync.webdav_host.trim().trim_matches('/'),
+                        settings.sync.webdav_path.trim().trim_matches('/'),
+                        settings.sync.remote_path.trim().trim_matches('/')
+                    )
+                } else {
+                    "WebDAV is enabled, but host, username, or remote folder is incomplete."
+                        .to_string()
+                },
+            );
+        } else {
+            push_check(
+                "webdav_profile",
+                "WebDAV profile",
+                "ok",
+                "WebDAV sync is not enabled.".to_string(),
+            );
+        }
+    } else {
+        push_check(
+            "webdav_profile",
+            "WebDAV profile",
+            "warning",
+            "Cannot verify WebDAV profile until settings are saved to the native settings file."
+                .to_string(),
+        );
+    }
+
+    match credential_check {
+        CredentialCheck::NotNeeded => push_check(
+            "webdav_password",
+            "WebDAV password",
+            "ok",
+            "No WebDAV password is required for the current sync mode.".to_string(),
+        ),
+        CredentialCheck::Present => push_check(
+            "webdav_password",
+            "WebDAV password",
+            "ok",
+            "Password exists in the OS credential store.".to_string(),
+        ),
+        CredentialCheck::Missing => push_check(
+            "webdav_password",
+            "WebDAV password",
+            "warning",
+            "Password is not in the OS credential store; enter it once after upgrade and verify the server."
+                .to_string(),
+        ),
+        CredentialCheck::Error(error) => push_check(
+            "webdav_password",
+            "WebDAV password",
+            "warning",
+            format!("Could not read the OS credential store: {error}"),
+        ),
+    }
+
+    match memory_store_result {
+        Ok(()) => push_check(
+            "memory_store",
+            "Memory database",
+            "ok",
+            "Memory database can be opened.".to_string(),
+        ),
+        Err(error) => push_check(
+            "memory_store",
+            "Memory database",
+            "error",
+            format!("Memory database cannot be opened: {error}"),
+        ),
+    }
+
+    let error_count = checks
+        .iter()
+        .filter(|check| check.status == "error")
+        .count();
+    let warning_count = checks
+        .iter()
+        .filter(|check| check.status == "warning")
+        .count();
+    let status = if error_count > 0 {
+        "error"
+    } else if warning_count > 0 {
+        "warning"
+    } else {
+        "ok"
+    };
+    let summary = if error_count > 0 {
+        format!("Upgrade check found {error_count} blocking item(s).")
+    } else if warning_count > 0 {
+        format!("Upgrade check found {warning_count} item(s) that need attention.")
+    } else {
+        "Upgrade check passed.".to_string()
+    };
+    let warnings = checks
+        .iter()
+        .filter(|check| check.status != "ok")
+        .map(|check| check.detail.clone())
+        .collect();
+
+    UpgradeReadinessReport {
+        status: status.to_string(),
+        summary,
+        checks,
+        warnings,
+    }
 }
 
 fn build_webdav_probe_url(
@@ -501,20 +723,31 @@ async fn ensure_webdav_collection(
     }
 
     if response.status() != reqwest::StatusCode::NOT_FOUND {
-        return Err(format!("Server returned HTTP {} for {url}", response.status()));
+        return Err(format!(
+            "Server returned HTTP {} for {url}",
+            response.status()
+        ));
     }
 
     let response = client
-        .request(reqwest::Method::from_bytes(b"MKCOL").map_err(|error| error.to_string())?, url.clone())
+        .request(
+            reqwest::Method::from_bytes(b"MKCOL").map_err(|error| error.to_string())?,
+            url.clone(),
+        )
         .basic_auth(username, Some(password))
         .send()
         .await
         .map_err(|error| format!("Cannot create WebDAV folder {url}: {error}"))?;
 
-    if response.status().is_success() || response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+    if response.status().is_success()
+        || response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED
+    {
         Ok(())
     } else {
-        Err(format!("Server returned HTTP {} while creating {url}", response.status()))
+        Err(format!(
+            "Server returned HTTP {} while creating {url}",
+            response.status()
+        ))
     }
 }
 
@@ -537,7 +770,10 @@ async fn put_webdav_json(
     if response.status().is_success() {
         Ok(())
     } else {
-        Err(format!("Server returned HTTP {} while uploading {url}", response.status()))
+        Err(format!(
+            "Server returned HTTP {} while uploading {url}",
+            response.status()
+        ))
     }
 }
 
@@ -548,30 +784,40 @@ async fn get_agent_card() -> Result<AgentCard, String> {
 
 #[command]
 async fn load_app_settings() -> Result<Option<AppSettingsPayload>, String> {
-    let path = app_settings_path()?;
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let raw = fs::read_to_string(&path)
-        .map_err(|error| format!("Cannot read settings file {}: {error}", path.display()))?;
-    serde_json::from_str::<AppSettingsPayload>(&raw)
-        .map(Some)
-        .map_err(|error| format!("Cannot parse settings file {}: {error}", path.display()))
+    read_app_settings_from_disk()
 }
 
 #[command]
 async fn save_app_settings(settings: AppSettingsPayload) -> Result<(), String> {
     let path = app_settings_path()?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("Cannot create settings directory {}: {error}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Cannot create settings directory {}: {error}",
+                parent.display()
+            )
+        })?;
     }
 
     let body = serde_json::to_vec_pretty(&settings)
         .map_err(|error| format!("Cannot serialize settings: {error}"))?;
     fs::write(&path, body)
         .map_err(|error| format!("Cannot write settings file {}: {error}", path.display()))
+}
+
+#[command]
+async fn run_upgrade_readiness_check() -> Result<UpgradeReadinessReport, String> {
+    let settings = read_app_settings_from_disk()?;
+    let credential_check = probe_webdav_credential(settings.as_ref());
+    let memory_store_result = MemoryStore::open_app()
+        .map(|_| ())
+        .map_err(|error| error.to_string());
+
+    Ok(build_upgrade_readiness_report(
+        settings,
+        credential_check,
+        memory_store_result,
+    ))
 }
 
 #[command]
@@ -585,7 +831,9 @@ async fn load_webdav_password(username: String) -> Result<Option<String>, String
     match entry.get_password() {
         Ok(password) => Ok(Some(password)),
         Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(format!("Cannot read WebDAV password from OS credential store: {error}")),
+        Err(error) => Err(format!(
+            "Cannot read WebDAV password from OS credential store: {error}"
+        )),
     }
 }
 
@@ -663,7 +911,9 @@ async fn sync_webdav_now(
             continue;
         }
 
-        let summaries = adapter.list_conversations().map_err(|error| error.to_string())?;
+        let summaries = adapter
+            .list_conversations()
+            .map_err(|error| error.to_string())?;
         for summary in summaries {
             let mut conversation = adapter
                 .read_conversation(&summary.id)
@@ -756,35 +1006,34 @@ async fn sync_webdav_now(
 #[command]
 async fn list_conversations(agent: String) -> Result<Vec<ConversationSummaryResponse>, String> {
     let adapter = get_adapter(&agent)?;
-    
+
     if !adapter.is_available() {
         return Ok(vec![]);
     }
 
-    let conversations = adapter
-        .list_conversations()
-        .map_err(|e| e.to_string())?;
+    let conversations = adapter.list_conversations().map_err(|e| e.to_string())?;
 
     Ok(conversations.into_iter().map(convert_summary).collect())
 }
 
 #[command]
-async fn search_conversations(agent: String, query: String) -> Result<Vec<ConversationSummaryResponse>, String> {
+async fn search_conversations(
+    agent: String,
+    query: String,
+) -> Result<Vec<ConversationSummaryResponse>, String> {
     let trimmed_query = query.trim();
     if trimmed_query.is_empty() {
         return list_conversations(agent).await;
     }
 
     let adapter = get_adapter(&agent)?;
-    
+
     if !adapter.is_available() {
         return Ok(vec![]);
     }
 
     let normalized_query = trimmed_query.to_lowercase();
-    let summaries = adapter
-        .list_conversations()
-        .map_err(|e| e.to_string())?;
+    let summaries = adapter.list_conversations().map_err(|e| e.to_string())?;
 
     let mut matches = Vec::new();
 
@@ -816,7 +1065,11 @@ async fn read_conversation(agent: String, id: String) -> Result<ConversationResp
     if let Ok(store) = MemoryStore::open_app() {
         let _ = sync_conversation_into_store(&store, &agent, &conversation);
     }
-    Ok(convert_conversation(conversation, storage_path, resume_command))
+    Ok(convert_conversation(
+        conversation,
+        storage_path,
+        resume_command,
+    ))
 }
 
 #[command]
@@ -824,13 +1077,15 @@ async fn migrate_conversation(
     source: String,
     target: String,
     id: String,
-    mode: String,  // "copy" or "cut"
+    mode: String, // "copy" or "cut"
 ) -> Result<String, String> {
     let source_adapter = get_adapter(&source)?;
     let target_adapter = get_adapter(&target)?;
 
     // Read from source
-    let conversation = source_adapter.read_conversation(&id).map_err(|e| e.to_string())?;
+    let conversation = source_adapter
+        .read_conversation(&id)
+        .map_err(|e| e.to_string())?;
 
     // Write to target
     let new_id = target_adapter
@@ -839,7 +1094,9 @@ async fn migrate_conversation(
 
     // If cut mode, delete from source
     if mode == "cut" {
-        source_adapter.delete_conversation(&id).map_err(|e| e.to_string())?;
+        source_adapter
+            .delete_conversation(&id)
+            .map_err(|e| e.to_string())?;
     }
 
     Ok(new_id)
@@ -848,7 +1105,9 @@ async fn migrate_conversation(
 #[command]
 async fn delete_conversation(agent: String, id: String) -> Result<(), String> {
     let adapter = get_adapter(&agent)?;
-    adapter.delete_conversation(&id).map_err(|e| e.to_string())?;
+    adapter
+        .delete_conversation(&id)
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -861,7 +1120,9 @@ async fn check_agent_available(agent: String) -> Result<bool, String> {
 #[command]
 async fn list_repo_memories(repo_root: String) -> Result<Vec<ApprovedMemoryResponse>, String> {
     let store = open_memory_store()?;
-    store.list_repo_memories(&repo_root).map_err(|e| e.to_string())
+    store
+        .list_repo_memories(&repo_root)
+        .map_err(|e| e.to_string())
 }
 
 #[command]
@@ -892,6 +1153,23 @@ async fn scan_repo_conversations(repo_root: String) -> Result<RepoScanReport, St
 }
 
 #[command]
+async fn import_all_local_history() -> Result<LocalHistoryImportReport, String> {
+    let store = open_memory_store()?;
+    sync_import_all_local_history(&store).map_err(|e| e.to_string())
+}
+
+#[command]
+async fn merge_repo_alias(
+    repo_root: String,
+    alias_root: String,
+) -> Result<RepoAliasResponse, String> {
+    let store = open_memory_store()?;
+    store
+        .merge_repo_alias(&repo_root, &alias_root)
+        .map_err(|e| e.to_string())
+}
+
+#[command]
 async fn list_memory_candidates(
     repo_root: String,
     status: Option<String>,
@@ -914,7 +1192,10 @@ async fn list_memory_conflicts(
 }
 
 #[command]
-async fn list_entity_graph(repo_root: String, limit: Option<usize>) -> Result<EntityGraphPayload, String> {
+async fn list_entity_graph(
+    repo_root: String,
+    limit: Option<usize>,
+) -> Result<EntityGraphPayload, String> {
     let store = open_memory_store()?;
     store
         .list_entity_graph(&repo_root, limit.unwrap_or(25))
@@ -934,25 +1215,30 @@ async fn review_memory_candidate(
     let review = match action.as_str() {
         "approve" => ReviewAction::Approve {
             title: edited_title.unwrap_or_else(|| "Approved memory".to_string()),
-            usage_hint: edited_usage_hint.unwrap_or_else(|| "Used for startup injection".to_string()),
+            usage_hint: edited_usage_hint
+                .unwrap_or_else(|| "Used for startup injection".to_string()),
         },
         "approve_with_edit" => ReviewAction::ApproveWithEdit {
             title: edited_title.unwrap_or_else(|| "Approved memory".to_string()),
             value: edited_value.unwrap_or_default(),
-            usage_hint: edited_usage_hint.unwrap_or_else(|| "Used for startup injection".to_string()),
+            usage_hint: edited_usage_hint
+                .unwrap_or_else(|| "Used for startup injection".to_string()),
         },
         "approve_merge" => ReviewAction::ApproveMerge {
             memory_id: merge_memory_id
                 .ok_or_else(|| "approve_merge requires merge_memory_id".to_string())?,
             title: edited_title.unwrap_or_else(|| "Approved memory".to_string()),
             value: edited_value.unwrap_or_default(),
-            usage_hint: edited_usage_hint.unwrap_or_else(|| "Used for startup injection".to_string()),
+            usage_hint: edited_usage_hint
+                .unwrap_or_else(|| "Used for startup injection".to_string()),
         },
         "reject" => ReviewAction::Reject,
         _ => ReviewAction::Snooze,
     };
 
-    store.review_candidate(&candidate_id, review).map_err(|e| e.to_string())
+    store
+        .review_candidate(&candidate_id, review)
+        .map_err(|e| e.to_string())
 }
 
 #[command]
@@ -960,6 +1246,14 @@ async fn reverify_memory(memory_id: String, verified_by: String) -> Result<(), S
     let store = open_memory_store()?;
     store
         .reverify_memory(&memory_id, &verified_by)
+        .map_err(|e| e.to_string())
+}
+
+#[command]
+async fn retire_memory(memory_id: String, retired_by: String) -> Result<(), String> {
+    let store = open_memory_store()?;
+    store
+        .retire_memory(&memory_id, &retired_by)
         .map_err(|e| e.to_string())
 }
 
@@ -978,7 +1272,9 @@ async fn list_wiki_pages(repo_root: String) -> Result<Vec<WikiPageResponse>, Str
 #[command]
 async fn rebuild_repo_wiki(repo_root: String) -> Result<Vec<WikiPageResponse>, String> {
     let store = open_memory_store()?;
-    store.rebuild_repo_wiki(&repo_root).map_err(|e| e.to_string())
+    store
+        .rebuild_repo_wiki(&repo_root)
+        .map_err(|e| e.to_string())
 }
 
 #[command]
@@ -998,7 +1294,9 @@ async fn list_handoffs(repo_root: String) -> Result<Vec<HandoffPacketResponse>, 
 #[command]
 async fn list_checkpoints(repo_root: String) -> Result<Vec<CheckpointRecord>, String> {
     let store = open_memory_store()?;
-    store.list_checkpoints(&repo_root).map_err(|e| e.to_string())
+    store
+        .list_checkpoints(&repo_root)
+        .map_err(|e| e.to_string())
 }
 
 #[command]
@@ -1086,6 +1384,7 @@ fn main() {
             get_agent_card,
             load_app_settings,
             save_app_settings,
+            run_upgrade_readiness_check,
             load_webdav_password,
             save_webdav_password,
             verify_webdav_server,
@@ -1094,11 +1393,14 @@ fn main() {
             get_repo_memory_health,
             get_project_context,
             scan_repo_conversations,
+            import_all_local_history,
+            merge_repo_alias,
             list_memory_candidates,
             list_memory_conflicts,
             list_entity_graph,
             review_memory_candidate,
             reverify_memory,
+            retire_memory,
             list_episodes,
             list_wiki_pages,
             rebuild_repo_wiki,
@@ -1168,11 +1470,54 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_windows_extended_project_paths() {
-        assert_eq!(
-            normalize_project_dir(r"\\?\D:\VSP"),
-            "D:/VSP".to_string()
+    fn upgrade_check_report_flags_missing_webdav_password_without_failing_database() {
+        let report = super::build_upgrade_readiness_report(
+            Some(super::AppSettingsPayload {
+                locale: "zh-CN".to_string(),
+                auto_check_updates: true,
+                sync: super::SyncSettingsPayload {
+                    provider: "webdav".to_string(),
+                    webdav_scheme: "https".to_string(),
+                    webdav_host: "dav.example.com".to_string(),
+                    webdav_path: "remote.php/dav/files/liang".to_string(),
+                    username: "liang@example.com".to_string(),
+                    remote_path: "chatmem".to_string(),
+                    download_mode: "as-needed".to_string(),
+                },
+            }),
+            super::CredentialCheck::Missing,
+            Ok(()),
         );
+
+        assert_eq!(report.status, "warning");
+        assert!(report
+            .checks
+            .iter()
+            .any(|check| check.key == "webdav_password" && check.status == "warning"));
+        assert!(report
+            .checks
+            .iter()
+            .any(|check| check.key == "memory_store" && check.status == "ok"));
+    }
+
+    #[test]
+    fn upgrade_check_report_errors_when_memory_store_cannot_open() {
+        let report = super::build_upgrade_readiness_report(
+            None,
+            super::CredentialCheck::NotNeeded,
+            Err("database is locked".to_string()),
+        );
+
+        assert_eq!(report.status, "error");
+        assert!(report
+            .checks
+            .iter()
+            .any(|check| check.key == "memory_store" && check.status == "error"));
+    }
+
+    #[test]
+    fn normalizes_windows_extended_project_paths() {
+        assert_eq!(normalize_project_dir(r"\\?\D:\VSP"), "D:/VSP".to_string());
     }
 
     #[test]

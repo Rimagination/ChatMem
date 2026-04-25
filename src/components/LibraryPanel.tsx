@@ -19,9 +19,6 @@ const FILTER_ORDER: LibraryFilter[] = [
   "memory",
   "checkpoint",
   "handoff",
-  "run",
-  "artifact",
-  "episode",
 ];
 
 function getFilterLabel(filter: LibraryFilter, locale: Locale) {
@@ -37,12 +34,6 @@ function getFilterLabel(filter: LibraryFilter, locale: Locale) {
         return "Checkpoints";
       case "handoff":
         return "Handoffs";
-      case "run":
-        return "Runs";
-      case "artifact":
-        return "Artifacts";
-      case "episode":
-        return "Episodes";
     }
   }
 
@@ -57,12 +48,6 @@ function getFilterLabel(filter: LibraryFilter, locale: Locale) {
       return "\u68c0\u67e5\u70b9";
     case "handoff":
       return "\u4ea4\u63a5";
-    case "run":
-      return "\u8fd0\u884c";
-    case "artifact":
-      return "\u4ea7\u7269";
-    case "episode":
-      return "\u9636\u6bb5";
   }
 }
 
@@ -77,12 +62,6 @@ function getKindBadgeLabel(kind: LibraryRecordKind, locale: Locale) {
         return "Checkpoint";
       case "handoff":
         return "Handoff";
-      case "run":
-        return "Run";
-      case "artifact":
-        return "Artifact";
-      case "episode":
-        return "Episode";
     }
   }
 
@@ -95,12 +74,6 @@ function getKindBadgeLabel(kind: LibraryRecordKind, locale: Locale) {
       return "\u68c0\u67e5\u70b9";
     case "handoff":
       return "\u4ea4\u63a5";
-    case "run":
-      return "\u8fd0\u884c";
-    case "artifact":
-      return "\u4ea7\u7269";
-    case "episode":
-      return "\u9636\u6bb5";
   }
 }
 
@@ -137,18 +110,18 @@ export default function LibraryPanel({
     locale === "en"
       ? {
           eyebrow: "Current repo library",
-          title: "Library",
+          title: "Project Context",
           subtitle:
-            "Keep the current repository's conversations, memory, checkpoints, handoffs, runs, and artifacts in one item layer.",
+            "Keep local history, startup rules, checkpoints, and handoffs in one focused context layer.",
           open: "Open",
           location: "Repository",
           empty: "No items match this filter yet.",
         }
       : {
           eyebrow: "\u5f53\u524d\u4ed3\u5e93\u8d44\u6599\u5e93",
-          title: "\u8d44\u6599\u5e93",
+          title: "\u9879\u76ee\u4e0a\u4e0b\u6587",
           subtitle:
-            "\u628a\u5f53\u524d\u4ed3\u5e93\u7684\u5bf9\u8bdd\u3001\u8bb0\u5fc6\u3001\u68c0\u67e5\u70b9\u3001\u4ea4\u63a5\u3001\u8fd0\u884c\u548c\u4ea7\u7269\u653e\u5728\u540c\u4e00\u5c42\u6761\u76ee\u91cc\u67e5\u770b\u3002",
+            "\u628a\u672c\u5730\u5386\u53f2\u3001\u542f\u52a8\u89c4\u5219\u3001\u68c0\u67e5\u70b9\u548c\u4ea4\u63a5\u5305\u6536\u655b\u5728\u540c\u4e00\u5c42\u4e0a\u4e0b\u6587\u91cc\u67e5\u770b\u3002",
           open: "\u6253\u5f00",
           location: "\u4ed3\u5e93",
           empty: "\u8fd9\u4e2a\u7b5b\u9009\u4e0b\u8fd8\u6ca1\u6709\u6761\u76ee\u3002",

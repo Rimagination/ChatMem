@@ -7,7 +7,9 @@ use std::collections::{BTreeSet, HashMap};
 use walkdir::WalkDir;
 
 use super::{
-    models::{AgentConversationCount, RepoScanReport},
+    models::{
+        AgentConversationCount, LocalHistoryImportReport, ObservedProjectRootCount, RepoScanReport,
+    },
     store::MemoryStore,
 };
 
@@ -35,8 +37,11 @@ pub fn resolve_claude_storage_path(id: &str) -> Option<String> {
 
 pub fn resolve_codex_storage_path(id: &str) -> Option<String> {
     let db_path = dirs::home_dir()?.join(".codex").join("state_5.sqlite");
-    let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
-    let mut stmt = conn.prepare("SELECT rollout_path FROM threads WHERE id = ?1").ok()?;
+    let conn =
+        Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    let mut stmt = conn
+        .prepare("SELECT rollout_path FROM threads WHERE id = ?1")
+        .ok()?;
     stmt.query_row([id], |row| row.get::<_, String>(0)).ok()
 }
 
@@ -96,6 +101,80 @@ fn get_adapter(agent: &str) -> Option<Box<dyn AgentAdapter>> {
     }
 }
 
+fn is_digits(value: &str) -> bool {
+    !value.is_empty() && value.chars().all(|character| character.is_ascii_digit())
+}
+
+fn is_codex_new_chat_leaf(leaf: &str) -> bool {
+    let Some(suffix) = leaf.strip_prefix("new-chat") else {
+        return false;
+    };
+
+    suffix.is_empty()
+        || suffix
+            .strip_prefix('-')
+            .map(is_digits)
+            .unwrap_or(false)
+}
+
+fn is_codex_flat_new_chat_leaf(leaf: &str) -> bool {
+    if is_codex_new_chat_leaf(leaf) {
+        return true;
+    }
+
+    if leaf.len() < "0000-00-00-new-chat".len() {
+        return false;
+    }
+
+    let date_part = &leaf[..10];
+    let separator_suffix = &leaf[10..];
+    date_part.as_bytes().get(4) == Some(&b'-')
+        && date_part.as_bytes().get(7) == Some(&b'-')
+        && date_part
+            .chars()
+            .enumerate()
+            .all(|(index, character)| index == 4 || index == 7 || character.is_ascii_digit())
+        && separator_suffix
+            .strip_prefix('-')
+            .map(is_codex_new_chat_leaf)
+            .unwrap_or(false)
+}
+
+pub(crate) fn is_codex_generated_chat_project_dir(agent: &str, project_dir: &str) -> bool {
+    if agent != "codex" {
+        return false;
+    }
+
+    let normalized = crate::chatmem_memory::repo_identity::normalize_repo_root(project_dir);
+    let marker = "/documents/codex/";
+    let Some(marker_index) = normalized.rfind(marker) else {
+        return false;
+    };
+
+    let relative_path = normalized[marker_index + marker.len()..].trim_matches('/');
+    let segments = relative_path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+
+    match segments.as_slice() {
+        [leaf] => is_codex_flat_new_chat_leaf(leaf),
+        [date_folder, leaf] => {
+            date_folder.len() == 10
+                && date_folder.as_bytes().get(4) == Some(&b'-')
+                && date_folder.as_bytes().get(7) == Some(&b'-')
+                && date_folder
+                    .chars()
+                    .enumerate()
+                    .all(|(index, character)| {
+                        index == 4 || index == 7 || character.is_ascii_digit()
+                    })
+                && is_codex_new_chat_leaf(leaf)
+        }
+        _ => false,
+    }
+}
+
 pub fn sync_conversation_into_store(
     store: &MemoryStore,
     agent: &str,
@@ -109,6 +188,113 @@ pub fn sync_repo_conversations(store: &MemoryStore, repo_root: &str) -> anyhow::
     Ok(scan_repo_conversations(store, repo_root)?.linked_conversation_count)
 }
 
+pub fn import_all_local_history(store: &MemoryStore) -> anyhow::Result<LocalHistoryImportReport> {
+    let mut adapters = Vec::new();
+    for agent in ["claude", "codex", "gemini"] {
+        let Some(adapter) = get_adapter(agent) else {
+            continue;
+        };
+        adapters.push((agent, adapter));
+    }
+
+    import_local_history_from_adapters(store, adapters)
+}
+
+pub(crate) fn import_local_history_from_adapters(
+    store: &MemoryStore,
+    adapters: Vec<(&str, Box<dyn AgentAdapter>)>,
+) -> anyhow::Result<LocalHistoryImportReport> {
+    let mut scanned = 0usize;
+    let mut imported = 0usize;
+    let mut skipped = 0usize;
+    let mut source_agent_counts: HashMap<String, usize> = HashMap::new();
+    let mut imported_project_root_counts: HashMap<(String, String), usize> = HashMap::new();
+    let mut warnings = Vec::new();
+
+    for (agent, adapter) in adapters {
+        if !adapter.is_available() {
+            continue;
+        }
+
+        let summaries = match adapter.list_conversations() {
+            Ok(summaries) => summaries,
+            Err(error) => {
+                warnings.push(format!("Failed to list {agent} conversations: {error}"));
+                continue;
+            }
+        };
+
+        for summary in summaries {
+            scanned += 1;
+            let mut conversation = match adapter.read_conversation(&summary.id) {
+                Ok(conversation) => conversation,
+                Err(error) => {
+                    skipped += 1;
+                    warnings.push(format!(
+                        "Failed to read {agent} conversation {}: {error}",
+                        summary.id
+                    ));
+                    continue;
+                }
+            };
+
+            if is_codex_generated_chat_project_dir(agent, &conversation.project_dir) {
+                skipped += 1;
+                continue;
+            }
+
+            let canonical_project_root = crate::chatmem_memory::repo_identity::canonical_repo_root(
+                &conversation.project_dir,
+            );
+            if canonical_project_root.is_empty() {
+                skipped += 1;
+                warnings.push(format!(
+                    "Skipped {agent} conversation {} because it has no project path.",
+                    summary.id
+                ));
+                continue;
+            }
+
+            conversation.project_dir = canonical_project_root.clone();
+            sync_conversation_into_store(store, agent, &conversation)?;
+            imported += 1;
+            *source_agent_counts.entry(agent.to_string()).or_insert(0) += 1;
+            *imported_project_root_counts
+                .entry((agent.to_string(), canonical_project_root))
+                .or_insert(0) += 1;
+        }
+    }
+
+    let mut source_agents = source_agent_counts
+        .into_iter()
+        .map(
+            |(source_agent, conversation_count)| AgentConversationCount {
+                source_agent,
+                conversation_count,
+            },
+        )
+        .collect::<Vec<_>>();
+    source_agents.sort_by(|left, right| left.source_agent.cmp(&right.source_agent));
+
+    let imported_project_roots = build_unmatched_project_roots(imported_project_root_counts);
+    let indexed_repo_count = imported_project_roots
+        .iter()
+        .map(|root| root.project_root.as_str())
+        .collect::<BTreeSet<_>>()
+        .len();
+
+    Ok(LocalHistoryImportReport {
+        scanned_conversation_count: scanned,
+        imported_conversation_count: imported,
+        skipped_conversation_count: skipped,
+        indexed_repo_count,
+        source_agents,
+        imported_project_roots,
+        warnings,
+        imported_at: chrono::Utc::now().to_rfc3339(),
+    })
+}
+
 pub fn scan_repo_conversations(
     store: &MemoryStore,
     repo_root: &str,
@@ -119,10 +305,12 @@ pub fn scan_repo_conversations(
     let repo_id = store.ensure_repo(&normalized_repo)?;
     store.upsert_repo_alias_for_repo_id(&repo_id, &normalized_requested_repo, "requested", 1.0)?;
     store.upsert_repo_alias_for_repo_id(&repo_id, &normalized_repo, "canonical", 1.0)?;
+    let repo_match_roots = store.repo_match_roots_for_repo_id(&repo_id, &normalized_repo)?;
     let mut scanned = 0usize;
     let mut linked = 0usize;
     let mut skipped = 0usize;
     let mut source_agent_counts: HashMap<String, usize> = HashMap::new();
+    let mut unmatched_project_root_counts: HashMap<(String, String), usize> = HashMap::new();
 
     for agent in ["claude", "codex", "gemini"] {
         let Some(adapter) = get_adapter(agent) else {
@@ -136,17 +324,26 @@ pub fn scan_repo_conversations(
         let summaries = adapter.list_conversations()?;
         for summary in summaries {
             scanned += 1;
-            if !summary_project_matches_repo(agent, &summary.project_dir, &normalized_repo) {
+            if is_codex_generated_chat_project_dir(agent, &summary.project_dir) {
                 skipped += 1;
                 continue;
             }
 
+            if !summary_project_matches_repo_roots(agent, &summary.project_dir, &repo_match_roots) {
+                skipped += 1;
+                record_unmatched_project_root(
+                    &mut unmatched_project_root_counts,
+                    agent,
+                    &summary.project_dir,
+                );
+                continue;
+            }
+
             let mut conversation = adapter.read_conversation(&summary.id)?;
-            let observed_project_root =
-                crate::chatmem_memory::repo_identity::normalize_repo_root(&conversation.project_dir);
-            if agent == "gemini"
-                && observed_project_root != normalized_repo
-            {
+            let observed_project_root = crate::chatmem_memory::repo_identity::normalize_repo_root(
+                &conversation.project_dir,
+            );
+            if observed_project_root != normalized_repo {
                 conversation.project_dir = normalized_repo.clone();
             }
             sync_conversation_into_store(store, agent, &conversation)?;
@@ -174,6 +371,7 @@ pub fn scan_repo_conversations(
         )
         .collect::<Vec<_>>();
     source_agents.sort_by(|left, right| left.source_agent.cmp(&right.source_agent));
+    let unmatched_project_roots = build_unmatched_project_roots(unmatched_project_root_counts);
 
     let mut warnings = Vec::new();
     if linked == 0 && scanned > 0 {
@@ -183,24 +381,87 @@ pub fn scan_repo_conversations(
         );
     }
 
-    Ok(RepoScanReport {
+    let report = RepoScanReport {
         repo_root: normalized_requested_repo,
         canonical_repo_root: normalized_repo,
         scanned_conversation_count: scanned,
         linked_conversation_count: linked,
         skipped_conversation_count: skipped,
         source_agents,
+        unmatched_project_roots,
         warnings,
-    })
+        scanned_at: chrono::Utc::now().to_rfc3339(),
+    };
+    store.record_repo_scan_report(&report)?;
+
+    Ok(report)
 }
 
+pub(crate) fn record_unmatched_project_root(
+    counts: &mut HashMap<(String, String), usize>,
+    agent: &str,
+    project_dir: &str,
+) {
+    let project_root = normalize_observed_project_root(project_dir);
+    if project_root.is_empty() {
+        return;
+    }
+
+    *counts.entry((agent.to_string(), project_root)).or_insert(0) += 1;
+}
+
+pub(crate) fn build_unmatched_project_roots(
+    counts: HashMap<(String, String), usize>,
+) -> Vec<ObservedProjectRootCount> {
+    let mut roots = counts
+        .into_iter()
+        .map(
+            |((source_agent, project_root), conversation_count)| ObservedProjectRootCount {
+                source_agent,
+                project_root,
+                conversation_count,
+            },
+        )
+        .collect::<Vec<_>>();
+
+    roots.sort_by(|left, right| {
+        right
+            .conversation_count
+            .cmp(&left.conversation_count)
+            .then_with(|| left.project_root.cmp(&right.project_root))
+            .then_with(|| left.source_agent.cmp(&right.source_agent))
+    });
+    roots.truncate(8);
+    roots
+}
+
+fn normalize_observed_project_root(project_dir: &str) -> String {
+    let trimmed = project_dir.trim();
+    if trimmed.starts_with("gemini:") {
+        return trimmed.to_string();
+    }
+
+    crate::chatmem_memory::repo_identity::normalize_repo_root(trimmed)
+}
+
+#[cfg(test)]
 pub(crate) fn summary_project_matches_repo(
     agent: &str,
     project_dir: &str,
     repo_root: &str,
 ) -> bool {
-    let normalized_repo = crate::chatmem_memory::repo_identity::normalize_repo_root(repo_root);
-    if crate::chatmem_memory::repo_identity::normalize_repo_root(project_dir) == normalized_repo {
+    summary_project_matches_repo_roots(agent, project_dir, &[repo_root.to_string()])
+}
+
+pub(crate) fn summary_project_matches_repo_roots(
+    agent: &str,
+    project_dir: &str,
+    repo_roots: &[String],
+) -> bool {
+    let normalized_project = crate::chatmem_memory::repo_identity::normalize_repo_root(project_dir);
+    if repo_roots.iter().any(|repo_root| {
+        crate::chatmem_memory::repo_identity::normalize_repo_root(repo_root) == normalized_project
+    }) {
         return true;
     }
 
@@ -212,7 +473,10 @@ pub(crate) fn summary_project_matches_repo(
         return false;
     };
 
-    gemini_repo_hash_candidates(repo_root, &normalized_repo).contains(project_hash)
+    repo_roots.iter().any(|repo_root| {
+        let normalized_repo = crate::chatmem_memory::repo_identity::normalize_repo_root(repo_root);
+        gemini_repo_hash_candidates(repo_root, &normalized_repo).contains(project_hash)
+    })
 }
 
 fn gemini_repo_hash_candidates(repo_root: &str, normalized_repo: &str) -> BTreeSet<String> {
@@ -241,8 +505,127 @@ fn gemini_repo_hash_candidates(repo_root: &str, normalized_repo: &str) -> BTreeS
 
 #[cfg(test)]
 mod tests {
-    use super::summary_project_matches_repo;
+    use super::{
+        build_unmatched_project_roots, import_local_history_from_adapters,
+        is_codex_generated_chat_project_dir, record_unmatched_project_root,
+        summary_project_matches_repo,
+        summary_project_matches_repo_roots,
+    };
+    use crate::chatmem_memory::store::MemoryStore;
+    use agentswap_core::{
+        adapter::AgentAdapter,
+        types::{AgentKind, Conversation, ConversationSummary, Message, Role},
+    };
     use agentswap_gemini::GeminiAdapter;
+    use chrono::Utc;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use uuid::Uuid;
+
+    struct FakeAdapter {
+        kind: AgentKind,
+        conversations: Vec<Conversation>,
+    }
+
+    impl FakeAdapter {
+        fn new(kind: AgentKind, conversations: Vec<Conversation>) -> Self {
+            Self {
+                kind,
+                conversations,
+            }
+        }
+    }
+
+    impl AgentAdapter for FakeAdapter {
+        fn is_available(&self) -> bool {
+            true
+        }
+
+        fn list_conversations(&self) -> anyhow::Result<Vec<ConversationSummary>> {
+            Ok(self
+                .conversations
+                .iter()
+                .map(|conversation| ConversationSummary {
+                    id: conversation.id.clone(),
+                    source_agent: conversation.source_agent.clone(),
+                    project_dir: conversation.project_dir.clone(),
+                    created_at: conversation.created_at,
+                    updated_at: conversation.updated_at,
+                    summary: conversation.summary.clone(),
+                    message_count: conversation.messages.len(),
+                    file_count: conversation.file_changes.len(),
+                })
+                .collect())
+        }
+
+        fn read_conversation(&self, id: &str) -> anyhow::Result<Conversation> {
+            self.conversations
+                .iter()
+                .find(|conversation| conversation.id == id)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("conversation {id} not found"))
+        }
+
+        fn write_conversation(&self, _conv: &Conversation) -> anyhow::Result<String> {
+            unimplemented!()
+        }
+
+        fn delete_conversation(&self, _id: &str) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+
+        fn render_prompt(&self, _conv: &Conversation) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+
+        fn agent_kind(&self) -> AgentKind {
+            self.kind.clone()
+        }
+
+        fn display_name(&self) -> &str {
+            match self.kind {
+                AgentKind::Claude => "Claude",
+                AgentKind::Codex => "Codex",
+                AgentKind::Gemini => "Gemini",
+            }
+        }
+
+        fn data_dir(&self) -> PathBuf {
+            PathBuf::new()
+        }
+    }
+
+    fn new_store() -> MemoryStore {
+        let path =
+            std::env::temp_dir().join(format!("chatmem-sync-test-{}.sqlite", uuid::Uuid::new_v4()));
+        MemoryStore::new(path).unwrap()
+    }
+
+    fn fake_conversation(
+        id: &str,
+        source_agent: AgentKind,
+        project_dir: &str,
+        content: &str,
+    ) -> Conversation {
+        let now = Utc::now();
+        Conversation {
+            id: id.to_string(),
+            source_agent,
+            project_dir: project_dir.to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some(content.to_string()),
+            messages: vec![Message {
+                id: Uuid::new_v4(),
+                timestamp: now,
+                role: Role::User,
+                content: content.to_string(),
+                tool_calls: vec![],
+                metadata: HashMap::new(),
+            }],
+            file_changes: vec![],
+        }
+    }
 
     #[test]
     fn gemini_hash_project_dir_matches_requested_repo_root() {
@@ -257,5 +640,151 @@ mod tests {
             &gemini_project_dir,
             repo_root
         ));
+    }
+
+    #[test]
+    fn unmatched_project_roots_are_grouped_for_scan_diagnostics() {
+        let mut counts = HashMap::new();
+
+        record_unmatched_project_root(&mut counts, "codex", "D:\\VSP\\bm.md");
+        record_unmatched_project_root(&mut counts, "codex", "d:/vsp/bm.md/");
+        record_unmatched_project_root(&mut counts, "claude", "D:\\VSP\\other");
+
+        let roots = build_unmatched_project_roots(counts);
+
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots[0].source_agent, "codex");
+        assert_eq!(roots[0].project_root, "d:/vsp/bm.md");
+        assert_eq!(roots[0].conversation_count, 2);
+        assert_eq!(roots[1].source_agent, "claude");
+        assert_eq!(roots[1].project_root, "d:/vsp/other");
+        assert_eq!(roots[1].conversation_count, 1);
+    }
+
+    #[test]
+    fn manual_repo_alias_matches_project_root_during_scan() {
+        let repo_roots = vec![
+            "d:/vsp/agentswap-gui".to_string(),
+            "d:/vsp/bm.md".to_string(),
+        ];
+
+        assert!(summary_project_matches_repo_roots(
+            "codex",
+            "D:\\VSP\\bm.md",
+            &repo_roots,
+        ));
+    }
+
+    #[test]
+    fn codex_desktop_generated_chat_paths_are_standalone() {
+        assert!(is_codex_generated_chat_project_dir(
+            "codex",
+            r"C:\Users\Liang\Documents\Codex\2026-04-25\new-chat"
+        ));
+        assert!(is_codex_generated_chat_project_dir(
+            "codex",
+            r"\\?\C:\Users\Liang\Documents\Codex\2026-04-25\new-chat-2"
+        ));
+        assert!(is_codex_generated_chat_project_dir(
+            "codex",
+            "C:/Users/Liang/Documents/Codex/2026-04-21-new-chat-3"
+        ));
+        assert!(!is_codex_generated_chat_project_dir("codex", "D:/VSP"));
+        assert!(!is_codex_generated_chat_project_dir(
+            "claude",
+            "C:/Users/Liang/Documents/Codex/2026-04-25/new-chat-2"
+        ));
+    }
+
+    #[test]
+    fn full_local_history_import_indexes_each_project_once() {
+        let store = new_store();
+        let codex_conversation = fake_conversation(
+            "codex-easymd",
+            AgentKind::Codex,
+            "D:\\VSP\\bm.md",
+            "讨论 EasyMD 的本地历史导入",
+        );
+        let claude_conversation = fake_conversation(
+            "claude-vsp",
+            AgentKind::Claude,
+            "D:\\VSP\\agentswap-gui",
+            "讨论 ChatMem 的本地历史卡片",
+        );
+
+        let report = import_local_history_from_adapters(
+            &store,
+            vec![
+                (
+                    "codex",
+                    Box::new(FakeAdapter::new(AgentKind::Codex, vec![codex_conversation])),
+                ),
+                (
+                    "claude",
+                    Box::new(FakeAdapter::new(
+                        AgentKind::Claude,
+                        vec![claude_conversation],
+                    )),
+                ),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(report.scanned_conversation_count, 2);
+        assert_eq!(report.imported_conversation_count, 2);
+        assert_eq!(report.indexed_repo_count, 2);
+        assert!(report
+            .imported_project_roots
+            .iter()
+            .any(|root| { root.project_root == "d:/vsp/bm.md" && root.conversation_count == 1 }));
+
+        let easymd_health = store.repo_memory_health("d:/vsp/bm.md").unwrap();
+        assert_eq!(easymd_health.indexed_chunk_count, 1);
+        assert_eq!(
+            easymd_health.conversation_counts_by_agent[0].source_agent,
+            "codex"
+        );
+    }
+
+    #[test]
+    fn full_local_history_import_skips_codex_desktop_standalone_chats() {
+        let store = new_store();
+        let standalone_chat = fake_conversation(
+            "codex-standalone",
+            AgentKind::Codex,
+            r"C:\Users\Liang\Documents\Codex\2026-04-25\new-chat-2",
+            "临时新对话",
+        );
+        let project_chat = fake_conversation(
+            "codex-vsp",
+            AgentKind::Codex,
+            "D:/VSP",
+            "项目对话",
+        );
+
+        let report = import_local_history_from_adapters(
+            &store,
+            vec![(
+                "codex",
+                Box::new(FakeAdapter::new(
+                    AgentKind::Codex,
+                    vec![standalone_chat, project_chat],
+                )),
+            )],
+        )
+        .unwrap();
+
+        assert_eq!(report.scanned_conversation_count, 2);
+        assert_eq!(report.imported_conversation_count, 1);
+        assert_eq!(report.skipped_conversation_count, 1);
+        assert_eq!(report.indexed_repo_count, 1);
+        assert!(report
+            .imported_project_roots
+            .iter()
+            .any(|root| root.project_root == "d:/vsp" && root.conversation_count == 1));
+        assert!(!report
+            .imported_project_roots
+            .iter()
+            .any(|root| root.project_root.contains("documents/codex")));
     }
 }

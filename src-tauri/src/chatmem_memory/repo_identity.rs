@@ -1,5 +1,5 @@
-use uuid::Uuid;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 pub fn normalize_repo_root(input: &str) -> String {
     let mut normalized = input.trim().to_string();
@@ -86,10 +86,8 @@ mod tests {
 
     #[test]
     fn canonical_repo_root_collapses_nested_paths_to_git_root() {
-        let root = std::env::temp_dir().join(format!(
-            "chatmem-repo-root-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("chatmem-repo-root-test-{}", uuid::Uuid::new_v4()));
         let nested = root.join("src").join("chatmem_memory");
         std::fs::create_dir_all(root.join(".git")).unwrap();
         std::fs::create_dir_all(&nested).unwrap();

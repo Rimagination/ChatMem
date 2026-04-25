@@ -79,6 +79,8 @@ The ChatMem skill lives at:
 The skill does not replace MCP. It only teaches the agent to:
 
 - call `get_project_context` before substantial repo work, using `intent="startup"`, `intent="recall"`, or `intent="continue_work"` as appropriate
+- run `import_all_local_history` when a fresh install or suspicious recall miss suggests local history has not been indexed yet
+- run `scan_repo_conversations` and, when the diagnostic clearly points at the same project, `merge_repo_alias` to repair cwd/path drift
 - treat approved memory as durable guidance and history hits as evidence that may still need verification
 - search targeted history with `search_repo_history`, which now uses hybrid keyword/vector retrieval
 - inspect related concepts with `list_entity_graph`
@@ -100,6 +102,10 @@ The core MCP tools include:
 
 - `get_project_context`
 - `get_repo_memory`
+- `get_repo_memory_health`
+- `import_all_local_history`
+- `scan_repo_conversations`
+- `merge_repo_alias`
 - `search_repo_history`
 - `list_entity_graph`
 - `create_memory_candidate`

@@ -34,6 +34,10 @@ function renderApp() {
   );
 }
 
+async function openLocalHistoryView() {
+  fireEvent.click(await screen.findByRole("tab", { name: "Local history" }));
+}
+
 describe("Memory freshness", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
@@ -109,18 +113,20 @@ describe("Memory freshness", () => {
 
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: "Freshness workflow" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Memory" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Manage Rules" })).toBeNull();
     });
 
-    expect(screen.queryByRole("complementary", { name: "Project Memory" })).toBeNull();
+    expect(screen.queryByRole("complementary", { name: "Startup Rules" })).toBeNull();
     expect(screen.queryByText("Stale verification command")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Memory" }));
+    await openLocalHistoryView();
+    fireEvent.click(screen.getByRole("button", { name: "Manage Rules" }));
 
-    expect(await screen.findByRole("complementary", { name: "Project Memory" })).toBeTruthy();
+    expect(await screen.findByRole("complementary", { name: "Startup Rules" })).toBeTruthy();
     expect(screen.getByText("Stale verification command")).toBeTruthy();
     expect(screen.getByText("Use before merge")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Needs Review" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Re-verify" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Confirm still valid" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retire rule" })).toBeTruthy();
   });
 });

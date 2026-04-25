@@ -4,7 +4,11 @@ pub fn derive_goal(goal_hint: Option<&str>, latest_summary: Option<&str>) -> Str
     goal_hint
         .filter(|value| !value.trim().is_empty())
         .map(ToString::to_string)
-        .or_else(|| latest_summary.filter(|value| !value.trim().is_empty()).map(ToString::to_string))
+        .or_else(|| {
+            latest_summary
+                .filter(|value| !value.trim().is_empty())
+                .map(ToString::to_string)
+        })
         .unwrap_or_else(|| "继续当前仓库工作".to_string())
 }
 

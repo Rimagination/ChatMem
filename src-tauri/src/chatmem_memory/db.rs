@@ -61,6 +61,20 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             UNIQUE(conversation_id, repo_id)
         );
 
+        CREATE TABLE IF NOT EXISTS repo_scan_runs (
+            scan_id TEXT PRIMARY KEY,
+            repo_id TEXT NOT NULL,
+            requested_repo_root TEXT NOT NULL,
+            canonical_repo_root TEXT NOT NULL,
+            scanned_conversation_count INTEGER NOT NULL,
+            linked_conversation_count INTEGER NOT NULL,
+            skipped_conversation_count INTEGER NOT NULL,
+            source_agents_json TEXT NOT NULL DEFAULT '[]',
+            unmatched_project_roots_json TEXT NOT NULL DEFAULT '[]',
+            warnings_json TEXT NOT NULL DEFAULT '[]',
+            scanned_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS conversations (
             conversation_id TEXT PRIMARY KEY,
             repo_id TEXT NOT NULL,
@@ -319,6 +333,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_conversation_repo_links_repo
         ON conversation_repo_links(repo_id, confidence);
 
+        CREATE INDEX IF NOT EXISTS idx_repo_scan_runs_repo_scanned_at
+        ON repo_scan_runs(repo_id, scanned_at DESC);
+
         CREATE INDEX IF NOT EXISTS idx_document_embeddings_repo_model
         ON document_embeddings(repo_id, embedding_model, dimensions);
 
@@ -366,6 +383,12 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     ensure_column(conn, "handoff_packets", "compression_strategy", "TEXT")?;
     ensure_column(conn, "handoff_packets", "consumed_at", "TEXT")?;
     ensure_column(conn, "handoff_packets", "consumed_by", "TEXT")?;
+    ensure_column(
+        conn,
+        "repo_scan_runs",
+        "unmatched_project_roots_json",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )?;
     dedupe_legacy_checkpoint_handoff_links(conn)?;
     migrate_document_embeddings_to_composite_key(conn)?;
     conn.execute(
@@ -558,7 +581,8 @@ mod tests {
 
     #[test]
     fn migrations_create_memory_tables() {
-        let path = std::env::temp_dir().join(format!("chatmem-db-test-{}.sqlite", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("chatmem-db-test-{}.sqlite", uuid::Uuid::new_v4()));
         let conn = open_connection(&path).unwrap();
         migrate(&conn).unwrap();
 
@@ -582,6 +606,7 @@ mod tests {
                    'memory_merge_proposals',
                    'memory_entities',
                    'memory_entity_links',
+                   'repo_scan_runs',
                    'search_documents',
                    'wiki_pages'
                  )
@@ -612,6 +637,7 @@ mod tests {
                 "memory_entity_links",
                 "memory_merge_proposals",
                 "messages",
+                "repo_scan_runs",
                 "repos",
                 "search_documents",
                 "tool_calls",
@@ -624,7 +650,8 @@ mod tests {
 
     #[test]
     fn migrations_add_handoff_lifecycle_columns() {
-        let path = std::env::temp_dir().join(format!("chatmem-db-test-{}.sqlite", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("chatmem-db-test-{}.sqlite", uuid::Uuid::new_v4()));
         let conn = open_connection(&path).unwrap();
         migrate(&conn).unwrap();
 
@@ -639,7 +666,8 @@ mod tests {
 
     #[test]
     fn checkpoint_defaults_to_active_state() {
-        let path = std::env::temp_dir().join(format!("chatmem-db-test-{}.sqlite", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("chatmem-db-test-{}.sqlite", uuid::Uuid::new_v4()));
         let conn = open_connection(&path).unwrap();
         migrate(&conn).unwrap();
 
@@ -673,12 +701,7 @@ mod tests {
                  FROM checkpoints
                  WHERE checkpoint_id = ?1",
                 ["checkpoint-001"],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                    ))
-                },
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
             )
             .unwrap();
 
@@ -831,7 +854,8 @@ mod tests {
 
     #[test]
     fn migrations_create_run_timeline_tables() {
-        let path = std::env::temp_dir().join(format!("chatmem-db-test-{}.sqlite", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("chatmem-db-test-{}.sqlite", uuid::Uuid::new_v4()));
         let conn = open_connection(&path).unwrap();
         migrate(&conn).unwrap();
 
@@ -907,7 +931,8 @@ mod tests {
 
     #[test]
     fn migrations_add_memory_freshness_columns() {
-        let path = std::env::temp_dir().join(format!("chatmem-db-test-{}.sqlite", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("chatmem-db-test-{}.sqlite", uuid::Uuid::new_v4()));
         let conn = open_connection(&path).unwrap();
         migrate(&conn).unwrap();
 

@@ -12,10 +12,7 @@ export type LibraryRecordKind =
   | "conversation"
   | "memory"
   | "checkpoint"
-  | "handoff"
-  | "run"
-  | "artifact"
-  | "episode";
+  | "handoff";
 
 export type LibraryDestination =
   | "history-conversations"
@@ -55,10 +52,6 @@ type BuildRepoLibraryRecordsInput = {
   artifacts: ArtifactRecord[];
   episodes: EpisodeRecord[];
 };
-
-function artifactLabel(count: number) {
-  return count === 1 ? "1 artifact" : `${count} artifacts`;
-}
 
 function statusTimestamp(...timestamps: Array<string | null | undefined>) {
   return timestamps.find((timestamp): timestamp is string => Boolean(timestamp)) ?? "1970-01-01T00:00:00Z";
@@ -128,44 +121,9 @@ export function buildRepoLibraryRecords({
     });
   });
 
-  runs.forEach((run) => {
-    records.push({
-      id: run.run_id,
-      kind: "run",
-      title: run.task_hint || run.summary,
-      subtitle: `${run.source_agent} / ${artifactLabel(run.artifact_count)}`,
-      status: run.status,
-      timestamp: statusTimestamp(run.ended_at, run.started_at),
-      destination: "history-outputs",
-      conversationId: null,
-    });
-  });
-
-  artifacts.forEach((artifact) => {
-    records.push({
-      id: artifact.artifact_id,
-      kind: "artifact",
-      title: artifact.title,
-      subtitle: artifact.summary,
-      status: artifact.trust_state,
-      timestamp: artifact.created_at,
-      destination: "history-outputs",
-      conversationId: null,
-    });
-  });
-
-  episodes.forEach((episode) => {
-    records.push({
-      id: episode.episode_id,
-      kind: "episode",
-      title: episode.title,
-      subtitle: episode.summary,
-      status: episode.outcome,
-      timestamp: episode.created_at,
-      destination: "history-outputs",
-      conversationId: episode.source_conversation_id,
-    });
-  });
+  void runs;
+  void artifacts;
+  void episodes;
 
   return records.sort((left, right) => right.timestamp.localeCompare(left.timestamp));
 }

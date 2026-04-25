@@ -10,9 +10,11 @@ import type {
   HandoffConsumeInput,
   HandoffCreateInput,
   HandoffPacket,
+  LocalHistoryImportReport,
   MemoryConflict,
   MemoryCandidate,
   ProjectContextPayload,
+  RepoAlias,
   RepoScanReport,
   RepoMemoryHealth,
   RunRecord,
@@ -29,6 +31,14 @@ export function getRepoMemoryHealth(repoRoot: string) {
 
 export function scanRepoConversations(repoRoot: string) {
   return invoke<RepoScanReport>("scan_repo_conversations", { repoRoot });
+}
+
+export function importAllLocalHistory() {
+  return invoke<LocalHistoryImportReport>("import_all_local_history");
+}
+
+export function mergeRepoAlias(repoRoot: string, aliasRoot: string) {
+  return invoke<RepoAlias>("merge_repo_alias", { repoRoot, aliasRoot });
 }
 
 export function getProjectContext(payload: {
@@ -65,6 +75,10 @@ export function reviewMemoryCandidate(payload: {
 
 export function reverifyMemory(payload: { memoryId: string; verifiedBy: string }) {
   return invoke("reverify_memory", payload);
+}
+
+export function retireMemory(payload: { memoryId: string; retiredBy: string }) {
+  return invoke("retire_memory", payload);
 }
 
 export function listEpisodes(repoRoot: string) {

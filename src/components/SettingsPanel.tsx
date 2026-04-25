@@ -39,6 +39,20 @@ export type WebDavSyncResult = {
   remoteUrl: string;
 };
 
+export type UpgradeReadinessCheck = {
+  key: string;
+  label: string;
+  status: "ok" | "warning" | "error" | string;
+  detail: string;
+};
+
+export type UpgradeReadinessReport = {
+  status: "ok" | "warning" | "error" | string;
+  summary: string;
+  checks: UpgradeReadinessCheck[];
+  warnings: string[];
+};
+
 type SettingsPanelProps = {
   open: boolean;
   title: string;
@@ -62,6 +76,7 @@ type SettingsPanelProps = {
   onSyncSettingsChange: (patch: Partial<SyncSettings>) => void;
   onVerifyWebDavServer: (input: WebDavVerificationInput) => Promise<void>;
   onSyncWebDavNow: (input: WebDavVerificationInput) => Promise<WebDavSyncResult>;
+  onRunUpgradeReadinessCheck: () => Promise<UpgradeReadinessReport>;
   onLoadWebDavPassword: (username: string) => Promise<string | null>;
   onSaveWebDavPassword: (input: { username: string; password: string }) => Promise<void>;
   onCheckUpdates: () => void;
@@ -79,6 +94,22 @@ type WebDavSyncState =
   | { kind: "syncing" }
   | { kind: "success"; uploadedCount: number; remoteUrl: string }
   | { kind: "error"; message: string };
+
+type UpgradeCheckState =
+  | { kind: "idle" }
+  | { kind: "checking" }
+  | { kind: "success"; report: UpgradeReadinessReport }
+  | { kind: "error"; message: string };
+
+const ACKNOWLEDGED_SYSTEMS = [
+  "mem0",
+  "Letta / MemGPT",
+  "Zep",
+  "Cognee",
+  "LangGraph / LangMem",
+  "LLM Wiki / DeepWiki / CodeWiki",
+  "OpenAI / Claude native memory",
+];
 
 function joinServerPath(syncSettings: SyncSettings) {
   return [syncSettings.webdavHost, syncSettings.webdavPath]
@@ -119,6 +150,7 @@ export default function SettingsPanel({
   onSyncSettingsChange,
   onVerifyWebDavServer,
   onSyncWebDavNow,
+  onRunUpgradeReadinessCheck,
   onLoadWebDavPassword,
   onSaveWebDavPassword,
   onCheckUpdates,
@@ -132,6 +164,10 @@ export default function SettingsPanel({
   const [webDavSync, setWebDavSync] = useState<WebDavSyncState>({
     kind: "idle",
   });
+  const [upgradeCheck, setUpgradeCheck] = useState<UpgradeCheckState>({
+    kind: "idle",
+  });
+  const isEnglish = locale === "en";
   const fileSyncEnabled = syncSettings.provider === "webdav";
   const canVerifyWebDav =
     fileSyncEnabled &&
@@ -200,6 +236,27 @@ export default function SettingsPanel({
     }
   };
 
+  const handleRunUpgradeReadinessCheck = async () => {
+    setUpgradeCheck({ kind: "checking" });
+    try {
+      const report = await onRunUpgradeReadinessCheck();
+      setUpgradeCheck({ kind: "success", report });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setUpgradeCheck({ kind: "error", message });
+    }
+  };
+
+  const upgradeCopy = {
+    title: isEnglish ? "Install and upgrade check" : "\u5b89\u88c5\u4e0e\u5347\u7ea7\u81ea\u68c0",
+    helper: isEnglish
+      ? "Checks whether settings, WebDAV credentials, and the memory database survived an upgrade."
+      : "\u68c0\u67e5\u8bbe\u7f6e\u3001WebDAV \u51ed\u636e\u548c\u8bb0\u5fc6\u6570\u636e\u5e93\u5728\u5347\u7ea7\u540e\u662f\u5426\u4ecd\u7136\u53ef\u7528\u3002",
+    run: isEnglish ? "Run upgrade check" : "\u8fd0\u884c\u5347\u7ea7\u81ea\u68c0",
+    checking: isEnglish ? "Checking..." : "\u6b63\u5728\u68c0\u67e5...",
+    failed: isEnglish ? "Upgrade check failed" : "\u5347\u7ea7\u81ea\u68c0\u5931\u8d25",
+  };
+
   useEffect(() => {
     if (!open || !fileSyncEnabled || !syncSettings.username.trim()) {
       return;
@@ -249,6 +306,32 @@ export default function SettingsPanel({
             <option value="en">English</option>
           </select>
         </label>
+
+        <section
+          className="settings-section settings-acknowledgements"
+          aria-labelledby="settings-acknowledgements-title"
+        >
+          <div>
+            <h4 id="settings-acknowledgements-title">
+              {locale === "en" ? "Acknowledgements" : "设计参考与致谢"}
+            </h4>
+            <p className="settings-helper">
+              {locale === "en"
+                ? "ChatMem draws from memory, agent, and wiki systems; it is not a clone of a single project."
+                : "ChatMem 借鉴了多类记忆、Agent 和 Wiki 项目的设计，不是某一个项目的复刻。"}
+            </p>
+          </div>
+          <ul
+            className="acknowledgement-list"
+            aria-label={locale === "en" ? "Acknowledged projects" : "致谢项目"}
+          >
+            {ACKNOWLEDGED_SYSTEMS.map((system) => (
+              <li key={system} className="acknowledgement-pill">
+                {system}
+              </li>
+            ))}
+          </ul>
+        </section>
 
         <section className="settings-section file-sync-section" aria-labelledby="settings-sync-title">
           <div>
@@ -395,6 +478,43 @@ export default function SettingsPanel({
               <option value="as-needed">{syncCopy.asNeededDownloadLabel}</option>
             </select>
           </div>
+        </section>
+
+        <section className="settings-section upgrade-check-section" aria-labelledby="settings-upgrade-title">
+          <div className="settings-section-heading">
+            <div>
+              <h4 id="settings-upgrade-title">{upgradeCopy.title}</h4>
+              <p className="settings-helper">{upgradeCopy.helper}</p>
+            </div>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => void handleRunUpgradeReadinessCheck()}
+              disabled={upgradeCheck.kind === "checking"}
+            >
+              {upgradeCheck.kind === "checking" ? upgradeCopy.checking : upgradeCopy.run}
+            </button>
+          </div>
+
+          {upgradeCheck.kind === "success" ? (
+            <div className={`settings-notice upgrade-check-result is-${upgradeCheck.report.status}`}>
+              <strong>{upgradeCheck.report.summary}</strong>
+              <ul className="upgrade-check-list">
+                {upgradeCheck.report.checks.map((check) => (
+                  <li key={check.key} className={`upgrade-check-item is-${check.status}`}>
+                    <span className="upgrade-check-label">{check.label}</span>
+                    <span className="upgrade-check-detail">{check.detail}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {upgradeCheck.kind === "error" ? (
+            <p className="settings-notice is-danger">
+              {upgradeCopy.failed}: {upgradeCheck.message}
+            </p>
+          ) : null}
         </section>
 
         <label className="settings-toggle-row">

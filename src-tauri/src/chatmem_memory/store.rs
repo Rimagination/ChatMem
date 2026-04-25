@@ -9,17 +9,15 @@ use agentswap_core::types::{ChangeType, Conversation, Role, ToolStatus};
 
 use super::{
     checkpoints::{CheckpointRecord, CreateCheckpointInput},
-    chunks,
-    db,
-    embedding,
-    handoff,
+    chunks, db, embedding, handoff,
     models::{
         AgentConversationCount, ApprovedMemoryResponse, CreateMemoryCandidateInput,
-        CreateMemoryMergeProposalInput,
-        EntityGraphPayload, EntityLinkResponse, EmbeddingRebuildReport, EntityNodeResponse,
-        EpisodeResponse, EvidenceRef, HandoffPacketResponse, MemoryCandidateResponse,
-        MemoryConflictResponse, MemoryMergeSuggestion, ProjectContextPayload,
-        RepoAliasResponse, RepoMemoryHealthResponse, SearchHistoryMatch, WikiPageResponse,
+        CreateMemoryMergeProposalInput, EmbeddingRebuildReport, EntityGraphPayload,
+        EntityLinkResponse, EntityNodeResponse, EpisodeResponse, EvidenceRef,
+        HandoffPacketResponse, MemoryCandidateResponse, MemoryConflictResponse,
+        MemoryMergeSuggestion, ObservedProjectRootCount, ProjectContextPayload, RepoAliasResponse,
+        RepoMemoryHealthResponse, RepoScanReport, RepoScanSummary, SearchHistoryMatch,
+        WikiPageResponse,
     },
     repo_identity,
 };
@@ -31,8 +29,15 @@ pub struct MemoryStore {
 
 #[derive(Debug, Clone)]
 pub enum ReviewAction {
-    Approve { title: String, usage_hint: String },
-    ApproveWithEdit { title: String, value: String, usage_hint: String },
+    Approve {
+        title: String,
+        usage_hint: String,
+    },
+    ApproveWithEdit {
+        title: String,
+        value: String,
+        usage_hint: String,
+    },
     ApproveMerge {
         memory_id: String,
         title: String,
@@ -119,6 +124,40 @@ impl MemoryStore {
         Ok(())
     }
 
+    pub fn merge_repo_alias(&self, repo_root: &str, alias_root: &str) -> Result<RepoAliasResponse> {
+        let normalized_alias_root = repo_identity::normalize_repo_root(alias_root);
+        if normalized_alias_root.is_empty() {
+            anyhow::bail!("alias root is empty");
+        }
+
+        let repo_id = self.ensure_repo(repo_root)?;
+        self.upsert_repo_alias_for_repo_id(&repo_id, &normalized_alias_root, "manual", 1.0)?;
+
+        Ok(RepoAliasResponse {
+            alias_root: normalized_alias_root,
+            alias_kind: "manual".to_string(),
+            confidence: 1.0,
+        })
+    }
+
+    pub(crate) fn repo_match_roots_for_repo_id(
+        &self,
+        repo_id: &str,
+        canonical_repo_root: &str,
+    ) -> Result<Vec<String>> {
+        let mut roots = Vec::new();
+        push_unique_string(
+            &mut roots,
+            &repo_identity::normalize_repo_root(canonical_repo_root),
+        );
+
+        for alias in self.list_repo_aliases_by_repo_id(repo_id)? {
+            push_unique_string(&mut roots, &alias.alias_root);
+        }
+
+        Ok(roots)
+    }
+
     fn list_repo_aliases_by_repo_id(&self, repo_id: &str) -> Result<Vec<RepoAliasResponse>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
@@ -173,8 +212,14 @@ impl MemoryStore {
         )?;
 
         tx.execute("DELETE FROM tool_calls WHERE message_id IN (SELECT message_id FROM messages WHERE conversation_id = ?1)", [conversation_id.clone()])?;
-        tx.execute("DELETE FROM messages WHERE conversation_id = ?1", [conversation_id.clone()])?;
-        tx.execute("DELETE FROM file_changes WHERE conversation_id = ?1", [conversation_id.clone()])?;
+        tx.execute(
+            "DELETE FROM messages WHERE conversation_id = ?1",
+            [conversation_id.clone()],
+        )?;
+        tx.execute(
+            "DELETE FROM file_changes WHERE conversation_id = ?1",
+            [conversation_id.clone()],
+        )?;
         tx.execute(
             "DELETE FROM conversation_chunks WHERE conversation_id = ?1",
             [conversation_id.clone()],
@@ -369,7 +414,10 @@ impl MemoryStore {
         )?;
 
         let excerpt = search_body.chars().take(240).collect::<String>();
-        tx.execute("DELETE FROM evidence_refs WHERE owner_type = 'episode' AND owner_id = ?1", [episode_id.clone()])?;
+        tx.execute(
+            "DELETE FROM evidence_refs WHERE owner_type = 'episode' AND owner_id = ?1",
+            [episode_id.clone()],
+        )?;
         tx.execute(
             "INSERT INTO evidence_refs (
                 evidence_id, owner_type, owner_id, conversation_id, message_id, tool_call_id, file_change_id, excerpt, created_at
@@ -677,7 +725,8 @@ impl MemoryStore {
                      WHERE candidate_id = ?1 AND status = 'pending_review'",
                     params![candidate_id, memory_id, now],
                 )?;
-                let candidate_evidence = load_evidence_refs_from_conn(&tx, "candidate", candidate_id)?;
+                let candidate_evidence =
+                    load_evidence_refs_from_conn(&tx, "candidate", candidate_id)?;
                 append_evidence_refs_tx(&tx, "memory", &memory_id, &candidate_evidence)?;
                 upsert_search_document_tx(
                     &tx,
@@ -757,6 +806,52 @@ impl MemoryStore {
             memory_id,
             &title,
             &value,
+        )?;
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn retire_memory(&self, memory_id: &str, retired_by: &str) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+
+        let updated = tx.execute(
+            "UPDATE approved_memories
+             SET status = 'retired',
+                 verified_by = ?3,
+                 updated_at = ?2
+             WHERE memory_id = ?1
+               AND status = 'active'",
+            params![memory_id, now, retired_by],
+        )?;
+
+        if updated == 0 {
+            let existing_status = tx
+                .query_row(
+                    "SELECT status FROM approved_memories WHERE memory_id = ?1",
+                    [memory_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+
+            return match existing_status {
+                Some(status) => Err(anyhow::anyhow!(
+                    "memory {memory_id} is not active (status: {status})"
+                )),
+                None => Err(anyhow::anyhow!("memory {memory_id} not found")),
+            };
+        }
+
+        let doc_id = format!("memory:{memory_id}");
+        tx.execute(
+            "DELETE FROM search_documents_fts WHERE doc_id = ?1",
+            params![&doc_id],
+        )?;
+        tx.execute(
+            "DELETE FROM search_documents WHERE doc_id = ?1",
+            params![&doc_id],
         )?;
 
         tx.commit()?;
@@ -844,6 +939,38 @@ impl MemoryStore {
         Ok(EntityGraphPayload { entities, links })
     }
 
+    pub fn record_repo_scan_report(&self, report: &RepoScanReport) -> Result<()> {
+        let repo_id = self.ensure_repo(&report.canonical_repo_root)?;
+        let conn = self.conn()?;
+        let scan_id = format!("scan:{repo_id}:{}", uuid::Uuid::new_v4());
+        let source_agents_json = serde_json::to_string(&report.source_agents)?;
+        let unmatched_project_roots_json = serde_json::to_string(&report.unmatched_project_roots)?;
+        let warnings_json = serde_json::to_string(&report.warnings)?;
+
+        conn.execute(
+            "INSERT INTO repo_scan_runs (
+                scan_id, repo_id, requested_repo_root, canonical_repo_root,
+                scanned_conversation_count, linked_conversation_count, skipped_conversation_count,
+                source_agents_json, unmatched_project_roots_json, warnings_json, scanned_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                scan_id,
+                repo_id,
+                report.repo_root,
+                report.canonical_repo_root,
+                report.scanned_conversation_count as i64,
+                report.linked_conversation_count as i64,
+                report.skipped_conversation_count as i64,
+                source_agents_json,
+                unmatched_project_roots_json,
+                warnings_json,
+                report.scanned_at,
+            ],
+        )?;
+
+        Ok(())
+    }
+
     pub fn list_repo_memories(&self, repo_root: &str) -> Result<Vec<ApprovedMemoryResponse>> {
         let repo_id = self.ensure_repo(repo_root)?;
         let conn = self.conn()?;
@@ -852,7 +979,9 @@ impl MemoryStore {
             return Ok(memories);
         }
 
-        for (ancestor_repo_id, ancestor_repo_root) in ancestor_repo_roots_from_conn(&conn, repo_root)? {
+        for (ancestor_repo_id, ancestor_repo_root) in
+            ancestor_repo_roots_from_conn(&conn, repo_root)?
+        {
             let mut inherited = self.list_repo_memories_by_repo_id(&conn, &ancestor_repo_id)?;
             if inherited.is_empty() {
                 continue;
@@ -872,19 +1001,28 @@ impl MemoryStore {
         conn: &Connection,
         repo_id: &str,
     ) -> Result<Vec<ApprovedMemoryResponse>> {
+        quarantine_spurious_auto_approved_memories_tx(conn, repo_id)?;
         let mut stmt = conn.prepare(
             "SELECT memory_id, kind, title, value, usage_hint, status, last_verified_at,
                     freshness_status, freshness_score, verified_at, verified_by
              FROM approved_memories
              WHERE repo_id = ?1
+               AND status = 'active'
              ORDER BY updated_at DESC",
         )?;
 
         let rows = stmt.query_map([repo_id], |row| {
             let last_verified_at = row.get::<_, Option<String>>(6)?;
+            let stored_freshness_status = row.get::<_, String>(7)?;
+            let stored_freshness_score = row.get::<_, f64>(8)?;
             let verified_at = row.get::<_, Option<String>>(9)?;
+            let verified_by = row.get::<_, Option<String>>(10)?;
             let (freshness_status, freshness_score) =
-                evaluate_memory_freshness(last_verified_at.as_deref(), verified_at.as_deref());
+                if verified_by.as_deref() == Some("auto_quarantine") {
+                    (stored_freshness_status, stored_freshness_score)
+                } else {
+                    evaluate_memory_freshness(last_verified_at.as_deref(), verified_at.as_deref())
+                };
 
             Ok(ApprovedMemoryResponse {
                 memory_id: row.get(0)?,
@@ -897,7 +1035,7 @@ impl MemoryStore {
                 freshness_status,
                 freshness_score,
                 verified_at,
-                verified_by: row.get(10)?,
+                verified_by,
                 selected_because: None,
                 evidence_refs: vec![],
             })
@@ -917,13 +1055,13 @@ impl MemoryStore {
         let repo_id = self.ensure_repo(repo_root)?;
         let canonical_repo_root = self.repo_root_for_id(&repo_id)?;
         let conn = self.conn()?;
+        quarantine_spurious_auto_candidates_tx(&conn, &repo_id)?;
+        let approved_memories = self.list_repo_memories_by_repo_id(&conn, &repo_id)?;
 
-        let approved_memory_count = count_table_rows(
-            &conn,
-            "approved_memories",
-            &repo_id,
-            Some(("status", "active")),
-        )?;
+        let approved_memory_count = approved_memories
+            .iter()
+            .filter(|memory| memory.freshness_status == "fresh")
+            .count();
         let pending_candidate_count = count_table_rows(
             &conn,
             "memory_candidates",
@@ -933,6 +1071,7 @@ impl MemoryStore {
         let search_document_count = count_table_rows(&conn, "search_documents", &repo_id, None)?;
         let indexed_chunk_count = count_table_rows(&conn, "conversation_chunks", &repo_id, None)?;
         let repo_aliases = self.list_repo_aliases_by_repo_id(&repo_id)?;
+        let latest_scan = latest_repo_scan_summary_from_conn(&conn, &repo_id)?;
 
         let mut inherited_repo_roots = Vec::new();
         for (ancestor_repo_id, ancestor_repo_root) in
@@ -968,17 +1107,23 @@ impl MemoryStore {
         let mut warnings = Vec::new();
         if approved_memory_count == 0 && !inherited_repo_roots.is_empty() {
             warnings.push(format!(
-                "No approved memories exist for this repo, but ancestor repo memory exists in {}.",
+                "No approved startup rules exist for this repo, but ancestor repo rules exist in {}.",
                 inherited_repo_roots.join(", ")
             ));
         }
         if pending_candidate_count > 0 {
             warnings.push(format!(
-                "{pending_candidate_count} pending memory candidate(s) need review before they become startup memory."
+                "{pending_candidate_count} pending memory candidate(s) need review before they become startup rules."
             ));
         }
         if search_document_count == 0 && inherited_repo_roots.is_empty() {
-            warnings.push("No searchable ChatMem documents are indexed for this repo yet.".to_string());
+            warnings
+                .push("No searchable ChatMem documents are indexed for this repo yet.".to_string());
+        }
+        if let Some(latest_scan) = &latest_scan {
+            for warning in &latest_scan.warnings {
+                push_unique_string(&mut warnings, warning);
+            }
         }
 
         Ok(RepoMemoryHealthResponse {
@@ -991,6 +1136,7 @@ impl MemoryStore {
             inherited_repo_roots,
             repo_aliases,
             conversation_counts_by_agent,
+            latest_scan,
             warnings,
         })
     }
@@ -1056,6 +1202,7 @@ impl MemoryStore {
         status: Option<&str>,
     ) -> Result<Vec<MemoryCandidateResponse>> {
         let conn = self.conn()?;
+        quarantine_spurious_auto_candidates_tx(&conn, repo_id)?;
         let mut sql = String::from(
             "SELECT candidate_id, kind, summary, value, why_it_matters, confidence, proposed_by, status, created_at
              FROM memory_candidates
@@ -1156,7 +1303,9 @@ impl MemoryStore {
                 candidate_id: row.get(1)?,
                 memory_id: row.get(2)?,
                 memory_title: row.get(3)?,
-                reason: format!("来自 {proposed_by} 的 agent-authored merge proposal；批准前请先复核。"),
+                reason: format!(
+                    "来自 {proposed_by} 的 agent-authored merge proposal；批准前请先复核。"
+                ),
                 proposed_title: Some(row.get(4)?),
                 proposed_value: Some(row.get(5)?),
                 proposed_usage_hint: Some(row.get(6)?),
@@ -1169,7 +1318,10 @@ impl MemoryStore {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    fn suggest_memory_merges_by_repo_id(&self, repo_id: &str) -> Result<Vec<MemoryMergeSuggestion>> {
+    fn suggest_memory_merges_by_repo_id(
+        &self,
+        repo_id: &str,
+    ) -> Result<Vec<MemoryMergeSuggestion>> {
         let conn = self.conn()?;
         let active_memories = {
             let mut stmt = conn.prepare(
@@ -1214,8 +1366,14 @@ impl MemoryStore {
                 .iter()
                 .filter(|(_, memory_kind, _, _, _)| memory_kind == &kind)
                 .filter_map(|(memory_id, _, title, memory_value, usage_hint)| {
-                    let score =
-                        merge_similarity(&summary, &value, &why_it_matters, title, memory_value, usage_hint);
+                    let score = merge_similarity(
+                        &summary,
+                        &value,
+                        &why_it_matters,
+                        title,
+                        memory_value,
+                        usage_hint,
+                    );
                     let value_overlap = token_overlap(&value, memory_value);
                     if score >= 0.55 || value_overlap >= 0.65 {
                         Some((score, memory_id, title, memory_value, usage_hint))
@@ -1223,13 +1381,20 @@ impl MemoryStore {
                         None
                     }
                 })
-                .max_by(|left, right| left.0.partial_cmp(&right.0).unwrap_or(std::cmp::Ordering::Equal));
+                .max_by(|left, right| {
+                    left.0
+                        .partial_cmp(&right.0)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
 
             if let Some((score, memory_id, title, memory_value, usage_hint)) = best_match {
                 let reason = if normalize_text(&value) == normalize_text(memory_value) {
                     format!("该候选记忆与已批准记忆内容一致，应走合并复核，避免重复存储（score {:.2}）。", score)
                 } else {
-                    format!("该候选记忆与已批准记忆重叠，建议进行 merge-aware review（score {:.2}）。", score)
+                    format!(
+                        "该候选记忆与已批准记忆重叠，建议进行 merge-aware review（score {:.2}）。",
+                        score
+                    )
                 };
 
                 suggestions.push(MemoryMergeSuggestion {
@@ -1241,7 +1406,10 @@ impl MemoryStore {
                     proposed_title: Some(title.clone()),
                     proposed_value: Some(merge_memory_text(memory_value, &value)),
                     proposed_usage_hint: Some(merge_memory_text(usage_hint, &why_it_matters)),
-                    risk_note: Some("批准前请复核：该提议会改写现有 approved memory，而不是创建重复记忆。".to_string()),
+                    risk_note: Some(
+                        "批准前请复核：该提议会改写现有 approved memory，而不是创建重复记忆。"
+                            .to_string(),
+                    ),
                     proposed_by: None,
                     created_at: None,
                 });
@@ -1460,12 +1628,24 @@ impl MemoryStore {
                     target_profile: row.get(5)?,
                     compression_strategy: row.get(6)?,
                     current_goal: row.get(7)?,
-                    done_items: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(8)?).unwrap_or_default(),
-                    next_items: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(9)?).unwrap_or_default(),
-                    key_files: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(10)?).unwrap_or_default(),
-                    useful_commands: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(11)?).unwrap_or_default(),
-                    related_memories: serde_json::from_str::<Vec<ApprovedMemoryResponse>>(&row.get::<_, String>(12)?).unwrap_or_default(),
-                    related_episodes: serde_json::from_str::<Vec<EpisodeResponse>>(&row.get::<_, String>(13)?).unwrap_or_default(),
+                    done_items: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(8)?)
+                        .unwrap_or_default(),
+                    next_items: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(9)?)
+                        .unwrap_or_default(),
+                    key_files: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(10)?)
+                        .unwrap_or_default(),
+                    useful_commands: serde_json::from_str::<Vec<String>>(
+                        &row.get::<_, String>(11)?,
+                    )
+                    .unwrap_or_default(),
+                    related_memories: serde_json::from_str::<Vec<ApprovedMemoryResponse>>(
+                        &row.get::<_, String>(12)?,
+                    )
+                    .unwrap_or_default(),
+                    related_episodes: serde_json::from_str::<Vec<EpisodeResponse>>(
+                        &row.get::<_, String>(13)?,
+                    )
+                    .unwrap_or_default(),
                     consumed_at: row.get(14)?,
                     consumed_by: row.get(15)?,
                     created_at: row.get(16)?,
@@ -1488,11 +1668,7 @@ impl MemoryStore {
         goal_hint: Option<&str>,
     ) -> Result<HandoffPacketResponse> {
         self.build_and_store_handoff_for_target_profile(
-            repo_root,
-            from_agent,
-            to_agent,
-            goal_hint,
-            None,
+            repo_root, from_agent, to_agent, goal_hint, None,
         )
     }
 
@@ -1543,7 +1719,11 @@ impl MemoryStore {
             .map(|memory| memory.value.clone())
             .take(3)
             .collect::<Vec<_>>();
-        let related_episodes = self.list_episodes(&repo_root)?.into_iter().take(2).collect::<Vec<_>>();
+        let related_episodes = self
+            .list_episodes(&repo_root)?
+            .into_iter()
+            .take(2)
+            .collect::<Vec<_>>();
         let current_goal = handoff::derive_goal(goal_hint, latest_summary.as_deref());
         let done_items = handoff::summarize_done_item(latest_summary.as_deref());
         let next_items = vec![current_goal.clone()];
@@ -1622,7 +1802,16 @@ impl MemoryStore {
             )
             .optional()?;
 
-        let Some((repo_id, conversation_id, source_agent, status, summary, resume_command, handoff_id)) = checkpoint else {
+        let Some((
+            repo_id,
+            conversation_id,
+            source_agent,
+            status,
+            summary,
+            resume_command,
+            handoff_id,
+        )) = checkpoint
+        else {
             return Err(anyhow::anyhow!("checkpoint {checkpoint_id} not found"));
         };
 
@@ -1672,7 +1861,9 @@ impl MemoryStore {
             .take(2)
             .collect::<Vec<_>>();
         let current_goal = handoff::derive_goal(None, Some(&summary));
-        let done_items = vec![format!("已从 {source_agent} checkpoint 固化上下文：{summary}")];
+        let done_items = vec![format!(
+            "已从 {source_agent} checkpoint 固化上下文：{summary}"
+        )];
         let mut next_items = vec![current_goal.clone()];
         if let Some(command) = &resume_command {
             next_items.push(format!("Resume with: {command}"));
@@ -1808,7 +1999,12 @@ impl MemoryStore {
         Ok(())
     }
 
-    pub fn search_history(&self, repo_root: &str, query: &str, limit: usize) -> Result<Vec<SearchHistoryMatch>> {
+    pub fn search_history(
+        &self,
+        repo_root: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<SearchHistoryMatch>> {
         let config = embedding::EmbeddingConfig::from_env();
         match self.search_history_with_embedding_config(repo_root, query, limit, &config) {
             Ok(matches) => Ok(matches),
@@ -1861,11 +2057,8 @@ impl MemoryStore {
         }
 
         let active_count = count_document_embeddings(&conn, &repo_id, &config.model_id())?;
-        let fallback_count = count_document_embeddings(
-            &conn,
-            &repo_id,
-            embedding::LOCAL_EMBEDDING_MODEL,
-        )?;
+        let fallback_count =
+            count_document_embeddings(&conn, &repo_id, embedding::LOCAL_EMBEDDING_MODEL)?;
 
         Ok(EmbeddingRebuildReport {
             provider: config.provider_label().to_string(),
@@ -1889,26 +2082,43 @@ impl MemoryStore {
 
         let repo_id = self.ensure_repo(repo_root)?;
         let conn = self.conn()?;
-        let matches =
+        let mut matches =
             search_history_in_repo_id_with_embedding_config(&conn, &repo_id, query, limit, config)?;
-        if !matches.is_empty() {
+        if has_direct_history_signal(&matches) {
             return Ok(matches);
         }
 
         for (ancestor_repo_id, _) in ancestor_repo_roots_from_conn(&conn, repo_root)? {
-            let matches = search_history_in_repo_id_with_embedding_config(
+            let ancestor_matches = search_history_in_repo_id_with_embedding_config(
                 &conn,
                 &ancestor_repo_id,
                 query,
                 limit,
                 config,
             )?;
-            if !matches.is_empty() {
+            matches = merge_search_matches(matches, ancestor_matches, limit);
+            if has_direct_history_signal(&matches) {
                 return Ok(matches);
             }
         }
 
-        Ok(vec![])
+        for (descendant_repo_id, _) in
+            descendant_repo_roots_matching_query_from_conn(&conn, repo_root, query)?
+        {
+            let descendant_matches = search_history_in_repo_id_with_embedding_config(
+                &conn,
+                &descendant_repo_id,
+                query,
+                limit,
+                config,
+            )?;
+            matches = merge_search_matches(matches, descendant_matches, limit);
+            if has_direct_history_signal(&matches) {
+                return Ok(matches);
+            }
+        }
+
+        Ok(matches)
     }
 
     pub fn evidence_refs(&self, owner_type: &str, owner_id: &str) -> Result<Vec<EvidenceRef>> {
@@ -2002,6 +2212,50 @@ fn search_history_in_repo_id_with_embedding_config(
     Ok(matches)
 }
 
+fn has_direct_history_signal(matches: &[SearchHistoryMatch]) -> bool {
+    matches.iter().any(search_match_has_direct_signal)
+}
+
+fn search_match_has_direct_signal(item: &SearchHistoryMatch) -> bool {
+    item.why_matched.contains("keyword")
+        || item.why_matched.contains("substring")
+        || item.why_matched.contains("hybrid")
+}
+
+fn merge_search_matches(
+    mut current: Vec<SearchHistoryMatch>,
+    additional: Vec<SearchHistoryMatch>,
+    limit: usize,
+) -> Vec<SearchHistoryMatch> {
+    let mut seen = current
+        .iter()
+        .map(search_match_dedupe_key)
+        .collect::<HashSet<_>>();
+    for item in additional {
+        if seen.insert(search_match_dedupe_key(&item)) {
+            current.push(item);
+        }
+    }
+
+    current.sort_by(|left, right| {
+        search_match_has_direct_signal(right)
+            .cmp(&search_match_has_direct_signal(left))
+            .then_with(|| {
+                right
+                    .score
+                    .partial_cmp(&left.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| left.title.cmp(&right.title))
+    });
+    current.truncate(limit);
+    current
+}
+
+fn search_match_dedupe_key(item: &SearchHistoryMatch) -> String {
+    format!("{}:{}:{}", item.r#type, item.title, item.summary)
+}
+
 fn ancestor_repo_roots_from_conn(
     conn: &Connection,
     repo_root: &str,
@@ -2021,6 +2275,84 @@ fn ancestor_repo_roots_from_conn(
     Ok(rows)
 }
 
+fn descendant_repo_roots_matching_query_from_conn(
+    conn: &Connection,
+    repo_root: &str,
+    query: &str,
+) -> Result<Vec<(String, String)>> {
+    const MAX_DESCENDANT_REPOS: usize = 32;
+
+    let terms = descendant_prefilter_terms(query);
+    if terms.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let normalized = repo_identity::normalize_repo_root(repo_root);
+    let mut stmt = conn.prepare(
+        "SELECT repo_id, repo_root
+         FROM repos
+         WHERE repo_root LIKE ?1 || '/%'
+         ORDER BY length(repo_root) ASC, updated_at DESC",
+    )?;
+    let rows = stmt
+        .query_map([normalized], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+
+    let mut descendants = Vec::new();
+    for (repo_id, repo_root) in rows {
+        if repo_has_like_match_for_any_term(conn, &repo_id, &terms)? {
+            descendants.push((repo_id, repo_root));
+        }
+        if descendants.len() >= MAX_DESCENDANT_REPOS {
+            break;
+        }
+    }
+
+    Ok(descendants)
+}
+
+fn descendant_prefilter_terms(query: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    query
+        .split_whitespace()
+        .map(|term| {
+            term.trim_matches(|ch: char| {
+                !(ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
+            })
+            .to_lowercase()
+        })
+        .filter(|term| term.chars().count() >= 2)
+        .filter(|term| seen.insert(term.clone()))
+        .take(8)
+        .collect()
+}
+
+fn repo_has_like_match_for_any_term(
+    conn: &Connection,
+    repo_id: &str,
+    terms: &[String],
+) -> Result<bool> {
+    let mut stmt = conn.prepare(
+        "SELECT 1
+         FROM search_documents
+         WHERE repo_id = ?1
+           AND lower(title || ' ' || body) LIKE ?2
+         LIMIT 1",
+    )?;
+
+    for term in terms {
+        let pattern = format!("%{term}%");
+        if stmt.exists(params![repo_id, pattern])? {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
 fn count_table_rows(
     conn: &Connection,
     table: &str,
@@ -2035,15 +2367,49 @@ fn count_table_rows(
     };
 
     let count = match status_filter {
-        Some((_, status_value)) => conn.query_row(
-            &sql,
-            params![repo_id, status_value],
-            |row| row.get::<_, i64>(0),
-        )?,
+        Some((_, status_value)) => conn.query_row(&sql, params![repo_id, status_value], |row| {
+            row.get::<_, i64>(0)
+        })?,
         None => conn.query_row(&sql, [repo_id], |row| row.get::<_, i64>(0))?,
     };
 
     Ok(count as usize)
+}
+
+fn latest_repo_scan_summary_from_conn(
+    conn: &Connection,
+    repo_id: &str,
+) -> Result<Option<RepoScanSummary>> {
+    conn.query_row(
+        "SELECT requested_repo_root, canonical_repo_root,
+                scanned_conversation_count, linked_conversation_count, skipped_conversation_count,
+                source_agents_json, unmatched_project_roots_json, warnings_json, scanned_at
+         FROM repo_scan_runs
+         WHERE repo_id = ?1
+         ORDER BY scanned_at DESC
+         LIMIT 1",
+        [repo_id],
+        |row| {
+            let source_agents_json = row.get::<_, String>(5)?;
+            let unmatched_project_roots_json = row.get::<_, String>(6)?;
+            let warnings_json = row.get::<_, String>(7)?;
+            Ok(RepoScanSummary {
+                repo_root: row.get(0)?,
+                canonical_repo_root: row.get(1)?,
+                scanned_conversation_count: row.get::<_, i64>(2)? as usize,
+                linked_conversation_count: row.get::<_, i64>(3)? as usize,
+                skipped_conversation_count: row.get::<_, i64>(4)? as usize,
+                source_agents: parse_agent_conversation_counts(&source_agents_json),
+                unmatched_project_roots: parse_observed_project_root_counts(
+                    &unmatched_project_roots_json,
+                ),
+                warnings: parse_string_vec(&warnings_json),
+                scanned_at: row.get(8)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 fn evidence_owner_for_doc_type(doc_type: &str) -> &'static str {
@@ -2137,7 +2503,11 @@ fn collect_fts_search_candidates(
         let candidate = search_candidate_entry(
             candidates, doc_id, doc_type, doc_ref_id, title, body, updated_at,
         );
-        candidate.keyword_rank = Some(candidate.keyword_rank.map_or(rank, |existing| existing.min(rank)));
+        candidate.keyword_rank = Some(
+            candidate
+                .keyword_rank
+                .map_or(rank, |existing| existing.min(rank)),
+        );
     }
 
     Ok(())
@@ -2346,11 +2716,7 @@ fn backfill_missing_document_embeddings_with_config(
     )?;
 
     let rows = stmt.query_map(
-        params![
-            repo_id,
-            embedding_model,
-            dimensions as i64,
-        ],
+        params![repo_id, embedding_model, dimensions as i64,],
         |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -2370,7 +2736,11 @@ fn backfill_missing_document_embeddings_with_config(
     Ok(())
 }
 
-fn count_document_embeddings(conn: &Connection, repo_id: &str, embedding_model: &str) -> Result<usize> {
+fn count_document_embeddings(
+    conn: &Connection,
+    repo_id: &str,
+    embedding_model: &str,
+) -> Result<usize> {
     let count = conn.query_row(
         "SELECT COUNT(*)
          FROM document_embeddings
@@ -2383,7 +2753,11 @@ fn count_document_embeddings(conn: &Connection, repo_id: &str, embedding_model: 
     Ok(count as usize)
 }
 
-fn load_evidence_refs_from_conn(conn: &Connection, owner_type: &str, owner_id: &str) -> Result<Vec<EvidenceRef>> {
+fn load_evidence_refs_from_conn(
+    conn: &Connection,
+    owner_type: &str,
+    owner_id: &str,
+) -> Result<Vec<EvidenceRef>> {
     let mut stmt = conn.prepare(
         "SELECT evidence_id, conversation_id, message_id, tool_call_id, file_change_id, excerpt
          FROM evidence_refs
@@ -2405,7 +2779,10 @@ fn load_evidence_refs_from_conn(conn: &Connection, owner_type: &str, owner_id: &
     Ok(rows)
 }
 
-fn load_chunk_evidence_refs_from_conn(conn: &Connection, chunk_ref_id: &str) -> Result<Vec<EvidenceRef>> {
+fn load_chunk_evidence_refs_from_conn(
+    conn: &Connection,
+    chunk_ref_id: &str,
+) -> Result<Vec<EvidenceRef>> {
     let chunk_id = format!("chunk:{chunk_ref_id}");
     let row = conn
         .query_row(
@@ -2498,7 +2875,10 @@ fn upsert_search_document_tx(
             updated_at = excluded.updated_at",
         params![doc_id, repo_id, doc_type, doc_ref_id, title, body, now],
     )?;
-    conn.execute("DELETE FROM search_documents_fts WHERE doc_id = ?1", [doc_id])?;
+    conn.execute(
+        "DELETE FROM search_documents_fts WHERE doc_id = ?1",
+        [doc_id],
+    )?;
     conn.execute(
         "INSERT INTO search_documents_fts (doc_id, title, body) VALUES (?1, ?2, ?3)",
         params![doc_id, title, body],
@@ -2748,11 +3128,20 @@ fn is_entity_candidate(token: &str) -> bool {
 
     (has_symbol && (has_upper || has_digit))
         || (all_caps && has_upper && token.len() >= 3)
-        || (has_upper && has_lower && token.chars().next().is_some_and(|ch| ch.is_ascii_uppercase()))
+        || (has_upper
+            && has_lower
+            && token
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_uppercase()))
 }
 
 fn infer_entity_kind(name: &str) -> String {
-    if name.contains('_') || name.chars().all(|ch| ch.is_ascii_uppercase() || !ch.is_ascii_alphabetic()) {
+    if name.contains('_')
+        || name
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || !ch.is_ascii_alphabetic())
+    {
         "symbol".to_string()
     } else if name.contains('.') || name.contains('-') {
         "artifact".to_string()
@@ -2866,16 +3255,20 @@ fn auto_memory_candidate_from_line(line: &str) -> Option<AutoMemoryCandidateDraf
         ("gotcha", value)
     } else if let Some(value) = strip_marker(trimmed, &lower, "\u{8bb0}\u{4f4f}:") {
         ("preference", value)
+    } else if let Some(value) = strip_marker(trimmed, &lower, "\u{8bb0}\u{4f4f}\u{ff1a}") {
+        ("preference", value)
+    } else if let Some(value) = strip_marker(trimmed, &lower, "\u{4ee5}\u{540e}:") {
+        ("preference", value)
+    } else if let Some(value) = strip_marker(trimmed, &lower, "\u{4ee5}\u{540e}\u{ff1a}") {
+        ("preference", value)
     } else if let Some(value) = strip_marker(trimmed, &lower, "\u{89c4}\u{5219}:") {
+        ("convention", value)
+    } else if let Some(value) = strip_marker(trimmed, &lower, "\u{89c4}\u{5219}\u{ff1a}") {
         ("convention", value)
     } else if let Some(value) = strip_marker(trimmed, &lower, "\u{6ce8}\u{610f}:") {
         ("gotcha", value)
-    } else if lower.starts_with("always ")
-        || lower.starts_with("must ")
-        || lower.starts_with("do not ")
-        || lower.starts_with("never ")
-    {
-        ("gotcha", trimmed)
+    } else if let Some(value) = strip_marker(trimmed, &lower, "\u{6ce8}\u{610f}\u{ff1a}") {
+        ("gotcha", value)
     } else {
         return None;
     };
@@ -2890,8 +3283,7 @@ fn auto_memory_candidate_from_line(line: &str) -> Option<AutoMemoryCandidateDraf
         summary: truncate_text(&value, 96),
         value,
         why_it_matters:
-            "从明确的 durable-memory wording 自动提取；请在批准前复核中文表述和技术 token 是否准确。"
-                .to_string(),
+            "从明确的长期记忆标记自动提取；批准前请确认它确实是稳定、可复用的启动规则。".to_string(),
     })
 }
 
@@ -2901,7 +3293,142 @@ fn strip_marker<'a>(trimmed: &'a str, lower: &str, marker: &str) -> Option<&'a s
         .then_some(trimmed.get(marker.len()..).unwrap_or_default())
 }
 
-fn auto_candidate_exists_tx(conn: &Connection, repo_id: &str, normalized_value: &str) -> Result<bool> {
+fn quarantine_spurious_auto_candidates_tx(conn: &Connection, repo_id: &str) -> Result<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT c.candidate_id, c.summary, c.value, COALESCE(group_concat(e.excerpt, '\n'), '')
+         FROM memory_candidates c
+         LEFT JOIN evidence_refs e
+           ON e.owner_type = 'candidate'
+          AND e.owner_id = c.candidate_id
+         WHERE c.repo_id = ?1
+           AND c.status = 'pending_review'
+           AND c.proposed_by = 'auto_extractor'
+         GROUP BY c.candidate_id, c.summary, c.value",
+    )?;
+    let rows = stmt
+        .query_map([repo_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+
+    let mut rejected = 0;
+    let now = chrono::Utc::now().to_rfc3339();
+    for (candidate_id, summary, value, evidence_text) in rows {
+        if auto_candidate_has_explicit_memory_marker(&summary, &value, &evidence_text) {
+            continue;
+        }
+
+        conn.execute(
+            "UPDATE memory_candidates
+             SET status = 'rejected', reviewed_at = ?2
+             WHERE candidate_id = ?1 AND status = 'pending_review'",
+            params![candidate_id, now],
+        )?;
+        conn.execute(
+            "UPDATE memory_merge_proposals
+             SET status = 'rejected', updated_at = ?2
+             WHERE candidate_id = ?1 AND status = 'pending_review'",
+            params![candidate_id, now],
+        )?;
+        conn.execute(
+            "UPDATE memory_conflicts
+             SET status = 'resolved', resolved_at = ?2
+             WHERE candidate_id = ?1 AND status = 'open'",
+            params![candidate_id, now],
+        )?;
+        rejected += 1;
+    }
+
+    Ok(rejected)
+}
+
+fn quarantine_spurious_auto_approved_memories_tx(
+    conn: &Connection,
+    repo_id: &str,
+) -> Result<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT m.memory_id, m.title, m.value, m.usage_hint, c.summary, c.value,
+                COALESCE(group_concat(e.excerpt, '\n'), '')
+         FROM approved_memories m
+         JOIN memory_candidates c
+           ON c.candidate_id = m.created_from_candidate_id
+         LEFT JOIN evidence_refs e
+           ON (e.owner_type = 'memory' AND e.owner_id = m.memory_id)
+           OR (e.owner_type = 'candidate' AND e.owner_id = c.candidate_id)
+         WHERE m.repo_id = ?1
+           AND m.status = 'active'
+           AND c.proposed_by = 'auto_extractor'
+           AND COALESCE(m.verified_by, '') <> 'auto_quarantine'
+         GROUP BY m.memory_id, m.title, m.value, m.usage_hint, c.summary, c.value",
+    )?;
+    let rows = stmt
+        .query_map([repo_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+
+    let mut quarantined = 0;
+    let now = chrono::Utc::now().to_rfc3339();
+    for (memory_id, title, value, usage_hint, candidate_summary, candidate_value, evidence_text) in
+        rows
+    {
+        if auto_candidate_has_explicit_memory_marker(
+            &format!("{title}\n{candidate_summary}"),
+            &format!("{value}\n{candidate_value}"),
+            &format!("{usage_hint}\n{evidence_text}"),
+        ) {
+            continue;
+        }
+
+        conn.execute(
+            "UPDATE approved_memories
+             SET last_verified_at = NULL,
+                 freshness_status = 'needs_review',
+                 freshness_score = 0.2,
+                 verified_at = ?2,
+                 verified_by = 'auto_quarantine',
+                 updated_at = ?2
+             WHERE memory_id = ?1
+               AND status = 'active'",
+            params![memory_id, now],
+        )?;
+        quarantined += 1;
+    }
+
+    Ok(quarantined)
+}
+
+fn auto_candidate_has_explicit_memory_marker(
+    summary: &str,
+    value: &str,
+    evidence_text: &str,
+) -> bool {
+    [summary, value, evidence_text]
+        .into_iter()
+        .flat_map(|text| text.lines())
+        .any(|line| auto_memory_candidate_from_line(line).is_some())
+}
+
+fn auto_candidate_exists_tx(
+    conn: &Connection,
+    repo_id: &str,
+    normalized_value: &str,
+) -> Result<bool> {
     let mut stmt = conn.prepare(
         "SELECT value
          FROM memory_candidates
@@ -2943,8 +3470,15 @@ fn record_candidate_conflicts_tx(
     drop(stmt);
 
     for (memory_id, title, memory_value, usage_hint) in memories {
-        let similarity = merge_similarity(summary, value, why_it_matters, &title, &memory_value, &usage_hint)
-            .max(token_overlap(value, &memory_value));
+        let similarity = merge_similarity(
+            summary,
+            value,
+            why_it_matters,
+            &title,
+            &memory_value,
+            &usage_hint,
+        )
+        .max(token_overlap(value, &memory_value));
         if similarity < 0.42 || !has_negation_flip(value, &memory_value) {
             continue;
         }
@@ -3116,13 +3650,21 @@ fn build_wiki_page_specs(
     vec![
         WikiPageSpec {
             slug: "project-overview".to_string(),
-            title: "项目概览".to_string(),
-            body: build_project_overview_wiki_body(repo_root, memories, episodes),
+            title: "项目地图".to_string(),
+            body: build_project_map_wiki_body(repo_root, memories, episodes),
             status: wiki_status(memories),
-            source_memory_ids: memories.iter().map(|memory| memory.memory_id.clone()).collect(),
-            source_episode_ids: episodes.iter().map(|episode| episode.episode_id.clone()).collect(),
+            source_memory_ids: memories
+                .iter()
+                .map(|memory| memory.memory_id.clone())
+                .collect(),
+            source_episode_ids: episodes
+                .iter()
+                .map(|episode| episode.episode_id.clone())
+                .collect(),
             last_verified_at: newest_memory_verification(memories),
         },
+        build_module_map_wiki_page(memories, episodes),
+        build_risk_ledger_wiki_page(memories, episodes),
         build_memory_wiki_page(
             "commands",
             "命令",
@@ -3145,9 +3687,17 @@ fn build_wiki_page_specs(
             slug: "recent-work".to_string(),
             title: "最近工作".to_string(),
             body: build_recent_work_wiki_body(episodes),
-            status: if episodes.is_empty() { "empty" } else { "fresh" }.to_string(),
+            status: if episodes.is_empty() {
+                "empty"
+            } else {
+                "fresh"
+            }
+            .to_string(),
             source_memory_ids: vec![],
-            source_episode_ids: episodes.iter().map(|episode| episode.episode_id.clone()).collect(),
+            source_episode_ids: episodes
+                .iter()
+                .map(|episode| episode.episode_id.clone())
+                .collect(),
             last_verified_at: None,
         },
     ]
@@ -3177,46 +3727,424 @@ fn build_memory_wiki_page(
         title: title.to_string(),
         body,
         status: wiki_status(memories),
-        source_memory_ids: memories.iter().map(|memory| memory.memory_id.clone()).collect(),
+        source_memory_ids: memories
+            .iter()
+            .map(|memory| memory.memory_id.clone())
+            .collect(),
         source_episode_ids: vec![],
         last_verified_at: newest_memory_verification(memories),
     }
 }
 
-fn build_project_overview_wiki_body(
+#[derive(Debug, Clone)]
+struct ModuleMapEntry {
+    path: String,
+    memory_ids: Vec<String>,
+    episode_ids: Vec<String>,
+    notes: Vec<String>,
+}
+
+fn build_risk_ledger_wiki_page(
+    memories: &[ApprovedMemoryResponse],
+    episodes: &[EpisodeResponse],
+) -> WikiPageSpec {
+    let risk_memories = memories
+        .iter()
+        .filter(|memory| is_risk_memory(memory))
+        .collect::<Vec<_>>();
+    let risk_episodes = episodes
+        .iter()
+        .filter(|episode| is_risk_episode(episode))
+        .collect::<Vec<_>>();
+
+    let mut source_memory_ids = Vec::new();
+    let mut source_episode_ids = Vec::new();
+    for memory in &risk_memories {
+        push_unique_string(&mut source_memory_ids, &memory.memory_id);
+    }
+    for episode in &risk_episodes {
+        push_unique_string(&mut source_episode_ids, &episode.episode_id);
+    }
+
+    let body = if risk_memories.is_empty() && risk_episodes.is_empty() {
+        "# 风险台账\n\n从启动规则和本地历史中编译风险、坑点和需要复核的事项。\n\n暂无已识别风险。\n"
+            .to_string()
+    } else {
+        let mut body =
+            "# 风险台账\n\n从启动规则和本地历史中编译风险、坑点和需要复核的事项。\n\n".to_string();
+        body.push_str("## 启动规则风险\n\n");
+        if risk_memories.is_empty() {
+            body.push_str("暂无来自启动规则的风险。\n\n");
+        } else {
+            for memory in &risk_memories {
+                body.push_str(&format_memory_wiki_item(memory));
+                body.push('\n');
+            }
+            body.push('\n');
+        }
+
+        body.push_str("## 历史风险信号\n\n");
+        if risk_episodes.is_empty() {
+            body.push_str("暂无来自本地历史的风险信号。\n");
+        } else {
+            for episode in &risk_episodes {
+                body.push_str(&format_episode_wiki_item(episode));
+                body.push_str(&format!(
+                    "\n  - 来源对话：`{}`\n",
+                    episode.source_conversation_id
+                ));
+            }
+        }
+        body
+    };
+
+    let verified_memories = risk_memories
+        .iter()
+        .map(|memory| (*memory).clone())
+        .collect::<Vec<_>>();
+
+    WikiPageSpec {
+        slug: "risk-ledger".to_string(),
+        title: "风险台账".to_string(),
+        body,
+        status: risk_ledger_status(&risk_memories, &risk_episodes),
+        source_memory_ids,
+        source_episode_ids,
+        last_verified_at: newest_memory_verification(&verified_memories),
+    }
+}
+
+fn build_module_map_wiki_page(
+    memories: &[ApprovedMemoryResponse],
+    episodes: &[EpisodeResponse],
+) -> WikiPageSpec {
+    let entries = build_module_map_entries(memories, episodes);
+    let mut source_memory_ids = Vec::new();
+    let mut source_episode_ids = Vec::new();
+
+    for entry in &entries {
+        for memory_id in &entry.memory_ids {
+            push_unique_string(&mut source_memory_ids, memory_id);
+        }
+        for episode_id in &entry.episode_ids {
+            push_unique_string(&mut source_episode_ids, episode_id);
+        }
+    }
+
+    let body = if entries.is_empty() {
+        "# 模块地图\n\n从启动规则和本地历史中抽取文件、目录和组件线索。\n\n暂无可识别的模块路径。\n"
+            .to_string()
+    } else {
+        let mut body =
+            "# 模块地图\n\n从启动规则和本地历史中抽取文件、目录和组件线索，帮助新 agent 快速定位项目结构。\n\n".to_string();
+        body.push_str("## 关键模块\n\n");
+        for entry in &entries {
+            body.push_str(&format!("- `{}`\n", entry.path));
+            if !entry.memory_ids.is_empty() {
+                body.push_str(&format!(
+                    "  - 启动规则来源：{}\n",
+                    entry
+                        .memory_ids
+                        .iter()
+                        .map(|id| format!("`{id}`"))
+                        .collect::<Vec<_>>()
+                        .join("、")
+                ));
+            }
+            if !entry.episode_ids.is_empty() {
+                body.push_str(&format!(
+                    "  - 本地历史来源：{}\n",
+                    entry
+                        .episode_ids
+                        .iter()
+                        .map(|id| format!("`{id}`"))
+                        .collect::<Vec<_>>()
+                        .join("、")
+                ));
+            }
+            if !entry.notes.is_empty() {
+                body.push_str(&format!(
+                    "  - 线索：{}\n",
+                    entry
+                        .notes
+                        .iter()
+                        .take(2)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("；")
+                ));
+            }
+        }
+        body
+    };
+
+    WikiPageSpec {
+        slug: "module-map".to_string(),
+        title: "模块地图".to_string(),
+        body,
+        status: if entries.is_empty() { "empty" } else { "fresh" }.to_string(),
+        source_memory_ids,
+        source_episode_ids,
+        last_verified_at: newest_memory_verification(memories),
+    }
+}
+
+fn build_module_map_entries(
+    memories: &[ApprovedMemoryResponse],
+    episodes: &[EpisodeResponse],
+) -> Vec<ModuleMapEntry> {
+    let mut entries: HashMap<String, ModuleMapEntry> = HashMap::new();
+
+    for memory in memories {
+        let text = format!("{}\n{}\n{}", memory.title, memory.value, memory.usage_hint);
+        for path in extract_wiki_module_paths(&text) {
+            let entry = entries
+                .entry(path.clone())
+                .or_insert_with(|| ModuleMapEntry {
+                    path,
+                    memory_ids: Vec::new(),
+                    episode_ids: Vec::new(),
+                    notes: Vec::new(),
+                });
+            push_unique_string(&mut entry.memory_ids, &memory.memory_id);
+            push_unique_string(&mut entry.notes, &memory.title);
+        }
+    }
+
+    for episode in episodes {
+        let text = format!(
+            "{}\n{}\n{}",
+            episode.title, episode.summary, episode.outcome
+        );
+        for path in extract_wiki_module_paths(&text) {
+            let entry = entries
+                .entry(path.clone())
+                .or_insert_with(|| ModuleMapEntry {
+                    path,
+                    memory_ids: Vec::new(),
+                    episode_ids: Vec::new(),
+                    notes: Vec::new(),
+                });
+            push_unique_string(&mut entry.episode_ids, &episode.episode_id);
+            push_unique_string(&mut entry.notes, &episode.title);
+        }
+    }
+
+    let mut entries = entries.into_values().collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    entries
+}
+
+fn extract_wiki_module_paths(text: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+
+    for raw_token in text.split_whitespace() {
+        let token = raw_token
+            .trim_matches(|ch: char| {
+                matches!(
+                    ch,
+                    '`' | '*'
+                        | '"'
+                        | '\''
+                        | '('
+                        | ')'
+                        | '['
+                        | ']'
+                        | '{'
+                        | '}'
+                        | '<'
+                        | '>'
+                        | ','
+                        | ';'
+                        | ':'
+                        | '。'
+                        | '，'
+                        | '；'
+                        | '：'
+                )
+            })
+            .trim_end_matches(|ch: char| matches!(ch, '.' | '!' | '?' | '。' | '！' | '？'))
+            .replace('\\', "/");
+
+        if is_wiki_module_path(&token) {
+            push_unique_string(&mut paths, &token);
+        }
+    }
+
+    paths
+}
+
+fn is_wiki_module_path(path: &str) -> bool {
+    if path.is_empty() || path.contains("://") {
+        return false;
+    }
+
+    let lowered = path.to_ascii_lowercase();
+    let known_roots = [
+        "src/",
+        "src-tauri/",
+        "crates/",
+        "docs/",
+        "skills/",
+        "tests/",
+        "__tests__/",
+    ];
+    let known_files = [
+        "readme.md",
+        "package.json",
+        "cargo.toml",
+        "vite.config.ts",
+        "tsconfig.json",
+    ];
+    let known_extensions = [
+        ".rs", ".ts", ".tsx", ".js", ".jsx", ".json", ".toml", ".md", ".css", ".scss", ".yaml",
+        ".yml", ".py",
+    ];
+
+    let has_known_root = known_roots.iter().any(|root| lowered.starts_with(root));
+    let has_known_file = known_files.iter().any(|file| lowered == *file);
+    let has_known_extension = known_extensions
+        .iter()
+        .any(|extension| lowered.ends_with(extension));
+
+    (has_known_root || has_known_file || path.contains('/')) && has_known_extension
+}
+
+fn push_unique_string(values: &mut Vec<String>, value: &str) {
+    if !value.is_empty() && !values.iter().any(|existing| existing == value) {
+        values.push(value.to_string());
+    }
+}
+
+fn is_risk_memory(memory: &ApprovedMemoryResponse) -> bool {
+    matches!(memory.kind.as_str(), "gotcha" | "risk" | "warning")
+        || matches!(
+            memory.freshness_status.as_str(),
+            "stale" | "needs_review" | "unknown"
+        )
+        || contains_risk_signal(&format!(
+            "{}\n{}\n{}",
+            memory.title, memory.value, memory.usage_hint
+        ))
+}
+
+fn is_risk_episode(episode: &EpisodeResponse) -> bool {
+    contains_risk_signal(&format!(
+        "{}\n{}\n{}",
+        episode.title, episode.summary, episode.outcome
+    ))
+}
+
+fn contains_risk_signal(text: &str) -> bool {
+    let lowered = text.to_lowercase();
+    [
+        "fail",
+        "failed",
+        "failure",
+        "error",
+        "blocked",
+        "warning",
+        "risk",
+        "conflict",
+        "missing",
+        "disappear",
+        "reset",
+        "broken",
+        "失败",
+        "错误",
+        "阻塞",
+        "风险",
+        "冲突",
+        "丢失",
+        "消失",
+        "重置",
+        "警告",
+    ]
+    .iter()
+    .any(|term| lowered.contains(term))
+}
+
+fn risk_ledger_status(
+    memories: &[&ApprovedMemoryResponse],
+    episodes: &[&EpisodeResponse],
+) -> String {
+    if memories.is_empty() && episodes.is_empty() {
+        return "empty".to_string();
+    }
+
+    if memories
+        .iter()
+        .any(|memory| memory.freshness_status == "stale")
+    {
+        return "stale".to_string();
+    }
+
+    if memories
+        .iter()
+        .any(|memory| matches!(memory.freshness_status.as_str(), "needs_review" | "unknown"))
+    {
+        return "needs_review".to_string();
+    }
+
+    "fresh".to_string()
+}
+
+fn build_project_map_wiki_body(
     repo_root: &str,
     memories: &[ApprovedMemoryResponse],
     episodes: &[EpisodeResponse],
 ) -> String {
     let mut body = format!(
-        "# 项目概览\n\n仓库：`{repo_root}`\n\nChatMem approved memory 仍然是事实来源；本页是为用户和 agent onboarding 生成的 wiki projection。\n\n"
+        "# 项目地图\n\n仓库：`{repo_root}`\n\n本页由 ChatMem 自动编译，用来帮用户和 agent 快速理解项目。Wiki 是投影，不是事实来源；事实来源仍然是已确认启动规则和本地历史证据。\n\n"
     );
 
-    body.push_str("## 关键记忆\n\n");
+    body.push_str("## 快速定位\n\n");
+    body.push_str(&format!(
+        "- 启动规则：{} 条，适合新任务启动时携带。\n",
+        memories.len()
+    ));
+    body.push_str(&format!(
+        "- 本地历史证据：{} 段，适合回答“以前聊过什么”。\n",
+        episodes.len()
+    ));
+    body.push_str("- 继续工作：checkpoint 和 handoff 只表示临时恢复现场，不写进长期规则。\n\n");
+
+    body.push_str("## 启动规则地图\n\n");
     if memories.is_empty() {
-        body.push_str("暂无已批准记忆。\n\n");
+        body.push_str("暂无已确认启动规则。\n\n");
     } else {
-        for memory in memories.iter().take(8) {
+        for memory in memories.iter().take(12) {
             body.push_str(&format_memory_wiki_item(memory));
             body.push('\n');
         }
     }
 
-    body.push_str("## 最近工作\n\n");
+    body.push_str("## 本地历史证据\n\n");
     if episodes.is_empty() {
-        body.push_str("暂无已捕获 episode。\n");
+        body.push_str("暂无已捕获的本地历史片段。\n\n");
     } else {
-        for episode in episodes.iter().take(6) {
+        for episode in episodes.iter().take(8) {
             body.push_str(&format_episode_wiki_item(episode));
-            body.push('\n');
+            body.push_str(&format!(
+                "\n  - 来源对话：`{}`\n",
+                episode.source_conversation_id
+            ));
         }
+        body.push('\n');
     }
+
+    body.push_str("## 维护边界\n\n");
+    body.push_str("- 批准启动规则，解决“以后每次都要带什么”。\n");
+    body.push_str("- 检索本地历史，解决“以前具体聊过什么”。\n");
+    body.push_str("- 重建 Wiki，解决“项目现在长什么样”。\n");
+    body.push_str("- 过期、冲突或缺证据的内容应回到规则审核，而不是手写改 Wiki。\n");
 
     body
 }
 
 fn build_recent_work_wiki_body(episodes: &[EpisodeResponse]) -> String {
-    let mut body = "# 最近工作\n\n从本地 agent 对话捕获的精简 repository episodes。\n\n".to_string();
+    let mut body =
+        "# 最近工作\n\n从本地 agent 对话捕获的精简 repository episodes。\n\n".to_string();
 
     if episodes.is_empty() {
         body.push_str("暂无已捕获 episode。\n");
@@ -3241,7 +4169,11 @@ fn format_memory_wiki_item(memory: &ApprovedMemoryResponse) -> String {
         memory.memory_id
     );
 
-    if let Some(verified_at) = memory.verified_at.as_deref().or(memory.last_verified_at.as_deref()) {
+    if let Some(verified_at) = memory
+        .verified_at
+        .as_deref()
+        .or(memory.last_verified_at.as_deref())
+    {
         item.push_str(&format!("\n  - 最近验证：{verified_at}"));
     }
 
@@ -3260,7 +4192,10 @@ fn wiki_status(memories: &[ApprovedMemoryResponse]) -> String {
         return "empty".to_string();
     }
 
-    if memories.iter().any(|memory| memory.freshness_status == "stale") {
+    if memories
+        .iter()
+        .any(|memory| memory.freshness_status == "stale")
+    {
         return "stale".to_string();
     }
 
@@ -3271,7 +4206,10 @@ fn wiki_status(memories: &[ApprovedMemoryResponse]) -> String {
         return "needs_review".to_string();
     }
 
-    if memories.iter().any(|memory| memory.freshness_status == "unknown") {
+    if memories
+        .iter()
+        .any(|memory| memory.freshness_status == "unknown")
+    {
         return "unknown".to_string();
     }
 
@@ -3292,6 +4230,14 @@ fn newest_memory_verification(memories: &[ApprovedMemoryResponse]) -> Option<Str
 }
 
 fn parse_string_vec(json: &str) -> Vec<String> {
+    serde_json::from_str(json).unwrap_or_default()
+}
+
+fn parse_agent_conversation_counts(json: &str) -> Vec<AgentConversationCount> {
+    serde_json::from_str(json).unwrap_or_default()
+}
+
+fn parse_observed_project_root_counts(json: &str) -> Vec<ObservedProjectRootCount> {
     serde_json::from_str(json).unwrap_or_default()
 }
 
@@ -3352,16 +4298,8 @@ fn should_search_history(intent: &str, query: &str) -> bool {
 
     let lowered_query = query.to_lowercase();
     [
-        "recall",
-        "remember",
-        "discuss",
-        "history",
-        "before",
-        "previous",
-        "earlier",
-        "之前",
-        "讨论",
-        "记得",
+        "recall", "remember", "discuss", "history", "before", "previous", "earlier", "之前",
+        "讨论", "记得",
     ]
     .iter()
     .any(|term| lowered_query.contains(term))
@@ -3448,7 +4386,9 @@ fn merge_similarity(
     memory_value: &str,
     usage_hint: &str,
 ) -> f64 {
-    if !candidate_value.trim().is_empty() && normalize_text(candidate_value) == normalize_text(memory_value) {
+    if !candidate_value.trim().is_empty()
+        && normalize_text(candidate_value) == normalize_text(memory_value)
+    {
         return 1.0;
     }
 
@@ -3513,7 +4453,10 @@ mod tests {
     use super::{MemoryStore, ReviewAction};
     use crate::chatmem_memory::{
         checkpoints::CreateCheckpointInput,
-        models::{CreateMemoryCandidateInput, CreateMemoryMergeProposalInput},
+        models::{
+            AgentConversationCount, CreateMemoryCandidateInput, CreateMemoryMergeProposalInput,
+            ObservedProjectRootCount, RepoScanReport,
+        },
     };
     use agentswap_core::types::{AgentKind, Conversation, Message, Role};
     use chrono::Utc;
@@ -3525,7 +4468,10 @@ mod tests {
     use uuid::Uuid;
 
     fn new_store() -> MemoryStore {
-        let path = std::env::temp_dir().join(format!("chatmem-store-test-{}.sqlite", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "chatmem-store-test-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
         MemoryStore::new(path).unwrap()
     }
 
@@ -3599,6 +4545,23 @@ mod tests {
     }
 
     #[test]
+    fn search_history_falls_forward_to_descendant_repo_when_parent_has_no_matches() {
+        let store = new_store();
+        approve_test_memory(
+            &store,
+            "d:/vsp/bm.md",
+            "EasyMD project location",
+            "easymd project lives under D:/VSP/bm.md/skills/easymd",
+        );
+
+        let matches = store.search_history("d:/vsp", "easymd EasyMD", 5).unwrap();
+
+        assert!(matches
+            .iter()
+            .any(|item| item.title == "EasyMD project location"));
+    }
+
+    #[test]
     fn repo_memory_health_reports_pending_candidates_and_ancestor_drift() {
         let store = new_store();
         approve_test_memory(
@@ -3613,7 +4576,8 @@ mod tests {
                 kind: "product_decision".to_string(),
                 summary: "Keep conversation view full width".to_string(),
                 value: "Project memory review belongs on project home.".to_string(),
-                why_it_matters: "Pending candidates must be visible before startup memory works.".to_string(),
+                why_it_matters: "Pending candidates must be visible before startup rules work."
+                    .to_string(),
                 evidence_refs: vec![],
                 confidence: 0.95,
                 proposed_by: "codex".to_string(),
@@ -3656,6 +4620,70 @@ mod tests {
     }
 
     #[test]
+    fn merge_repo_alias_records_a_manual_alias_for_project_health() {
+        let store = new_store();
+
+        let alias = store
+            .merge_repo_alias("d:/vsp/agentswap-gui", "D:\\VSP\\bm.md")
+            .unwrap();
+        let health = store.repo_memory_health("d:/vsp/agentswap-gui").unwrap();
+
+        assert_eq!(alias.alias_root, "d:/vsp/bm.md");
+        assert_eq!(alias.alias_kind, "manual");
+        assert!(health.repo_aliases.iter().any(|candidate| {
+            candidate.alias_root == "d:/vsp/bm.md" && candidate.alias_kind == "manual"
+        }));
+    }
+
+    #[test]
+    fn repo_memory_health_reports_latest_local_history_scan() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        store
+            .record_repo_scan_report(&RepoScanReport {
+                repo_root: repo_root.to_string(),
+                canonical_repo_root: repo_root.to_string(),
+                scanned_conversation_count: 7,
+                linked_conversation_count: 0,
+                skipped_conversation_count: 7,
+                source_agents: vec![AgentConversationCount {
+                    source_agent: "codex".to_string(),
+                    conversation_count: 7,
+                }],
+                unmatched_project_roots: vec![ObservedProjectRootCount {
+                    source_agent: "codex".to_string(),
+                    project_root: "d:/vsp/bm.md".to_string(),
+                    conversation_count: 7,
+                }],
+                warnings: vec![
+                    "ChatMem scanned local conversations but none matched this repo root."
+                        .to_string(),
+                ],
+                scanned_at: "2026-04-25T12:00:00Z".to_string(),
+            })
+            .unwrap();
+
+        let health = store.repo_memory_health(repo_root).unwrap();
+        let latest_scan = health
+            .latest_scan
+            .expect("repo health should include the latest scan audit");
+
+        assert_eq!(latest_scan.scanned_conversation_count, 7);
+        assert_eq!(latest_scan.linked_conversation_count, 0);
+        assert_eq!(latest_scan.skipped_conversation_count, 7);
+        assert_eq!(latest_scan.scanned_at, "2026-04-25T12:00:00Z");
+        assert_eq!(latest_scan.source_agents[0].source_agent, "codex");
+        assert_eq!(
+            latest_scan.unmatched_project_roots[0].project_root,
+            "d:/vsp/bm.md"
+        );
+        assert!(health
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("none matched this repo root")));
+    }
+
+    #[test]
     fn project_context_recall_returns_history_when_memory_is_empty() {
         let store = new_store();
         let repo_root = "d:/vsp/agentswap-gui";
@@ -3671,9 +4699,8 @@ mod tests {
                 id: Uuid::new_v4(),
                 timestamp: now,
                 role: Role::Assistant,
-                content:
-                    "We decided that history evidence must be labeled as not approved memory."
-                        .to_string(),
+                content: "We decided that history evidence must be labeled as not approved memory."
+                    .to_string(),
                 tool_calls: vec![],
                 metadata: HashMap::new(),
             }],
@@ -3719,7 +4746,12 @@ mod tests {
             .unwrap();
 
         let context = store
-            .get_project_context(repo_root, "history evidence policy", Some("recall"), Some(5))
+            .get_project_context(
+                repo_root,
+                "history evidence policy",
+                Some("recall"),
+                Some(5),
+            )
             .unwrap();
 
         assert_eq!(context.pending_candidates.len(), 1);
@@ -3742,9 +4774,8 @@ mod tests {
                 id: Uuid::new_v4(),
                 timestamp: now,
                 role: Role::Assistant,
-                content:
-                    "We decided that history evidence must be labeled as not approved memory."
-                        .to_string(),
+                content: "We decided that history evidence must be labeled as not approved memory."
+                    .to_string(),
                 tool_calls: vec![],
                 metadata: HashMap::new(),
             }],
@@ -3976,6 +5007,140 @@ mod tests {
             .expect("recent-work page should be generated");
         assert!(recent_work.body.contains("Memory architecture discussion"));
         assert_eq!(recent_work.source_episode_ids.len(), 1);
+
+        let overview = pages
+            .iter()
+            .find(|page| page.slug == "project-overview")
+            .expect("project overview should be generated");
+        assert!(overview.body.contains("# 项目地图"));
+        assert!(overview.body.contains("## 启动规则地图"));
+        assert!(overview.body.contains("## 本地历史证据"));
+        assert!(overview.body.contains("codex:conv-001"));
+        assert!(overview.body.contains("Wiki 是投影"));
+    }
+
+    #[test]
+    fn rebuilding_repo_wiki_compiles_a_module_map_from_memory_and_history_paths() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let architecture_candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "architecture".to_string(),
+                summary: "Wiki reader and compiler ownership".to_string(),
+                value: "The Wiki reader lives in src/App.tsx and the compiler lives in src-tauri/src/chatmem_memory/store.rs.".to_string(),
+                why_it_matters: "Future Wiki work should touch the reader and compiler together.".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.94,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        store
+            .review_candidate(
+                &architecture_candidate_id,
+                ReviewAction::Approve {
+                    title: "Wiki architecture ownership".into(),
+                    usage_hint: "Use before changing Wiki rendering or compilation".into(),
+                },
+            )
+            .unwrap();
+
+        let repo_id = store.ensure_repo(repo_root).unwrap();
+        let conn = store.conn().unwrap();
+        conn.execute(
+            "INSERT INTO episodes (
+                episode_id, repo_id, title, summary, outcome, created_at, source_conversation_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                "episode:codex:wiki-ui",
+                repo_id,
+                "Wiki reader UI work",
+                "Updated src/styles.css and src/__tests__/MemoryWorkspace.test.tsx while testing the drawer reader.",
+                "captured",
+                "2026-04-24T10:00:00Z",
+                "codex:wiki-ui",
+            ],
+        )
+        .unwrap();
+
+        let pages = store.rebuild_repo_wiki(repo_root).unwrap();
+        let module_map = pages
+            .iter()
+            .find(|page| page.slug == "module-map")
+            .expect("module map should be generated");
+
+        assert!(module_map.body.contains("src/App.tsx"));
+        assert!(module_map
+            .body
+            .contains("src-tauri/src/chatmem_memory/store.rs"));
+        assert!(module_map.body.contains("src/styles.css"));
+        assert!(module_map
+            .body
+            .contains("src/__tests__/MemoryWorkspace.test.tsx"));
+        assert!(module_map.source_memory_ids.len() >= 1);
+        assert_eq!(module_map.source_episode_ids, vec!["episode:codex:wiki-ui"]);
+    }
+
+    #[test]
+    fn rebuilding_repo_wiki_compiles_a_risk_ledger_from_gotchas_and_failure_history() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let gotcha_candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "gotcha".to_string(),
+                summary: "WebDAV settings can disappear after app updates".to_string(),
+                value: "After updating the app, verify WebDAV credentials before sync because local packaging can reset settings.".to_string(),
+                why_it_matters: "Prevents failed cloud backup and confusing missing snapshots.".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.93,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        store
+            .review_candidate(
+                &gotcha_candidate_id,
+                ReviewAction::Approve {
+                    title: "Verify WebDAV after update".into(),
+                    usage_hint: "Check before release packaging or cloud sync".into(),
+                },
+            )
+            .unwrap();
+
+        let repo_id = store.ensure_repo(repo_root).unwrap();
+        let conn = store.conn().unwrap();
+        conn.execute(
+            "INSERT INTO episodes (
+                episode_id, repo_id, title, summary, outcome, created_at, source_conversation_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                "episode:codex:risk-webdav",
+                repo_id,
+                "Failed WebDAV sync investigation",
+                "User reported that netdisk configuration disappeared after updating the app and sync could fail.",
+                "captured",
+                "2026-04-25T10:00:00Z",
+                "codex:risk-webdav",
+            ],
+        )
+        .unwrap();
+
+        let pages = store.rebuild_repo_wiki(repo_root).unwrap();
+        let risk_ledger = pages
+            .iter()
+            .find(|page| page.slug == "risk-ledger")
+            .expect("risk ledger should be generated");
+
+        assert!(risk_ledger.body.contains("WebDAV"));
+        assert!(risk_ledger.body.contains("failed") || risk_ledger.body.contains("fail"));
+        assert!(risk_ledger.body.contains("episode:codex:risk-webdav"));
+        assert!(risk_ledger.source_memory_ids.len() >= 1);
+        assert_eq!(
+            risk_ledger.source_episode_ids,
+            vec!["episode:codex:risk-webdav"]
+        );
     }
 
     #[test]
@@ -3988,7 +5153,8 @@ mod tests {
                 kind: "gotcha".to_string(),
                 summary: "Remember wiki projection".to_string(),
                 value: "The wiki is a projection, not the source of truth.".to_string(),
-                why_it_matters: "Prevents stale wiki pages from overriding approved memory.".to_string(),
+                why_it_matters: "Prevents stale wiki pages from overriding approved memory."
+                    .to_string(),
                 evidence_refs: vec![],
                 confidence: 0.91,
                 proposed_by: "codex".to_string(),
@@ -4015,20 +5181,22 @@ mod tests {
     fn search_history_accepts_hyphenated_query_terms() {
         let store = new_store();
         let repo_root = "d:/vsp/agentswap-gui";
-        let candidate_id = store
-            .create_candidate(&CreateMemoryCandidateInput {
-                repo_root: repo_root.to_string(),
-                kind: "gotcha".to_string(),
-                summary: "Remember codex-smoke-release".to_string(),
-                value: "codex-smoke-release queries should not be parsed as raw FTS syntax."
-                    .to_string(),
-                why_it_matters: "Repository names, package versions, and ids often contain hyphens."
-                    .to_string(),
-                evidence_refs: vec![],
-                confidence: 0.91,
-                proposed_by: "codex".to_string(),
-            })
-            .unwrap();
+        let candidate_id =
+            store
+                .create_candidate(&CreateMemoryCandidateInput {
+                    repo_root: repo_root.to_string(),
+                    kind: "gotcha".to_string(),
+                    summary: "Remember codex-smoke-release".to_string(),
+                    value: "codex-smoke-release queries should not be parsed as raw FTS syntax."
+                        .to_string(),
+                    why_it_matters:
+                        "Repository names, package versions, and ids often contain hyphens."
+                            .to_string(),
+                    evidence_refs: vec![],
+                    confidence: 0.91,
+                    proposed_by: "codex".to_string(),
+                })
+                .unwrap();
 
         store
             .review_candidate(
@@ -4040,7 +5208,9 @@ mod tests {
             )
             .unwrap();
 
-        let matches = store.search_history(repo_root, "codex-smoke-release", 5).unwrap();
+        let matches = store
+            .search_history(repo_root, "codex-smoke-release", 5)
+            .unwrap();
 
         assert!(matches
             .iter()
@@ -4092,9 +5262,9 @@ mod tests {
             .search_history(repo_root, "TAURI_PRIVATE_KEY release packaging", 5)
             .unwrap();
 
-        assert!(matches.iter().any(|item| {
-            item.r#type == "chunk" && item.summary.contains("TAURI_PRIVATE_KEY")
-        }));
+        assert!(matches
+            .iter()
+            .any(|item| { item.r#type == "chunk" && item.summary.contains("TAURI_PRIVATE_KEY") }));
     }
 
     #[test]
@@ -4149,9 +5319,10 @@ mod tests {
             )
             .unwrap();
         let old_chunk_refs = stmt
-            .query_map(params![repo_id.clone(), format!("{conversation_id}:%")], |row| {
-                row.get::<_, String>(0)
-            })
+            .query_map(
+                params![repo_id.clone(), format!("{conversation_id}:%")],
+                |row| row.get::<_, String>(0),
+            )
             .unwrap()
             .collect::<std::result::Result<Vec<_>, _>>()
             .unwrap();
@@ -4269,7 +5440,8 @@ mod tests {
                 repo_root: repo_root.to_string(),
                 kind: "strategy".to_string(),
                 summary: "Remote snapshot flow".to_string(),
-                value: "WebDAV sync uploads manifest snapshots to the configured remote path.".to_string(),
+                value: "WebDAV sync uploads manifest snapshots to the configured remote path."
+                    .to_string(),
                 why_it_matters: "Agents need searchable cloud persistence context.".to_string(),
                 evidence_refs: vec![],
                 confidence: 0.89,
@@ -4314,7 +5486,8 @@ mod tests {
                 repo_root: repo_root.to_string(),
                 kind: "strategy".to_string(),
                 summary: "Remote snapshot flow".to_string(),
-                value: "WebDAV sync uploads manifest snapshots to the configured remote path.".to_string(),
+                value: "WebDAV sync uploads manifest snapshots to the configured remote path."
+                    .to_string(),
                 why_it_matters: "Agents need searchable cloud persistence context.".to_string(),
                 evidence_refs: vec![],
                 confidence: 0.89,
@@ -4382,8 +5555,12 @@ mod tests {
             ]
         );
 
-        let matches = store.search_history(repo_root, "cloud drive backup", 5).unwrap();
-        assert!(matches.iter().any(|item| item.title == "Remote snapshot flow"));
+        let matches = store
+            .search_history(repo_root, "cloud drive backup", 5)
+            .unwrap();
+        assert!(matches
+            .iter()
+            .any(|item| item.title == "Remote snapshot flow"));
     }
 
     #[test]
@@ -4395,7 +5572,8 @@ mod tests {
                 repo_root: repo_root.to_string(),
                 kind: "strategy".to_string(),
                 summary: "Remote snapshot flow".to_string(),
-                value: "WebDAV sync uploads manifest snapshots to the configured remote path.".to_string(),
+                value: "WebDAV sync uploads manifest snapshots to the configured remote path."
+                    .to_string(),
                 why_it_matters: "Agents need searchable cloud persistence context.".to_string(),
                 evidence_refs: vec![],
                 confidence: 0.89,
@@ -4454,7 +5632,8 @@ mod tests {
                 repo_root: repo_root.to_string(),
                 kind: "strategy".to_string(),
                 summary: "Remote snapshot flow".to_string(),
-                value: "WebDAV sync uploads manifest snapshots to the configured remote path.".to_string(),
+                value: "WebDAV sync uploads manifest snapshots to the configured remote path."
+                    .to_string(),
                 why_it_matters: "Agents need searchable cloud persistence context.".to_string(),
                 evidence_refs: vec![],
                 confidence: 0.89,
@@ -4485,7 +5664,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(report.provider, "openai-compatible");
-        assert_eq!(report.embedding_model, "openai-compatible:text-embedding-3-small:3");
+        assert_eq!(
+            report.embedding_model,
+            "openai-compatible:text-embedding-3-small:3"
+        );
         assert_eq!(report.indexed_documents, 1);
         assert_eq!(report.fallback_indexed_documents, 1);
     }
@@ -4526,7 +5708,8 @@ mod tests {
                 repo_root: repo_root.to_string(),
                 kind: "strategy".to_string(),
                 summary: "Remote snapshot flow".to_string(),
-                value: "WebDAV sync uploads manifest snapshots to the configured remote path.".to_string(),
+                value: "WebDAV sync uploads manifest snapshots to the configured remote path."
+                    .to_string(),
                 why_it_matters: "Agents need searchable persistence context.".to_string(),
                 evidence_refs: vec![],
                 confidence: 0.89,
@@ -4544,7 +5727,9 @@ mod tests {
             )
             .unwrap();
 
-        let matches = store.search_history(repo_root, "cloud drive backup", 5).unwrap();
+        let matches = store
+            .search_history(repo_root, "cloud drive backup", 5)
+            .unwrap();
 
         let matched = matches
             .iter()
@@ -4635,9 +5820,183 @@ mod tests {
             .expect("expected explicit memory wording to create a pending candidate");
 
         assert!(extracted.value.contains("npm run test:run"));
+        assert!(extracted
+            .why_it_matters
+            .contains("\u{81ea}\u{52a8}\u{63d0}\u{53d6}"));
+        /*
         assert!(extracted.why_it_matters.contains("自动提取"));
+        */
         assert_eq!(extracted.status, "pending_review");
         assert!(!extracted.evidence_refs.is_empty());
+    }
+
+    #[test]
+    fn auto_extraction_ignores_bare_english_agent_instructions() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let now = Utc::now();
+        let conversation = Conversation {
+            id: "conv-agent-instruction".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir: repo_root.to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("Agent instruction should not become memory".to_string()),
+            messages: vec![Message {
+                id: Uuid::new_v4(),
+                timestamp: now,
+                role: Role::User,
+                content: "Do not touch any files outside your ownership.".to_string(),
+                tool_calls: vec![],
+                metadata: HashMap::new(),
+            }],
+            file_changes: vec![],
+        };
+
+        store
+            .upsert_conversation_snapshot("codex", &conversation, None)
+            .unwrap();
+
+        let candidates = store
+            .list_candidates_with_status(repo_root, Some("pending_review"))
+            .unwrap();
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.proposed_by != "auto_extractor"));
+    }
+
+    #[test]
+    fn repo_health_quarantines_legacy_auto_candidates_without_explicit_marker() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let repo_id = store.ensure_repo(repo_root).unwrap();
+        let now = Utc::now().to_rfc3339();
+        let bad_candidate_id = "legacy-bad-auto";
+        let good_candidate_id = "legacy-good-auto";
+        let conn = store.conn().unwrap();
+
+        for (candidate_id, summary, value, excerpt) in [
+            (
+                bad_candidate_id,
+                "Do not touch any files outside your ownership.",
+                "Do not touch any files outside your ownership.",
+                "Do not touch any files outside your ownership.",
+            ),
+            (
+                good_candidate_id,
+                "Always run npm run test:run before release.",
+                "Always run npm run test:run before release.",
+                "Remember: Always run npm run test:run before release.",
+            ),
+        ] {
+            conn.execute(
+                "INSERT INTO memory_candidates (
+                    candidate_id, repo_id, kind, summary, value, why_it_matters,
+                    confidence, proposed_by, status, created_at
+                 ) VALUES (?1, ?2, 'gotcha', ?3, ?4, 'Automatically extracted from explicit durable-memory wording.', 0.62, 'auto_extractor', 'pending_review', ?5)",
+                params![candidate_id, repo_id, summary, value, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO evidence_refs (
+                    evidence_id, owner_type, owner_id, conversation_id, message_id,
+                    tool_call_id, file_change_id, excerpt, created_at
+                 ) VALUES (?1, 'candidate', ?2, 'codex:legacy', NULL, NULL, NULL, ?3, ?4)",
+                params![Uuid::new_v4().to_string(), candidate_id, excerpt, now],
+            )
+            .unwrap();
+        }
+
+        let health = store.repo_memory_health(repo_root).unwrap();
+        assert_eq!(health.pending_candidate_count, 1);
+
+        let pending = store
+            .list_candidates_with_status(repo_root, Some("pending_review"))
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].candidate_id, good_candidate_id);
+
+        let bad_status: String = conn
+            .query_row(
+                "SELECT status FROM memory_candidates WHERE candidate_id = ?1",
+                [bad_candidate_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(bad_status, "rejected");
+    }
+
+    #[test]
+    fn repo_health_marks_legacy_auto_approved_rules_for_review_without_startup_injection() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let repo_id = store.ensure_repo(repo_root).unwrap();
+        let now = Utc::now().to_rfc3339();
+        let bad_candidate_id = "legacy-approved-bad-auto";
+        let good_candidate_id = "legacy-approved-good-auto";
+        let conn = store.conn().unwrap();
+
+        for (candidate_id, summary, value, excerpt) in [
+            (
+                bad_candidate_id,
+                "Do not touch any files outside your ownership.",
+                "Do not touch any files outside your ownership.",
+                "Do not touch any files outside your ownership.",
+            ),
+            (
+                good_candidate_id,
+                "Always run npm run test:run before release.",
+                "Always run npm run test:run before release.",
+                "Remember: Always run npm run test:run before release.",
+            ),
+        ] {
+            conn.execute(
+                "INSERT INTO memory_candidates (
+                    candidate_id, repo_id, kind, summary, value, why_it_matters,
+                    confidence, proposed_by, status, created_at
+                 ) VALUES (?1, ?2, 'gotcha', ?3, ?4, 'Automatically extracted from explicit durable-memory wording.', 0.62, 'auto_extractor', 'pending_review', ?5)",
+                params![candidate_id, repo_id, summary, value, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO evidence_refs (
+                    evidence_id, owner_type, owner_id, conversation_id, message_id,
+                    tool_call_id, file_change_id, excerpt, created_at
+                 ) VALUES (?1, 'candidate', ?2, 'codex:legacy', NULL, NULL, NULL, ?3, ?4)",
+                params![Uuid::new_v4().to_string(), candidate_id, excerpt, now],
+            )
+            .unwrap();
+            store
+                .review_candidate(
+                    candidate_id,
+                    ReviewAction::Approve {
+                        title: summary.to_string(),
+                        usage_hint: "Approved before stricter auto-extraction governance."
+                            .to_string(),
+                    },
+                )
+                .unwrap();
+        }
+
+        let health = store.repo_memory_health(repo_root).unwrap();
+        assert_eq!(health.approved_memory_count, 1);
+
+        let memories = store.list_repo_memories(repo_root).unwrap();
+        let bad_memory = memories
+            .iter()
+            .find(|memory| memory.title == "Do not touch any files outside your ownership.")
+            .expect("quarantined memory remains visible for review");
+        assert_eq!(bad_memory.freshness_status, "needs_review");
+        assert_eq!(bad_memory.verified_by.as_deref(), Some("auto_quarantine"));
+
+        let payload =
+            crate::chatmem_memory::search::build_repo_memory_payload(&store, repo_root, None)
+                .unwrap();
+        assert_eq!(payload.approved_memories.len(), 1);
+        assert_eq!(
+            payload.approved_memories[0].title,
+            "Always run npm run test:run before release."
+        );
     }
 
     #[test]
@@ -4680,7 +6039,9 @@ mod tests {
             })
             .unwrap();
 
-        let conflicts = store.list_memory_conflicts(repo_root, Some("open")).unwrap();
+        let conflicts = store
+            .list_memory_conflicts(repo_root, Some("open"))
+            .unwrap();
         let conflict = conflicts
             .iter()
             .find(|item| item.candidate_id == conflicting_candidate_id)
@@ -4726,7 +6087,9 @@ mod tests {
             )
             .unwrap();
 
-        let memory_id = store.list_repo_memories(repo_root).unwrap()[0].memory_id.clone();
+        let memory_id = store.list_repo_memories(repo_root).unwrap()[0]
+            .memory_id
+            .clone();
 
         store.reverify_memory(&memory_id, "claude").unwrap();
 
@@ -4736,6 +6099,53 @@ mod tests {
         assert_eq!(memories[0].verified_by.as_deref(), Some("claude"));
         assert!(memories[0].verified_at.is_some());
         assert_eq!(memories[0].last_verified_at, memories[0].verified_at);
+    }
+
+    #[test]
+    fn retire_memory_removes_it_from_startup_rules_without_deleting_the_record() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+        let candidate_id = store
+            .create_candidate(&CreateMemoryCandidateInput {
+                repo_root: repo_root.to_string(),
+                kind: "gotcha".to_string(),
+                summary: "Old startup rule".to_string(),
+                value: "Do not run the old release script.".to_string(),
+                why_it_matters: "It was useful before the packaging flow changed.".to_string(),
+                evidence_refs: vec![],
+                confidence: 0.9,
+                proposed_by: "codex".to_string(),
+            })
+            .unwrap();
+
+        store
+            .review_candidate(
+                &candidate_id,
+                ReviewAction::Approve {
+                    title: "Old startup rule".to_string(),
+                    usage_hint: "Use before packaging".to_string(),
+                },
+            )
+            .unwrap();
+        let memory_id = store.list_repo_memories(repo_root).unwrap()[0]
+            .memory_id
+            .clone();
+
+        store.retire_memory(&memory_id, "codex").unwrap();
+
+        assert!(store.list_repo_memories(repo_root).unwrap().is_empty());
+        let health = store.repo_memory_health(repo_root).unwrap();
+        assert_eq!(health.approved_memory_count, 0);
+
+        let conn = store.conn().unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM approved_memories WHERE memory_id = ?1",
+                [&memory_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "retired");
     }
 
     #[test]
@@ -5125,8 +6535,12 @@ mod tests {
             .unwrap();
         assert_eq!(candidate.status, "approved");
 
-        let matches = store.search_history(repo_root, "serial release packaging", 5).unwrap();
-        assert!(matches.iter().any(|item| item.title == "Primary verification"));
+        let matches = store
+            .search_history(repo_root, "serial release packaging", 5)
+            .unwrap();
+        assert!(matches
+            .iter()
+            .any(|item| item.title == "Primary verification"));
     }
 
     #[test]
@@ -5178,9 +6592,15 @@ mod tests {
                 candidate_id: candidate_id.clone(),
                 target_memory_id: memory_id.clone(),
                 proposed_title: "Primary verification".to_string(),
-                proposed_value: "npm run test:run\n\nBefore packaging, use npm run test:run -- --runInBand.".to_string(),
-                proposed_usage_hint: "Use before merge; prefer the serial variant before release packaging.".to_string(),
-                risk_note: Some("Agent-authored rewrite; review wording before approval.".to_string()),
+                proposed_value:
+                    "npm run test:run\n\nBefore packaging, use npm run test:run -- --runInBand."
+                        .to_string(),
+                proposed_usage_hint:
+                    "Use before merge; prefer the serial variant before release packaging."
+                        .to_string(),
+                risk_note: Some(
+                    "Agent-authored rewrite; review wording before approval.".to_string(),
+                ),
                 proposed_by: "codex".to_string(),
                 evidence_refs: vec![],
             })
@@ -5308,7 +6728,10 @@ mod tests {
                 source_agent: "claude".to_string(),
                 summary: "Freeze the current debugging state".to_string(),
                 resume_command: Some("claude --resume conv-001".to_string()),
-                metadata_json: Some("{\"storage_path\":\"C:/Users/demo/.claude/projects/conv-001.jsonl\"}".to_string()),
+                metadata_json: Some(
+                    "{\"storage_path\":\"C:/Users/demo/.claude/projects/conv-001.jsonl\"}"
+                        .to_string(),
+                ),
             })
             .unwrap();
 
@@ -5316,7 +6739,10 @@ mod tests {
 
         let checkpoints = store.list_checkpoints("d:/vsp/agentswap-gui").unwrap();
         assert_eq!(checkpoints.len(), 1);
-        assert_eq!(checkpoints[0].resume_command.as_deref(), Some("claude --resume conv-001"));
+        assert_eq!(
+            checkpoints[0].resume_command.as_deref(),
+            Some("claude --resume conv-001")
+        );
         assert_eq!(checkpoints[0].status, "active");
     }
 
@@ -5346,11 +6772,17 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(packet.checkpoint_id.as_deref(), Some(checkpoint.checkpoint_id.as_str()));
+        assert_eq!(
+            packet.checkpoint_id.as_deref(),
+            Some(checkpoint.checkpoint_id.as_str())
+        );
 
         let checkpoints = store.list_checkpoints(repo_root).unwrap();
         assert_eq!(checkpoints[0].status, "promoted");
-        assert_eq!(checkpoints[0].handoff_id.as_deref(), Some(packet.handoff_id.as_str()));
+        assert_eq!(
+            checkpoints[0].handoff_id.as_deref(),
+            Some(packet.handoff_id.as_str())
+        );
     }
 
     #[test]
@@ -5442,7 +6874,9 @@ mod tests {
             .to_string();
 
         assert!(
-            error.contains("already") || error.contains("duplicate") || error.contains("checkpoint"),
+            error.contains("already")
+                || error.contains("duplicate")
+                || error.contains("checkpoint"),
             "unexpected error: {error}"
         );
 
@@ -5452,6 +6886,9 @@ mod tests {
 
         let checkpoints = store.list_checkpoints(repo_root).unwrap();
         assert_eq!(checkpoints[0].status, "active");
-        assert_eq!(checkpoints[0].handoff_id.as_deref(), Some(existing_handoff_id.as_str()));
+        assert_eq!(
+            checkpoints[0].handoff_id.as_deref(),
+            Some(existing_handoff_id.as_str())
+        );
     }
 }

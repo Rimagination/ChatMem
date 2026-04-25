@@ -1,8 +1,7 @@
 use rmcp::{
-    Json, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::ErrorData as McpError,
-    tool, tool_handler,
+    tool, tool_handler, Json, ServerHandler,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -13,9 +12,9 @@ use super::{
         BuildHandoffPacketInput, CreateMemoryCandidateInput, CreateMemoryCandidateResult,
         CreateMemoryMergeProposalInput, CreateMemoryMergeProposalResult, EmbeddingRebuildReport,
         EntityGraphPayload, GetProjectContextInput, GetRepoMemoryInput, ListMemoryCandidatesInput,
-        ListMemoryCandidatesPayload, ListWikiPagesPayload, MemoryConflictResponse,
-        ProjectContextPayload, RepoMemoryHealthResponse, RepoMemoryPayload, SearchHistoryPayload,
-        SearchRepoHistoryInput,
+        ListMemoryCandidatesPayload, ListWikiPagesPayload, LocalHistoryImportReport,
+        MemoryConflictResponse, ProjectContextPayload, RepoAliasResponse, RepoMemoryHealthResponse,
+        RepoMemoryPayload, RepoScanReport, SearchHistoryPayload, SearchRepoHistoryInput,
     },
     runs::{self, ArtifactRecord, RunRecord},
     search,
@@ -75,6 +74,12 @@ struct ListRunArtifactsPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct MergeRepoAliasInput {
+    pub repo_root: String,
+    pub alias_root: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 struct ListMemoryConflictsInput {
     pub repo_root: String,
     pub status: Option<String>,
@@ -108,21 +113,66 @@ impl ChatMemMcpService {
     fn build_tool_router() -> ToolRouter<Self> {
         ToolRouter::new()
             .with_route((Self::get_repo_memory_tool_attr(), Self::get_repo_memory))
-            .with_route((Self::get_project_context_tool_attr(), Self::get_project_context))
-            .with_route((Self::get_repo_memory_health_tool_attr(), Self::get_repo_memory_health))
-            .with_route((Self::search_repo_history_tool_attr(), Self::search_repo_history))
-            .with_route((Self::create_memory_candidate_tool_attr(), Self::create_memory_candidate))
-            .with_route((Self::propose_memory_merge_tool_attr(), Self::propose_memory_merge))
+            .with_route((
+                Self::get_project_context_tool_attr(),
+                Self::get_project_context,
+            ))
+            .with_route((
+                Self::get_repo_memory_health_tool_attr(),
+                Self::get_repo_memory_health,
+            ))
+            .with_route((
+                Self::import_all_local_history_tool_attr(),
+                Self::import_all_local_history,
+            ))
+            .with_route((
+                Self::scan_repo_conversations_tool_attr(),
+                Self::scan_repo_conversations,
+            ))
+            .with_route((Self::merge_repo_alias_tool_attr(), Self::merge_repo_alias))
+            .with_route((
+                Self::search_repo_history_tool_attr(),
+                Self::search_repo_history,
+            ))
+            .with_route((
+                Self::create_memory_candidate_tool_attr(),
+                Self::create_memory_candidate,
+            ))
+            .with_route((
+                Self::propose_memory_merge_tool_attr(),
+                Self::propose_memory_merge,
+            ))
             .with_route((Self::create_checkpoint_tool_attr(), Self::create_checkpoint))
-            .with_route((Self::list_memory_candidates_tool_attr(), Self::list_memory_candidates))
-            .with_route((Self::build_handoff_packet_tool_attr(), Self::build_handoff_packet))
+            .with_route((
+                Self::list_memory_candidates_tool_attr(),
+                Self::list_memory_candidates,
+            ))
+            .with_route((
+                Self::build_handoff_packet_tool_attr(),
+                Self::build_handoff_packet,
+            ))
             .with_route((Self::list_active_runs_tool_attr(), Self::list_active_runs))
-            .with_route((Self::list_run_artifacts_tool_attr(), Self::list_run_artifacts))
-            .with_route((Self::resume_from_checkpoint_tool_attr(), Self::resume_from_checkpoint))
-            .with_route((Self::list_repo_wiki_pages_tool_attr(), Self::list_repo_wiki_pages))
+            .with_route((
+                Self::list_run_artifacts_tool_attr(),
+                Self::list_run_artifacts,
+            ))
+            .with_route((
+                Self::resume_from_checkpoint_tool_attr(),
+                Self::resume_from_checkpoint,
+            ))
+            .with_route((
+                Self::list_repo_wiki_pages_tool_attr(),
+                Self::list_repo_wiki_pages,
+            ))
             .with_route((Self::rebuild_repo_wiki_tool_attr(), Self::rebuild_repo_wiki))
-            .with_route((Self::rebuild_repo_embeddings_tool_attr(), Self::rebuild_repo_embeddings))
-            .with_route((Self::list_memory_conflicts_tool_attr(), Self::list_memory_conflicts))
+            .with_route((
+                Self::rebuild_repo_embeddings_tool_attr(),
+                Self::rebuild_repo_embeddings,
+            ))
+            .with_route((
+                Self::list_memory_conflicts_tool_attr(),
+                Self::list_memory_conflicts,
+            ))
             .with_route((Self::list_entity_graph_tool_attr(), Self::list_entity_graph))
     }
 
@@ -134,7 +184,10 @@ impl ChatMemMcpService {
             .collect()
     }
 
-    #[tool(name = "get_repo_memory", description = "Return compact approved repository startup memory for an agent")]
+    #[tool(
+        name = "get_repo_memory",
+        description = "Return compact approved startup rules for an agent"
+    )]
     async fn get_repo_memory(
         &self,
         Parameters(input): Parameters<GetRepoMemoryInput>,
@@ -145,7 +198,10 @@ impl ChatMemMcpService {
             .map_err(|error| internal_error(error.to_string()))
     }
 
-    #[tool(name = "get_project_context", description = "Return approved memory plus recall-aware local history evidence for a repository query")]
+    #[tool(
+        name = "get_project_context",
+        description = "Return approved startup rules plus recall-aware local history evidence for a repository query"
+    )]
     async fn get_project_context(
         &self,
         Parameters(input): Parameters<GetProjectContextInput>,
@@ -162,7 +218,10 @@ impl ChatMemMcpService {
             .map_err(|error| internal_error(error.to_string()))
     }
 
-    #[tool(name = "get_repo_memory_health", description = "Return repository memory diagnostics, including pending candidates and ancestor-root drift")]
+    #[tool(
+        name = "get_repo_memory_health",
+        description = "Return local-history diagnostics, pending startup-rule candidates, and ancestor-root drift"
+    )]
     async fn get_repo_memory_health(
         &self,
         Parameters(input): Parameters<RepoRootInput>,
@@ -174,7 +233,49 @@ impl ChatMemMcpService {
             .map_err(|error| internal_error(error.to_string()))
     }
 
-    #[tool(name = "search_repo_history", description = "Hybrid keyword/vector search over prior repository work, approved memory, and generated wiki projections")]
+    #[tool(
+        name = "import_all_local_history",
+        description = "Import all available Claude, Codex, and Gemini local conversations into the local history index. Use this after first install, after changing history locations, or when recall misses because history has not been imported."
+    )]
+    async fn import_all_local_history(
+        &self,
+    ) -> Result<Json<LocalHistoryImportReport>, McpError> {
+        sync::import_all_local_history(&self.store)
+            .map(Json)
+            .map_err(|error| internal_error(error.to_string()))
+    }
+
+    #[tool(
+        name = "scan_repo_conversations",
+        description = "Scan local conversations for one repository, link matching history, and return unmatched project roots that may need alias merging."
+    )]
+    async fn scan_repo_conversations(
+        &self,
+        Parameters(input): Parameters<RepoRootInput>,
+    ) -> Result<Json<RepoScanReport>, McpError> {
+        sync::scan_repo_conversations(&self.store, &input.repo_root)
+            .map(Json)
+            .map_err(|error| internal_error(error.to_string()))
+    }
+
+    #[tool(
+        name = "merge_repo_alias",
+        description = "Add a project path alias to the current repository so future scans can link conversations stored under an old cwd, file cwd, or generated project path."
+    )]
+    async fn merge_repo_alias(
+        &self,
+        Parameters(input): Parameters<MergeRepoAliasInput>,
+    ) -> Result<Json<RepoAliasResponse>, McpError> {
+        self.store
+            .merge_repo_alias(&input.repo_root, &input.alias_root)
+            .map(Json)
+            .map_err(|error| internal_error(error.to_string()))
+    }
+
+    #[tool(
+        name = "search_repo_history",
+        description = "Hybrid keyword/vector search over indexed local history, approved startup rules, and generated wiki projections"
+    )]
     async fn search_repo_history(
         &self,
         Parameters(input): Parameters<SearchRepoHistoryInput>,
@@ -190,7 +291,10 @@ impl ChatMemMcpService {
         }))
     }
 
-    #[tool(name = "create_memory_candidate", description = "Create a pending repository memory candidate. For Chinese-speaking users, write prose fields in Chinese while preserving exact commands, paths, function names, config keys, model names, and tool names.")]
+    #[tool(
+        name = "create_memory_candidate",
+        description = "Create a pending startup-rule candidate. For Chinese-speaking users, write prose fields in Chinese while preserving exact commands, paths, function names, config keys, model names, and tool names."
+    )]
     async fn create_memory_candidate(
         &self,
         Parameters(input): Parameters<CreateMemoryCandidateInput>,
@@ -225,7 +329,10 @@ impl ChatMemMcpService {
         }))
     }
 
-    #[tool(name = "create_checkpoint", description = "Freeze the current repo context into a resumable checkpoint. For Chinese-speaking users, write checkpoint summaries in Chinese while preserving exact technical tokens.")]
+    #[tool(
+        name = "create_checkpoint",
+        description = "Freeze the current repo context into a resumable checkpoint. For Chinese-speaking users, write checkpoint summaries in Chinese while preserving exact technical tokens."
+    )]
     async fn create_checkpoint(
         &self,
         Parameters(input): Parameters<CreateCheckpointInput>,
@@ -236,7 +343,10 @@ impl ChatMemMcpService {
             .map_err(|error| internal_error(error.to_string()))
     }
 
-    #[tool(name = "list_memory_candidates", description = "List pending or filtered repository memory candidates")]
+    #[tool(
+        name = "list_memory_candidates",
+        description = "List pending or filtered startup-rule candidates"
+    )]
     async fn list_memory_candidates(
         &self,
         Parameters(input): Parameters<ListMemoryCandidatesInput>,
@@ -247,7 +357,10 @@ impl ChatMemMcpService {
             .map_err(|error| internal_error(error.to_string()))
     }
 
-    #[tool(name = "list_memory_conflicts", description = "List open or filtered memory candidate conflicts that need review")]
+    #[tool(
+        name = "list_memory_conflicts",
+        description = "List open or filtered memory candidate conflicts that need review"
+    )]
     async fn list_memory_conflicts(
         &self,
         Parameters(input): Parameters<ListMemoryConflictsInput>,
@@ -258,7 +371,10 @@ impl ChatMemMcpService {
             .map_err(|error| internal_error(error.to_string()))
     }
 
-    #[tool(name = "build_handoff_packet", description = "Build and save a repository handoff packet for agent switching. For Chinese-speaking users, write goals and handoff prose in Chinese while preserving exact technical tokens.")]
+    #[tool(
+        name = "build_handoff_packet",
+        description = "Build and save a repository handoff packet for agent switching. For Chinese-speaking users, write goals and handoff prose in Chinese while preserving exact technical tokens."
+    )]
     async fn build_handoff_packet(
         &self,
         Parameters(input): Parameters<BuildHandoffPacketInput>,
@@ -276,7 +392,10 @@ impl ChatMemMcpService {
             .map_err(|error| internal_error(error.to_string()))
     }
 
-    #[tool(name = "list_active_runs", description = "List active repository runs that still need attention")]
+    #[tool(
+        name = "list_active_runs",
+        description = "List active repository runs that still need attention"
+    )]
     async fn list_active_runs(
         &self,
         Parameters(input): Parameters<RepoRootInput>,
@@ -294,7 +413,10 @@ impl ChatMemMcpService {
             .map_err(|error| internal_error(error.to_string()))
     }
 
-    #[tool(name = "list_run_artifacts", description = "List artifacts produced by repository runs")]
+    #[tool(
+        name = "list_run_artifacts",
+        description = "List artifacts produced by repository runs"
+    )]
     async fn list_run_artifacts(
         &self,
         Parameters(input): Parameters<RepoRootInput>,
@@ -305,7 +427,10 @@ impl ChatMemMcpService {
             .map_err(|error| internal_error(error.to_string()))
     }
 
-    #[tool(name = "list_repo_wiki_pages", description = "List generated repository wiki projection pages; approved memory remains the source of truth")]
+    #[tool(
+        name = "list_repo_wiki_pages",
+        description = "List generated repository wiki projection pages; approved memory remains the source of truth"
+    )]
     async fn list_repo_wiki_pages(
         &self,
         Parameters(input): Parameters<RepoRootInput>,
@@ -316,7 +441,10 @@ impl ChatMemMcpService {
             .map_err(|error| internal_error(error.to_string()))
     }
 
-    #[tool(name = "rebuild_repo_wiki", description = "Rebuild generated repository wiki projection pages from approved memory and episodes")]
+    #[tool(
+        name = "rebuild_repo_wiki",
+        description = "Rebuild generated repository wiki projection pages from approved memory and episodes"
+    )]
     async fn rebuild_repo_wiki(
         &self,
         Parameters(input): Parameters<RepoRootInput>,
@@ -328,7 +456,10 @@ impl ChatMemMcpService {
             .map_err(|error| internal_error(error.to_string()))
     }
 
-    #[tool(name = "rebuild_repo_embeddings", description = "Rebuild repository vector embeddings using the configured provider, keeping local hash fallback vectors")]
+    #[tool(
+        name = "rebuild_repo_embeddings",
+        description = "Rebuild repository vector embeddings using the configured provider, keeping local hash fallback vectors"
+    )]
     async fn rebuild_repo_embeddings(
         &self,
         Parameters(input): Parameters<RepoRootInput>,
@@ -340,7 +471,10 @@ impl ChatMemMcpService {
             .map_err(|error| internal_error(error.to_string()))
     }
 
-    #[tool(name = "list_entity_graph", description = "List lightweight repository entity graph nodes and links extracted from memory/search documents")]
+    #[tool(
+        name = "list_entity_graph",
+        description = "List lightweight repository entity graph nodes and links extracted from memory/search documents"
+    )]
     async fn list_entity_graph(
         &self,
         Parameters(input): Parameters<ListEntityGraphInput>,
@@ -379,7 +513,8 @@ impl ServerHandler for ChatMemMcpService {}
 #[cfg(test)]
 mod tests {
     use super::{
-        run_sync_call_count, reset_run_sync_call_count, ChatMemMcpService, RepoRootInput,
+        reset_run_sync_call_count, run_sync_call_count, ChatMemMcpService, MergeRepoAliasInput,
+        RepoRootInput,
     };
     use crate::chatmem_memory::{
         checkpoints::CreateCheckpointInput,
@@ -389,7 +524,7 @@ mod tests {
         },
         store::{MemoryStore, ReviewAction},
     };
-    use rmcp::{Json, handler::server::wrapper::Parameters};
+    use rmcp::{handler::server::wrapper::Parameters, Json};
     use schemars::schema_for;
     use std::collections::BTreeSet;
 
@@ -451,6 +586,9 @@ mod tests {
             ChatMemMcpService::get_repo_memory_tool_attr().name,
             ChatMemMcpService::get_project_context_tool_attr().name,
             ChatMemMcpService::get_repo_memory_health_tool_attr().name,
+            ChatMemMcpService::import_all_local_history_tool_attr().name,
+            ChatMemMcpService::scan_repo_conversations_tool_attr().name,
+            ChatMemMcpService::merge_repo_alias_tool_attr().name,
             ChatMemMcpService::search_repo_history_tool_attr().name,
             ChatMemMcpService::create_memory_candidate_tool_attr().name,
             ChatMemMcpService::propose_memory_merge_tool_attr().name,
@@ -478,6 +616,34 @@ mod tests {
         }
 
         assert_eq!(names, expected_names);
+    }
+
+    #[tokio::test]
+    async fn merge_repo_alias_tool_records_manual_alias() {
+        let service = ChatMemMcpService::new(new_store());
+        let Json(alias) = service
+            .merge_repo_alias(Parameters(MergeRepoAliasInput {
+                repo_root: "d:/vsp/agentswap-gui".to_string(),
+                alias_root: "d:/vsp/easymd".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(alias.alias_root, "d:/vsp/easymd");
+        assert_eq!(alias.alias_kind, "manual");
+        assert_eq!(alias.confidence, 1.0);
+
+        let Json(health) = service
+            .get_repo_memory_health(Parameters(RepoRootInput {
+                repo_root: "d:/vsp/agentswap-gui".to_string(),
+            }))
+            .await
+            .unwrap();
+
+        assert!(health
+            .repo_aliases
+            .iter()
+            .any(|item| item.alias_root == "d:/vsp/easymd" && item.alias_kind == "manual"));
     }
 
     #[tokio::test]
@@ -530,9 +696,15 @@ mod tests {
                 candidate_id: candidate_id.clone(),
                 target_memory_id: memory_id,
                 proposed_title: "Primary verification".to_string(),
-                proposed_value: "npm run test:run\n\nBefore packaging, use npm run test:run -- --runInBand.".to_string(),
-                proposed_usage_hint: "Use before merge; prefer the serial variant before release packaging.".to_string(),
-                risk_note: Some("Agent-authored rewrite; review wording before approval.".to_string()),
+                proposed_value:
+                    "npm run test:run\n\nBefore packaging, use npm run test:run -- --runInBand."
+                        .to_string(),
+                proposed_usage_hint:
+                    "Use before merge; prefer the serial variant before release packaging."
+                        .to_string(),
+                risk_note: Some(
+                    "Agent-authored rewrite; review wording before approval.".to_string(),
+                ),
                 proposed_by: "codex".to_string(),
                 evidence_refs: vec![],
             }))
@@ -555,7 +727,10 @@ mod tests {
             .merge_suggestion
             .unwrap();
 
-        assert_eq!(proposal.proposal_id.as_deref(), Some(result.proposal_id.as_str()));
+        assert_eq!(
+            proposal.proposal_id.as_deref(),
+            Some(result.proposal_id.as_str())
+        );
         assert_eq!(proposal.proposed_by.as_deref(), Some("codex"));
     }
 
@@ -594,7 +769,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(checkpoint.status, "active");
-        assert_eq!(checkpoint.resume_command.as_deref(), Some("claude --resume conv-001"));
+        assert_eq!(
+            checkpoint.resume_command.as_deref(),
+            Some("claude --resume conv-001")
+        );
     }
 
     #[tokio::test]
@@ -667,12 +845,18 @@ mod tests {
             }))
             .await
             .unwrap();
-        assert!(rebuilt.pages.iter().any(|page| page.slug == "project-overview"));
+        assert!(rebuilt
+            .pages
+            .iter()
+            .any(|page| page.slug == "project-overview"));
 
         let Json(listed) = service
             .list_repo_wiki_pages(Parameters(RepoRootInput { repo_root }))
             .await
             .unwrap();
-        assert!(listed.pages.iter().any(|page| page.slug == "project-overview"));
+        assert!(listed
+            .pages
+            .iter()
+            .any(|page| page.slug == "project-overview"));
     }
 }

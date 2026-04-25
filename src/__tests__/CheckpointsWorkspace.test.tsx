@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import { I18nProvider } from "../i18n/I18nProvider";
@@ -32,6 +32,10 @@ function renderApp() {
       <App />
     </I18nProvider>,
   );
+}
+
+async function openLocalHistoryView() {
+  fireEvent.click(await screen.findByRole("tab", { name: "Local history" }));
 }
 
 describe("Checkpoints workspace", () => {
@@ -74,6 +78,23 @@ describe("Checkpoints workspace", () => {
         };
       }
 
+      if (command === "list_checkpoints") {
+        return [
+          {
+            checkpoint_id: "cp-001",
+            repo_root: "D:/VSP/agentswap-gui",
+            conversation_id: "conv-001",
+            source_agent: "claude",
+            status: "active",
+            summary: "Checkpoint keeps the current debugging state",
+            resume_command: "claude --resume conv-001",
+            metadata_json: "{}",
+            handoff_id: null,
+            created_at: "2026-04-20T10:35:00Z",
+          },
+        ];
+      }
+
       if (command === "list_repo_memories" || command === "list_memory_candidates") {
         return [];
       }
@@ -82,7 +103,7 @@ describe("Checkpoints workspace", () => {
     });
   });
 
-  it("does not expose checkpoint pages in the simplified conversation manager", async () => {
+  it("loads checkpoints into the project context continuation tab", async () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Checkpoint flow"))[0]);
@@ -94,6 +115,15 @@ describe("Checkpoints workspace", () => {
 
     expect(screen.queryByRole("button", { name: "Checkpoints" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Promote to Handoff" })).toBeNull();
-    expect(mockInvoke.mock.calls.some(([command]) => command === "list_checkpoints")).toBe(false);
+    expect(mockInvoke.mock.calls.some(([command]) => command === "list_checkpoints")).toBe(true);
+
+    await openLocalHistoryView();
+    fireEvent.click(screen.getByRole("button", { name: "Manage Rules" }));
+    const drawer = await screen.findByRole("complementary", { name: "Startup Rules" });
+    expect(drawer).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Continue 1" }));
+    expect(within(drawer).getByText("Checkpoint keeps the current debugging state")).toBeTruthy();
+    expect(within(drawer).getByText("claude --resume conv-001")).toBeTruthy();
   });
 });

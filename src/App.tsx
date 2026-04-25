@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent } from "react";
+import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import { appWindow } from "@tauri-apps/api/window";
 import ConversationDetail from "./components/ConversationDetail";
 import MigrateModal from "./components/MigrateModal";
 import SettingsPanel, {
   type SettingsSyncCopy,
+  type UpgradeReadinessReport,
   type WebDavSyncResult,
   type WebDavVerificationInput,
 } from "./components/SettingsPanel";
@@ -40,13 +41,19 @@ import brandIcon from "../src-tauri/icons/icon.png";
 import {
   createCheckpoint,
   createHandoffPacket,
+  getProjectContext,
   getRepoMemoryHealth,
+  importAllLocalHistory,
+  listCheckpoints,
+  listHandoffs,
   listMemoryCandidates,
   listRepoMemories,
   markHandoffConsumed,
+  mergeRepoAlias,
   rebuildRepoWiki,
   scanRepoConversations,
   reverifyMemory,
+  retireMemory,
   reviewMemoryCandidate,
 } from "./chatmem-memory/api";
 import type {
@@ -56,6 +63,7 @@ import type {
   EpisodeRecord,
   HandoffPacket,
   HandoffTargetProfileOption,
+  LocalHistoryImportReport,
   MemoryCandidate,
   RepoMemoryHealth,
   RunRecord,
@@ -112,7 +120,7 @@ interface FileChange {
 type AgentType = "claude" | "codex" | "gemini";
 type TopPage = "continue" | "review" | "history" | "help";
 type HistoryView = "conversations" | "recovery" | "transfers" | "outputs";
-type MemoryDrawerTab = "inbox" | "approved" | "wiki";
+type MemoryDrawerTab = "inbox" | "approved" | "wiki" | "continuation";
 type MigrateMode = "copy" | "cut";
 type CopyTarget = "location" | "resume";
 type CopyState = {
@@ -121,6 +129,7 @@ type CopyState = {
 };
 type LibraryArrangement = "projects" | "timeline" | "chats-first";
 type LibrarySort = "updated" | "created";
+type WorkspaceView = "conversation" | "history";
 type HandoffComposerState = {
   targetAgent: string;
   profileOptions: HandoffTargetProfileOption[];
@@ -200,6 +209,9 @@ type ShellCopy = {
   relatedPaths: string;
   currentSource: string;
   noAvailablePath: string;
+  workspaceSwitcherLabel: string;
+  workspaceConversation: string;
+  workspaceLocalHistory: string;
   filterSummary: string;
   allChats: string;
   organizeTitle: string;
@@ -294,6 +306,14 @@ function getAgentLabel(agent: string) {
   return agent.charAt(0).toUpperCase() + agent.slice(1);
 }
 
+function getCurrentConversationLabel(agent: AgentType, locale: Locale) {
+  if (locale === "en") {
+    return `Current ${agent.toUpperCase()} conversation`;
+  }
+
+  return `${agent.toUpperCase()} \u5f53\u524d\u5bf9\u8bdd`;
+}
+
 function getProjectLabel(projectDir: string) {
   const trimmed = normalizeProjectPath(projectDir).replace(/[\\/]+$/, "");
   const segments = trimmed.split(/[\\/]/).filter(Boolean);
@@ -308,6 +328,64 @@ function getWikiPreview(body: string) {
     .slice(0, 180);
 }
 
+function cleanWikiInline(text: string) {
+  return text
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .trim();
+}
+
+function renderWikiBody(body: string) {
+  const nodes: ReactNode[] = [];
+  let listItems: string[] = [];
+
+  const flushList = () => {
+    if (listItems.length === 0) {
+      return;
+    }
+
+    const currentItems = listItems;
+    listItems = [];
+    nodes.push(
+      <ul key={`wiki-list-${nodes.length}`}>
+        {currentItems.map((item, index) => (
+          <li key={`${item}-${index}`}>{cleanWikiInline(item)}</li>
+        ))}
+      </ul>,
+    );
+  };
+
+  body.split(/\r?\n/u).forEach((line) => {
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      flushList();
+      return;
+    }
+
+    if (/^#\s+/u.test(trimmed)) {
+      return;
+    }
+
+    if (/^##\s+/u.test(trimmed)) {
+      flushList();
+      nodes.push(<h5 key={`wiki-heading-${nodes.length}`}>{cleanWikiInline(trimmed.replace(/^##\s+/u, ""))}</h5>);
+      return;
+    }
+
+    if (/^-\s+/u.test(trimmed)) {
+      listItems.push(trimmed.replace(/^-\s+/u, ""));
+      return;
+    }
+
+    flushList();
+    nodes.push(<p key={`wiki-paragraph-${nodes.length}`}>{cleanWikiInline(trimmed)}</p>);
+  });
+
+  flushList();
+  return nodes;
+}
+
 function getWikiSourceLabel(page: WikiPage, locale: Locale) {
   const memoryCount = page.source_memory_ids.length;
   const episodeCount = page.source_episode_ids.length;
@@ -316,8 +394,8 @@ function getWikiSourceLabel(page: WikiPage, locale: Locale) {
   if (memoryCount > 0) {
     parts.push(
       locale === "en"
-        ? `${memoryCount} memory source${memoryCount === 1 ? "" : "s"}`
-        : `${memoryCount} \u6761\u8bb0\u5fc6\u6765\u6e90`,
+        ? `${memoryCount} startup rule source${memoryCount === 1 ? "" : "s"}`
+        : `${memoryCount} \u6761\u542f\u52a8\u89c4\u5219\u6765\u6e90`,
     );
   }
 
@@ -346,6 +424,59 @@ function normalizeConversationProject<T extends { project_dir: string }>(convers
     ...conversation,
     project_dir: projectDir,
   };
+}
+
+const CODEX_DOCUMENTS_MARKER = "/documents/codex/";
+const CODEX_DATE_FOLDER_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const CODEX_NEW_CHAT_LEAF_PATTERN = /^new-chat(?:-\d+)?$/i;
+const CODEX_FLAT_NEW_CHAT_PATTERN =
+  /^(?:new-chat(?:-\d+)?|\d{4}-\d{2}-\d{2}-new-chat(?:-\d+)?)$/i;
+
+function isCodexGeneratedChatPath(projectDir: string) {
+  const normalized = normalizeProjectPath(projectDir);
+  const markerIndex = normalized.toLowerCase().lastIndexOf(CODEX_DOCUMENTS_MARKER);
+  if (markerIndex < 0) {
+    return false;
+  }
+
+  const relativePath = normalized
+    .slice(markerIndex + CODEX_DOCUMENTS_MARKER.length)
+    .replace(/^\/+|\/+$/g, "");
+  const segments = relativePath.split("/").filter(Boolean);
+
+  if (segments.length === 1) {
+    return CODEX_FLAT_NEW_CHAT_PATTERN.test(segments[0]);
+  }
+
+  return (
+    segments.length === 2 &&
+    CODEX_DATE_FOLDER_PATTERN.test(segments[0]) &&
+    CODEX_NEW_CHAT_LEAF_PATTERN.test(segments[1])
+  );
+}
+
+function getConversationProjectDir(
+  conversation: Pick<ConversationSummary, "project_dir" | "source_agent">,
+) {
+  const projectDir = normalizeProjectPath(conversation.project_dir);
+  if (!projectDir) {
+    return "";
+  }
+
+  if (
+    conversation.source_agent.toLowerCase() === "codex" &&
+    isCodexGeneratedChatPath(projectDir)
+  ) {
+    return "";
+  }
+
+  return projectDir;
+}
+
+function isProjectConversation(
+  conversation: Pick<ConversationSummary, "project_dir" | "source_agent">,
+) {
+  return getConversationProjectDir(conversation).length > 0;
 }
 
 function sortConversations(conversations: ConversationSummary[], sortMode: LibrarySort) {
@@ -426,6 +557,9 @@ function getShellCopy(locale: Locale): ShellCopy {
       relatedPaths: "Related paths",
       currentSource: "Current source",
       noAvailablePath: "No file path is available from this source",
+      workspaceSwitcherLabel: "Workspace view",
+      workspaceConversation: "Current conversation",
+      workspaceLocalHistory: "Local history",
       filterSummary: "Filtered",
       allChats: "All chats",
       organizeTitle: "Organize",
@@ -443,8 +577,8 @@ function getShellCopy(locale: Locale): ShellCopy {
       noTagsYet: "No tags yet",
       noStatusesYet: "No status filters yet",
       collapseProjects: "Collapse all projects",
-      restoreProjects: "Restore project expansion",
-      openOrganizer: "Organize lists",
+      restoreProjects: "Restore previous expansion",
+      openOrganizer: "Filter, sort, and organize conversations",
       refreshList: "Refresh conversations",
       migrate: "Migrate",
       delete: "Delete",
@@ -461,7 +595,7 @@ function getShellCopy(locale: Locale): ShellCopy {
     },
     navAria: "主导航",
     projectSection: "项目",
-    chatSection: "聊天",
+    chatSection: "对话",
     settings: "设置",
     continueTitle: "继续工作",
     continueSubtitle: "把最近的进度、恢复命令和下一步放在一起。",
@@ -521,6 +655,9 @@ function getShellCopy(locale: Locale): ShellCopy {
     relatedPaths: "相关路径",
     currentSource: "当前来源",
     noAvailablePath: "当前来源不可提供文件位置",
+    workspaceSwitcherLabel: "工作区视图",
+    workspaceConversation: "当前对话",
+    workspaceLocalHistory: "本地历史",
     filterSummary: "已筛选",
     allChats: "全部聊天",
     organizeTitle: "整理",
@@ -537,9 +674,9 @@ function getShellCopy(locale: Locale): ShellCopy {
     filterStatus: "状态",
     noTagsYet: "暂无可用标签",
     noStatusesYet: "暂无可用状态",
-    collapseProjects: "折叠全部项目",
-    restoreProjects: "恢复上次展开",
-    openOrganizer: "整理对话",
+    collapseProjects: "全部收起",
+    restoreProjects: "恢复之前展开的分组",
+    openOrganizer: "筛选、排序和整理对话",
     refreshList: "刷新会话列表",
     migrate: "迁移",
     delete: "删除",
@@ -606,7 +743,14 @@ function getSyncCopy(locale: Locale): SettingsSyncCopy {
 function WindowButtonIcon({
   type,
 }: {
-  type: "minimize" | "maximize" | "close" | "collapse" | "organize" | "chevron";
+  type:
+    | "minimize"
+    | "maximize"
+    | "close"
+    | "collapseAll"
+    | "restoreExpansion"
+    | "organize"
+    | "chevron";
 }) {
   if (type === "minimize") {
     return (
@@ -633,11 +777,22 @@ function WindowButtonIcon({
     );
   }
 
-  if (type === "collapse") {
+  if (type === "collapseAll") {
     return (
       <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M6 4L2.5 7.5 6 11" />
-        <path d="M10 4l3.5 3.5L10 11" />
+        <path d="M6.5 3.5 3.5 6.5" />
+        <path d="M3.5 3.5v3h3" />
+        <path d="M9.5 12.5l3-3" />
+        <path d="M12.5 12.5v-3h-3" />
+      </svg>
+    );
+  }
+
+  if (type === "restoreExpansion") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M10.5 4H12v1.5" />
+        <path d="M5.5 12H4v-1.5" />
       </svg>
     );
   }
@@ -666,17 +821,20 @@ function App() {
   const [selectedAgent, setSelectedAgent] = useState<AgentType>("claude");
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
-  const [loadingConversationId, setLoadingConversationId] = useState<string | null>(null);
   const [showMigrateModal, setShowMigrateModal] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [memoryDrawerOpen, setMemoryDrawerOpen] = useState(false);
   const [memoryDrawerTab, setMemoryDrawerTab] = useState<MemoryDrawerTab>("inbox");
   const [listLoading, setListLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
   const [memoryLoading, setMemoryLoading] = useState(false);
   const [repoMemoryHealth, setRepoMemoryHealth] = useState<RepoMemoryHealth | null>(null);
+  const [lastLocalHistoryImportReport, setLastLocalHistoryImportReport] =
+    useState<LocalHistoryImportReport | null>(null);
   const [repoHealthLoading, setRepoHealthLoading] = useState(false);
   const [repoScanRunning, setRepoScanRunning] = useState(false);
+  const [mergingAliasRoot, setMergingAliasRoot] = useState<string | null>(null);
   const [bootstrapReadyConversationId, setBootstrapReadyConversationId] = useState<string | null>(
     null,
   );
@@ -693,6 +851,7 @@ function App() {
   const [repoMemories, setRepoMemories] = useState<ApprovedMemory[]>([]);
   const [memoryCandidates, setMemoryCandidates] = useState<MemoryCandidate[]>([]);
   const [wikiPages, setWikiPages] = useState<WikiPage[]>([]);
+  const [selectedWikiPageId, setSelectedWikiPageId] = useState<string | null>(null);
   const [episodes] = useState<EpisodeRecord[]>([]);
   const [runs] = useState<RunRecord[]>([]);
   const [artifacts] = useState<ArtifactRecord[]>([]);
@@ -702,6 +861,7 @@ function App() {
   const [showOrganizeMenu, setShowOrganizeMenu] = useState(false);
   const [libraryArrangement, setLibraryArrangement] = useState<LibraryArrangement>("projects");
   const [librarySort, setLibrarySort] = useState<LibrarySort>("updated");
+  const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("conversation");
   const [projectFilters, setProjectFilters] = useState<string[]>([]);
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
   const [collapsedSnapshot, setCollapsedSnapshot] = useState<Record<string, boolean> | null>(null);
@@ -709,11 +869,14 @@ function App() {
   const organizeMenuRef = useRef<HTMLDivElement | null>(null);
   const activeConversationId = selectedConversation?.id ?? null;
   const activeConversationIdRef = useRef<string | null>(activeConversationId);
-  const activeRepoRoot = selectedConversation?.project_dir ?? null;
+  const activeRepoRoot = selectedConversation
+    ? getConversationProjectDir(selectedConversation) || null
+    : null;
   const activeRepoRootRef = useRef<string | null>(activeRepoRoot);
   const repoScanRequestIdRef = useRef(0);
   const repoScanActiveCountRef = useRef(0);
   const autoBootstrapAttemptedReposRef = useRef<Record<string, true>>({});
+  const globalHistoryImportAttemptedRef = useRef(false);
   const availableHandoffTargets = ["claude", "codex", "gemini"].filter(
     (agent) => agent !== selectedAgent,
   );
@@ -797,6 +960,8 @@ function App() {
       repoScanRequestIdRef.current += 1;
       repoScanActiveCountRef.current = 0;
       setRepoScanRunning(false);
+      setMergingAliasRoot(null);
+      setWorkspaceView("conversation");
     }
   }, [activeRepoRoot]);
 
@@ -805,6 +970,8 @@ function App() {
       requestRepoRoot: string,
       options?: {
         announceBootstrapReady?: boolean;
+        forceGlobalImport?: boolean;
+        includeGlobalImport?: boolean;
         requestConversationId?: string | null;
       },
     ) => {
@@ -812,6 +979,18 @@ function App() {
     repoScanActiveCountRef.current += 1;
     setRepoScanRunning(true);
     try {
+      const shouldImportGlobalHistory =
+        options?.includeGlobalImport !== false &&
+        (options?.forceGlobalImport === true || !globalHistoryImportAttemptedRef.current);
+      if (shouldImportGlobalHistory) {
+        globalHistoryImportAttemptedRef.current = true;
+        try {
+          const report = await importAllLocalHistory();
+          setLastLocalHistoryImportReport(report);
+        } catch (error) {
+          console.error("Failed to import all local history:", error);
+        }
+      }
       await scanRepoConversations(requestRepoRoot);
       const nextHealth = await getRepoMemoryHealth(requestRepoRoot);
       if (
@@ -920,6 +1099,9 @@ function App() {
       setRepoMemories([]);
       setMemoryCandidates([]);
       setWikiPages([]);
+      setSelectedWikiPageId(null);
+      setCheckpoints([]);
+      setHandoffs([]);
       setRepoMemoryHealth(null);
       setRepoHealthLoading(false);
       setMemoryDrawerOpen(false);
@@ -935,10 +1117,12 @@ function App() {
       const requestRepoRoot = activeRepoRoot;
       const requestConversationId = activeConversationId;
       try {
-        const [nextMemories, nextCandidates, nextWikiPages] = await Promise.all([
+        const [nextMemories, nextCandidates, nextWikiPages, nextCheckpoints, nextHandoffs] = await Promise.all([
           listRepoMemories(activeRepoRoot),
           listMemoryCandidates(activeRepoRoot, "pending_review"),
           rebuildRepoWiki(activeRepoRoot),
+          listCheckpoints(activeRepoRoot),
+          listHandoffs(activeRepoRoot),
         ]);
         if (cancelled || activeRepoRootRef.current !== requestRepoRoot) {
           return;
@@ -946,6 +1130,8 @@ function App() {
         setRepoMemories(nextMemories);
         setMemoryCandidates(nextCandidates);
         setWikiPages(nextWikiPages);
+        setCheckpoints(nextCheckpoints);
+        setHandoffs(nextHandoffs);
       } catch (error) {
         console.error("Failed to load project memory:", error);
       } finally {
@@ -991,8 +1177,32 @@ function App() {
     if (!activeRepoRoot) {
       return;
     }
-    await runRepoScan(activeRepoRoot);
+    await runRepoScan(activeRepoRoot, { forceGlobalImport: true });
   };
+
+  const handleMergeRepoAlias = useCallback(
+    async (aliasRoot: string) => {
+      const repoRoot = activeRepoRootRef.current;
+      if (!repoRoot) {
+        return;
+      }
+
+      setMergingAliasRoot(aliasRoot);
+      try {
+        await mergeRepoAlias(repoRoot, aliasRoot);
+        await runRepoScan(repoRoot, {
+          announceBootstrapReady: true,
+          includeGlobalImport: false,
+          requestConversationId: activeConversationIdRef.current,
+        });
+      } catch (error) {
+        console.error("Failed to merge repo alias:", error);
+      } finally {
+        setMergingAliasRoot(null);
+      }
+    },
+    [runRepoScan],
+  );
 
   const loadConversations = async (query = searchQuery, agent = selectedAgent) => {
     setListLoading(true);
@@ -1016,7 +1226,6 @@ function App() {
     if (id !== activeConversationIdRef.current) {
       setBootstrapReadyConversationId(null);
     }
-    setLoadingConversationId(id);
     setDetailLoading(true);
     try {
       const result = await invoke<Conversation>("read_conversation", {
@@ -1027,7 +1236,6 @@ function App() {
     } catch (error) {
       console.error("Failed to load conversation:", error);
     } finally {
-      setLoadingConversationId((current) => (current === id ? null : current));
       setDetailLoading(false);
     }
   };
@@ -1061,31 +1269,47 @@ function App() {
     }
   };
 
-  const handleDelete = async () => {
-    if (!selectedConversation) {
+  const handleDeleteConversation = async (
+    conversation: Pick<ConversationSummary, "id" | "source_agent" | "summary"> | Pick<Conversation, "id" | "source_agent" | "summary"> | null =
+      selectedConversation,
+  ) => {
+    if (!conversation) {
       return;
     }
 
-    const confirmMessage = `确定要删除这段对话吗？\n\n"${selectedConversation.summary || selectedConversation.id}"\n\n此操作不可撤销。`;
+    const isDeletingSelectedConversation = selectedConversation?.id === conversation.id;
+    const confirmMessage = `确定要删除这段对话吗？\n\n"${conversation.summary || conversation.id}"\n\n此操作不可撤销。`;
     if (!confirm(confirmMessage)) {
       return;
     }
 
-    setDetailLoading(true);
+    setDeletingConversationId(conversation.id);
+    if (isDeletingSelectedConversation) {
+      setDetailLoading(true);
+    }
     try {
       await invoke("delete_conversation", {
-        agent: selectedAgent,
-        id: selectedConversation.id,
+        agent: conversation.source_agent || selectedAgent,
+        id: conversation.id,
       });
       alert("对话已删除");
-      setSelectedConversation(null);
+      if (isDeletingSelectedConversation) {
+        setSelectedConversation(null);
+      }
       await loadConversations();
     } catch (error) {
       console.error("Failed to delete conversation:", error);
       alert("删除失败");
     } finally {
-      setDetailLoading(false);
+      setDeletingConversationId(null);
+      if (isDeletingSelectedConversation) {
+        setDetailLoading(false);
+      }
     }
+  };
+
+  const handleDelete = async () => {
+    await handleDeleteConversation();
   };
 
   const handleCopy = async (target: CopyTarget, value: string | null | undefined) => {
@@ -1137,6 +1361,10 @@ function App() {
       username: syncSettings.username,
       password,
     });
+  };
+
+  const handleRunUpgradeReadinessCheck = async (): Promise<UpgradeReadinessReport> => {
+    return invoke<UpgradeReadinessReport>("run_upgrade_readiness_check");
   };
 
   const handleApproveCandidate = async (
@@ -1351,14 +1579,74 @@ function App() {
         memoryId,
         verifiedBy: selectedAgent,
       });
-      const [nextMemories, nextWikiPages] = await Promise.all([
+      const [nextMemories, nextWikiPages, nextHealth] = await Promise.all([
         listRepoMemories(activeRepoRoot),
         rebuildRepoWiki(activeRepoRoot),
+        getRepoMemoryHealth(activeRepoRoot),
       ]);
       setRepoMemories(nextMemories);
       setWikiPages(nextWikiPages);
+      setRepoMemoryHealth(nextHealth);
     } catch (error) {
       console.error("Failed to re-verify memory:", error);
+    } finally {
+      setMemoryLoading(false);
+    }
+  };
+
+  const handleRetireMemory = async (memoryId: string) => {
+    if (!activeRepoRoot) {
+      return;
+    }
+
+    setMemoryLoading(true);
+    try {
+      await retireMemory({
+        memoryId,
+        retiredBy: selectedAgent,
+      });
+      const [nextMemories, nextCandidates, nextWikiPages, nextHealth] = await Promise.all([
+        listRepoMemories(activeRepoRoot),
+        listMemoryCandidates(activeRepoRoot, "pending_review"),
+        rebuildRepoWiki(activeRepoRoot),
+        getRepoMemoryHealth(activeRepoRoot),
+      ]);
+      setRepoMemories(nextMemories);
+      setMemoryCandidates(nextCandidates);
+      setWikiPages(nextWikiPages);
+      setRepoMemoryHealth(nextHealth);
+    } catch (error) {
+      console.error("Failed to retire startup rule:", error);
+    } finally {
+      setMemoryLoading(false);
+    }
+  };
+
+  const handleRetireManyMemories = async (memoryIds: string[]) => {
+    if (!activeRepoRoot || memoryIds.length === 0) {
+      return;
+    }
+
+    setMemoryLoading(true);
+    try {
+      await Promise.all(
+        memoryIds.map((memoryId) =>
+          retireMemory({
+            memoryId,
+            retiredBy: selectedAgent,
+          }),
+        ),
+      );
+      const [nextMemories, nextCandidates, nextHealth] = await Promise.all([
+        listRepoMemories(activeRepoRoot),
+        listMemoryCandidates(activeRepoRoot, "pending_review"),
+        getRepoMemoryHealth(activeRepoRoot),
+      ]);
+      setRepoMemories(nextMemories);
+      setMemoryCandidates(nextCandidates);
+      setRepoMemoryHealth(nextHealth);
+    } catch (error) {
+      console.error("Failed to retire startup rules:", error);
     } finally {
       setMemoryLoading(false);
     }
@@ -1399,7 +1687,7 @@ function App() {
     () => {
       const projects = new Map<string, string>();
       sortedConversations.forEach((conversation) => {
-        const projectDir = normalizeProjectPath(conversation.project_dir);
+        const projectDir = getConversationProjectDir(conversation);
         if (projectDir) {
           projects.set(projectPathKey(projectDir), projectDir);
         }
@@ -1416,18 +1704,19 @@ function App() {
     }
 
     const filterKeys = new Set(projectFilters.map(projectPathKey));
-    return sortedConversations.filter((conversation) =>
-      filterKeys.has(projectPathKey(conversation.project_dir)),
-    );
+    return sortedConversations.filter((conversation) => {
+      const projectDir = getConversationProjectDir(conversation);
+      return projectDir ? filterKeys.has(projectPathKey(projectDir)) : false;
+    });
   }, [projectFilters, sortedConversations]);
 
   const projectConversations = useMemo(
-    () => filteredConversations.filter((conversation) => normalizeProjectPath(conversation.project_dir)),
+    () => filteredConversations.filter(isProjectConversation),
     [filteredConversations],
   );
 
   const chatConversations = useMemo(
-    () => filteredConversations.filter((conversation) => !normalizeProjectPath(conversation.project_dir)),
+    () => filteredConversations.filter((conversation) => !isProjectConversation(conversation)),
     [filteredConversations],
   );
 
@@ -1437,9 +1726,10 @@ function App() {
     }
 
     return buildRepoLibraryRecords({
-      conversations: sortedConversations.filter(
-        (conversation) => projectPathKey(conversation.project_dir) === projectPathKey(activeRepoRoot),
-      ),
+      conversations: sortedConversations.filter((conversation) => {
+        const projectDir = getConversationProjectDir(conversation);
+        return projectDir ? projectPathKey(projectDir) === projectPathKey(activeRepoRoot) : false;
+      }),
       memories: repoMemories,
       checkpoints,
       handoffs,
@@ -1462,7 +1752,10 @@ function App() {
     const groups = new Map<string, ProjectGroup>();
 
     projectConversations.forEach((conversation) => {
-      const projectDir = normalizeProjectPath(conversation.project_dir);
+      const projectDir = getConversationProjectDir(conversation);
+      if (!projectDir) {
+        return;
+      }
       const groupKey = projectPathKey(projectDir);
       const normalizedConversation = normalizeConversationProject(conversation);
       const existing = groups.get(groupKey);
@@ -1511,6 +1804,9 @@ function App() {
 
   const allProjectsCollapsed =
     projectGroups.length > 0 && projectGroups.every((group) => expandedProjects[group.id] === false);
+  const projectCollapseActionLabel = allProjectsCollapsed
+    ? shell.restoreProjects
+    : shell.collapseProjects;
   const activeFilterCount = projectFilters.length;
 
   const handleOpenLibraryRecord = async (record: LibraryRecord) => {
@@ -1689,24 +1985,41 @@ function App() {
     const isSelected = selectedConversation?.id === conversation.id;
 
     return (
-      <button
+      <div
         key={`${conversation.project_dir}-${conversation.id}`}
-        type="button"
         className={`conversation-item ${isSelected ? "selected" : ""} ${extraClassName}`.trim()}
-        onClick={() => void loadConversationDetail(conversation.id)}
       >
-        <div className="conversation-item-row">
-          <div className="conversation-item-main">
-            <div className="conversation-item-title" title={title}>
-              {visibleTitle}
+        <button
+          type="button"
+          className="conversation-item-select"
+          onClick={() => void loadConversationDetail(conversation.id)}
+        >
+          <div className="conversation-item-row">
+            <div className="conversation-item-main">
+              <div className="conversation-item-title" title={title}>
+                {visibleTitle}
+              </div>
+              <div className="conversation-item-path" title={conversation.project_dir}>
+                {conversation.project_dir}
+              </div>
             </div>
-            <div className="conversation-item-path" title={conversation.project_dir}>
-              {conversation.project_dir}
-            </div>
+            <div className="conversation-item-time">{formatDistanceToNow(conversation.updated_at)}</div>
           </div>
-          <div className="conversation-item-time">{formatDistanceToNow(conversation.updated_at)}</div>
-        </div>
-      </button>
+        </button>
+        <button
+          type="button"
+          className="conversation-item-delete"
+          aria-label={`${shell.delete} ${title}`}
+          title={shell.delete}
+          disabled={deletingConversationId === conversation.id}
+          onClick={(event) => {
+            event.stopPropagation();
+            void handleDeleteConversation(conversation);
+          }}
+        >
+          {shell.delete}
+        </button>
+      </div>
     );
   };
 
@@ -2539,31 +2852,45 @@ function App() {
       return null;
     }
 
-    const memoryTitle = locale === "en" ? "Project Memory" : "\u9879\u76ee\u8bb0\u5fc6";
+    const memoryTitle = locale === "en" ? "Startup Rules" : "\u542f\u52a8\u89c4\u5219\u7ba1\u7406";
     const drawerSubtitle =
       locale === "en"
-        ? "Review only what needs attention, then tuck the rest away."
-        : "\u53ea\u5904\u7406\u9700\u8981\u5173\u6ce8\u7684\u4e8b\uff0c\u5176\u4f59\u8bb0\u5fc6\u6536\u8d77\u6765\u3002";
+        ? "Review only durable rules that should be carried into new tasks. Local history search is already available from the top of the workspace."
+        : "\u8fd9\u91cc\u53ea\u5904\u7406\u65b0\u4efb\u52a1\u9700\u8981\u5e26\u4e0a\u7684\u7a33\u5b9a\u89c4\u5219\u3002\u672c\u5730\u5386\u53f2\u68c0\u7d22\u5df2\u7ecf\u5728\u5de5\u4f5c\u533a\u9876\u90e8\u53ef\u7528\u3002";
     const wikiSubtitle =
       locale === "en"
-        ? "Readable pages rebuilt from approved memory and episodes."
-        : "\u7531\u5df2\u6279\u51c6\u8bb0\u5fc6\u548c\u9636\u6bb5\u8bb0\u5f55\u91cd\u5efa\u7684\u53ef\u8bfb\u9875\u9762\u3002";
+        ? "Readable pages rebuilt from approved startup rules and local-history episodes."
+        : "\u7531\u5df2\u6279\u51c6\u542f\u52a8\u89c4\u5219\u548c\u672c\u5730\u5386\u53f2\u9636\u6bb5\u8bb0\u5f55\u91cd\u5efa\u7684\u53ef\u8bfb\u9875\u9762\u3002";
     const emptyWiki =
       locale === "en"
         ? "No wiki projection has been generated yet."
         : "\u8fd8\u6ca1\u6709\u751f\u6210 Wiki \u6295\u5f71\u3002";
+    const continuationSubtitle =
+      locale === "en"
+        ? "Checkpoints and handoff packets are temporary continuation state, not durable startup rules."
+        : "\u68c0\u67e5\u70b9\u548c\u4ea4\u63a5\u5305\u662f\u7ee7\u7eed\u5de5\u4f5c\u7528\u7684\u4e34\u65f6\u72b6\u6001\uff0c\u4e0d\u662f\u957f\u671f\u542f\u52a8\u89c4\u5219\u3002";
+    const emptyContinuation =
+      locale === "en"
+        ? "No checkpoints or handoff packets for this project yet."
+        : "\u8fd9\u4e2a\u9879\u76ee\u8fd8\u6ca1\u6709\u68c0\u67e5\u70b9\u6216\u4ea4\u63a5\u5305\u3002";
+    const continuationCount = checkpoints.length + handoffs.length;
     const tabs: Array<{ id: MemoryDrawerTab; label: string; count: number }> = [
       {
         id: "inbox",
-        label: locale === "en" ? "Inbox" : "\u6536\u4ef6\u7bb1",
+        label: locale === "en" ? "Review" : "\u5019\u9009\u89c4\u5219",
         count: memoryCandidates.length,
       },
       {
         id: "approved",
-        label: locale === "en" ? "Approved" : "\u5df2\u6279\u51c6",
+        label: locale === "en" ? "Rules" : "\u542f\u52a8\u89c4\u5219",
         count: repoMemories.length,
       },
       { id: "wiki", label: locale === "en" ? "Wiki" : "Wiki", count: wikiPages.length },
+      {
+        id: "continuation",
+        label: locale === "en" ? "Continue" : "\u7ee7\u7eed",
+        count: continuationCount,
+      },
     ];
     const shouldAutoFocusFirstApprovedMemory =
       memoryDrawerOpen &&
@@ -2585,18 +2912,121 @@ function App() {
             <div className="empty-state-icon">W</div>
             <div className="empty-state-text">{emptyWiki}</div>
           </div>
+        ) : (() => {
+          const selectedWikiPage =
+            wikiPages.find((page) => page.page_id === selectedWikiPageId) ?? wikiPages[0];
+
+          return (
+            <div className="wiki-page-browser">
+              <nav
+                className="wiki-page-list"
+                aria-label={locale === "en" ? "Wiki pages" : "Wiki \u9875\u9762"}
+              >
+                {wikiPages.slice(0, 20).map((page) => {
+                  const isSelected = page.page_id === selectedWikiPage.page_id;
+                  return (
+                    <button
+                      key={page.page_id}
+                      type="button"
+                      className={`wiki-page-list-item ${isSelected ? "is-selected" : ""}`}
+                      aria-current={isSelected ? "page" : undefined}
+                      onClick={() => setSelectedWikiPageId(page.page_id)}
+                    >
+                      <strong>{page.title}</strong>
+                      <span>{page.status}</span>
+                      <small>{getWikiPreview(page.body)}</small>
+                    </button>
+                  );
+                })}
+              </nav>
+              <article className="wiki-page-reader">
+                <header className="wiki-page-reader-header">
+                  <div>
+                    <span className="memory-card-kind">{selectedWikiPage.status}</span>
+                    <h4>{selectedWikiPage.title}</h4>
+                  </div>
+                  <div className="wiki-page-reader-meta">
+                    <span>{getWikiSourceLabel(selectedWikiPage, locale)}</span>
+                    <span>{formatDateTime(selectedWikiPage.updated_at)}</span>
+                  </div>
+                </header>
+                <div className="wiki-page-body">{renderWikiBody(selectedWikiPage.body)}</div>
+              </article>
+            </div>
+          );
+        })()}
+      </section>
+    );
+
+    const renderContinuationTab = () => (
+      <section className="memory-panel">
+        <div className="memory-panel-header">
+          <h3>{locale === "en" ? "Continue Work" : "\u7ee7\u7eed\u5de5\u4f5c"}</h3>
+          <p>{continuationSubtitle}</p>
+        </div>
+        {memoryLoading ? (
+          <div className="loading">
+            <div className="spinner"></div>
+          </div>
+        ) : continuationCount === 0 ? (
+          <div className="empty-state">
+            <div className="empty-state-icon">C</div>
+            <div className="empty-state-text">{emptyContinuation}</div>
+          </div>
         ) : (
           <div className="memory-card-list">
-            {wikiPages.slice(0, 20).map((page) => (
-              <article key={page.page_id} className="memory-card memory-card-projection">
+            {checkpoints.map((checkpoint) => (
+              <article key={checkpoint.checkpoint_id} className="memory-card">
                 <div className="memory-card-header">
                   <div>
-                    <strong>{page.title}</strong>
-                    <div className="memory-card-kind">{page.status}</div>
+                    <strong>{checkpoint.summary}</strong>
+                    <div className="memory-card-kind">
+                      {locale === "en" ? "Checkpoint" : "\u68c0\u67e5\u70b9"}
+                      {" · "}
+                      {checkpoint.status}
+                    </div>
                   </div>
                 </div>
-                <p>{getWikiPreview(page.body)}</p>
-                <span>{getWikiSourceLabel(page, locale)}</span>
+                <p className="memory-card-copy">{checkpoint.resume_command ?? "--"}</p>
+                <div className="memory-card-meta">
+                  <span>{checkpoint.source_agent}</span>
+                  <span>{formatDateTime(checkpoint.created_at)}</span>
+                </div>
+              </article>
+            ))}
+            {handoffs.map((handoff) => (
+              <article key={handoff.handoff_id} className="memory-card">
+                <div className="memory-card-header">
+                  <div>
+                    <strong>{handoff.current_goal}</strong>
+                    <div className="memory-card-kind">
+                      {handoff.from_agent}
+                      {" -> "}
+                      {handoff.to_agent}
+                    </div>
+                  </div>
+                  <span className={`handoff-status-pill handoff-status-${handoff.status}`}>
+                    {handoff.status}
+                  </span>
+                </div>
+                {handoff.next_items.length > 0 ? (
+                  <p className="memory-card-copy">{handoff.next_items[0]}</p>
+                ) : null}
+                <div className="memory-card-meta">
+                  <span>{formatDateTime(handoff.created_at)}</span>
+                  {handoff.target_profile ? <span>{handoff.target_profile}</span> : null}
+                </div>
+                {!handoff.consumed_at && handoff.to_agent === selectedAgent ? (
+                  <div className="memory-card-actions">
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => void handleMarkHandoffConsumed(handoff.handoff_id)}
+                    >
+                      {locale === "en" ? "Mark as consumed" : "\u6807\u8bb0\u5df2\u63a5\u6536"}
+                    </button>
+                  </div>
+                ) : null}
               </article>
             ))}
           </div>
@@ -2612,6 +3042,8 @@ function App() {
             loading={memoryLoading}
             locale={locale}
             onReverify={(memoryId) => void handleReverifyMemory(memoryId)}
+            onRetire={(memoryId) => void handleRetireMemory(memoryId)}
+            onRetireMany={(memoryIds) => void handleRetireManyMemories(memoryIds)}
             autoFocusFirstMemory={shouldAutoFocusFirstApprovedMemory || undefined}
             onAutoFocusHandled={
               shouldAutoFocusFirstApprovedMemory
@@ -2624,6 +3056,10 @@ function App() {
 
       if (memoryDrawerTab === "wiki") {
         return renderWikiTab();
+      }
+
+      if (memoryDrawerTab === "continuation") {
+        return renderContinuationTab();
       }
 
       return (
@@ -2648,14 +3084,14 @@ function App() {
         >
           <header className="memory-drawer-header">
             <div>
-              <p className="page-eyebrow">{locale === "en" ? "Repository context" : "\u4ed3\u5e93\u4e0a\u4e0b\u6587"}</p>
+              <p className="page-eyebrow">{locale === "en" ? "Repository rules" : "\u4ed3\u5e93\u89c4\u5219"}</p>
               <h2>{memoryTitle}</h2>
               <span>{drawerSubtitle}</span>
             </div>
             <button
               type="button"
               className="icon-button"
-              aria-label={locale === "en" ? "Close memory drawer" : "\u5173\u95ed\u8bb0\u5fc6\u62bd\u5c49"}
+              aria-label={locale === "en" ? "Close startup rules drawer" : "\u5173\u95ed\u542f\u52a8\u89c4\u5219\u62bd\u5c49"}
               onClick={closeMemoryDrawer}
             >
               <WindowButtonIcon type="close" />
@@ -2701,110 +3137,137 @@ function App() {
       normalizeConversationTitle(selectedConversation.summary) || selectedConversation.id;
     const visibleConversationTitle = truncateWorkspaceTitle(conversationTitle);
     const memoryAttentionCount = memoryCandidates.length;
-    const memoryButtonLabel = locale === "en" ? "Memory" : "\u8bb0\u5fc6";
-    const showMemoryReadyCue =
-      bootstrapReadyConversationId === selectedConversation.id &&
-      loadingConversationId !== selectedConversation.id;
-    const showMemoryReadyText = showMemoryReadyCue && memoryAttentionCount === 0;
-    const memoryReadyLabel = locale === "en" ? "Ready" : "\u5df2\u5c31\u7eea";
-    const memoryButtonClassName = [
-      "btn",
-      "btn-secondary",
-      "memory-drawer-trigger",
-      memoryAttentionCount > 0 ? "has-memory-alert" : "",
-      showMemoryReadyCue ? "is-ready" : "",
-    ]
-      .filter(Boolean)
-      .join(" ");
+    const currentWorkspaceView: WorkspaceView = activeRepoRoot ? workspaceView : "conversation";
+    const localHistoryPanel = activeRepoRoot ? (
+      <ProjectIndexStatus
+        health={repoMemoryHealth}
+        importReport={lastLocalHistoryImportReport}
+        loading={repoHealthLoading}
+        scanning={repoScanRunning}
+        bootstrapReady={bootstrapReadyConversationId === selectedConversation.id}
+        locale={locale}
+        onScan={() => void handleScanRepoConversations()}
+        onMergeAlias={(aliasRoot) => void handleMergeRepoAlias(aliasRoot)}
+        mergingAliasRoot={mergingAliasRoot}
+        onOpenRules={() => {
+          handleMemoryDrawerTabChange(memoryAttentionCount > 0 ? "inbox" : "approved");
+          setMemoryDrawerOpen(true);
+        }}
+        onRecallHistory={async (query) => {
+          const context = await getProjectContext({
+            repoRoot: activeRepoRoot,
+            query,
+            intent: "recall",
+            limit: 5,
+          });
+          return context.relevant_history;
+        }}
+      />
+    ) : null;
 
     return (
-      <div className="conversation-workspace">
+      <div className={`conversation-workspace workspace-view-${currentWorkspaceView}`}>
         {activeRepoRoot ? (
-          <ProjectIndexStatus
-            health={repoMemoryHealth}
-            loading={repoHealthLoading}
-            scanning={repoScanRunning}
-            bootstrapReady={bootstrapReadyConversationId === selectedConversation.id}
-            locale={locale}
-            onScan={() => void handleScanRepoConversations()}
-          />
+          <div
+            className="workspace-view-switcher"
+            role="tablist"
+            aria-label={shell.workspaceSwitcherLabel}
+          >
+            <button
+              type="button"
+              role="tab"
+              id="workspace-tab-conversation"
+              aria-selected={currentWorkspaceView === "conversation"}
+              aria-controls="workspace-panel-conversation"
+              className={`workspace-view-tab ${currentWorkspaceView === "conversation" ? "active" : ""}`}
+              onClick={() => setWorkspaceView("conversation")}
+            >
+              {shell.workspaceConversation}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              id="workspace-tab-history"
+              aria-selected={currentWorkspaceView === "history"}
+              aria-controls="workspace-panel-history"
+              className={`workspace-view-tab ${currentWorkspaceView === "history" ? "active" : ""}`}
+              onClick={() => setWorkspaceView("history")}
+            >
+              {shell.workspaceLocalHistory}
+            </button>
+          </div>
         ) : null}
 
-        <header className="conversation-toolbar">
-          <div className="conversation-title-block">
-            <p className="page-eyebrow">{getAgentHeading(selectedAgent, locale)}</p>
-            <h1 title={conversationTitle}>{visibleConversationTitle}</h1>
-            <span title={selectedConversation.project_dir}>{selectedConversation.project_dir}</span>
+        {currentWorkspaceView === "history" && localHistoryPanel ? (
+          <div
+            id="workspace-panel-history"
+            className="workspace-view-panel workspace-view-panel-history"
+            role="tabpanel"
+            aria-labelledby="workspace-tab-history"
+          >
+            {localHistoryPanel}
           </div>
-          <div className="conversation-toolbar-actions">
-            <button
-              type="button"
-              aria-label={memoryButtonLabel}
-              className={memoryButtonClassName}
-              onClick={() => {
-                handleMemoryDrawerTabChange(memoryAttentionCount > 0 ? "inbox" : "approved");
-                setMemoryDrawerOpen(true);
-              }}
-            >
-              <span>{memoryButtonLabel}</span>
-              <span
-                className={`memory-drawer-trigger-ready ${showMemoryReadyText ? "is-visible" : ""}`}
-                aria-hidden="true"
-              >
-                <span className="memory-drawer-trigger-ready-dot" />
-                <span>{memoryReadyLabel}</span>
-              </span>
-              {memoryAttentionCount > 0 ? (
-                <span className="memory-drawer-trigger-badge" aria-hidden="true">
-                  {memoryAttentionCount}
+        ) : (
+          <div
+            id="workspace-panel-conversation"
+            className="workspace-view-panel workspace-view-panel-conversation"
+            role="tabpanel"
+            aria-labelledby={activeRepoRoot ? "workspace-tab-conversation" : undefined}
+          >
+            <header className="conversation-toolbar">
+              <div className="conversation-title-block">
+                <p className="page-eyebrow">{getCurrentConversationLabel(selectedAgent, locale)}</p>
+                <h1 title={conversationTitle}>{visibleConversationTitle}</h1>
+                <span title={selectedConversation.project_dir}>{selectedConversation.project_dir}</span>
+              </div>
+              <div className="conversation-toolbar-actions">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => setShowMigrateModal(true)}
+                  disabled={detailLoading}
+                >
+                  {shell.migrate}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => void handleCopy("location", selectedConversation.storage_path)}
+                  disabled={!selectedConversation.storage_path}
+                >
+                  {locationButtonLabel}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => void handleCopy("resume", selectedConversation.resume_command)}
+                  disabled={!selectedConversation.resume_command}
+                >
+                  {resumeButtonLabel}
+                </button>
+              </div>
+            </header>
+
+            <div className="conversation-meta-strip compact">
+              <div className="meta-block">
+                <span className="meta-label">{shell.fileLocation}</span>
+                <span className={`meta-value ${selectedConversation.storage_path ? "" : "is-muted"}`}>
+                  {selectedConversation.storage_path || shell.noAvailablePath}
                 </span>
-              ) : null}
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => setShowMigrateModal(true)}
-              disabled={detailLoading}
-            >
-              {shell.migrate}
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => void handleCopy("location", selectedConversation.storage_path)}
-              disabled={!selectedConversation.storage_path}
-            >
-              {locationButtonLabel}
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => void handleCopy("resume", selectedConversation.resume_command)}
-              disabled={!selectedConversation.resume_command}
-            >
-              {resumeButtonLabel}
-            </button>
-          </div>
-        </header>
+              </div>
+              <div className="meta-block">
+                <span className="meta-label">{shell.resumeCommand}</span>
+                <span className={`meta-value ${selectedConversation.resume_command ? "" : "is-muted"}`}>
+                  {selectedConversation.resume_command || "--"}
+                </span>
+              </div>
+            </div>
 
-        <div className="conversation-meta-strip compact">
-          <div className="meta-block">
-            <span className="meta-label">{shell.fileLocation}</span>
-            <span className={`meta-value ${selectedConversation.storage_path ? "" : "is-muted"}`}>
-              {selectedConversation.storage_path || shell.noAvailablePath}
-            </span>
+            <div className="conversation-content-grid">
+              <ConversationDetail conversation={selectedConversation} />
+            </div>
           </div>
-          <div className="meta-block">
-            <span className="meta-label">{shell.resumeCommand}</span>
-            <span className={`meta-value ${selectedConversation.resume_command ? "" : "is-muted"}`}>
-              {selectedConversation.resume_command || "--"}
-            </span>
-          </div>
-        </div>
-
-        <div className="conversation-content-grid">
-          <ConversationDetail conversation={selectedConversation} />
-        </div>
+        )}
       </div>
     );
   };
@@ -2914,19 +3377,31 @@ function App() {
                 <div className="library-section-actions" ref={organizeMenuRef}>
                   <button
                     type="button"
-                    className="icon-button"
-                    aria-label={allProjectsCollapsed ? shell.restoreProjects : shell.collapseProjects}
+                    className={`icon-button sidebar-action-button ${
+                      allProjectsCollapsed ? "is-restore" : "is-collapse"
+                    }`}
+                    aria-label={projectCollapseActionLabel}
+                    title={projectCollapseActionLabel}
                     onClick={handleToggleCollapseProjects}
                   >
-                    <WindowButtonIcon type="collapse" />
+                    <WindowButtonIcon type={allProjectsCollapsed ? "restoreExpansion" : "collapseAll"} />
+                    <span className="sidebar-action-tooltip" aria-hidden="true">
+                      {projectCollapseActionLabel}
+                    </span>
                   </button>
                   <button
                     type="button"
-                    className="icon-button"
+                    className={`icon-button sidebar-action-button ${showOrganizeMenu ? "is-active" : ""}`}
                     aria-label={shell.openOrganizer}
+                    title={shell.openOrganizer}
+                    aria-haspopup="menu"
+                    aria-expanded={showOrganizeMenu}
                     onClick={() => setShowOrganizeMenu((current) => !current)}
                   >
                     <WindowButtonIcon type="organize" />
+                    <span className="sidebar-action-tooltip" aria-hidden="true">
+                      {shell.openOrganizer}
+                    </span>
                   </button>
                   {showOrganizeMenu && (
                     <div className="organize-menu">
@@ -3156,6 +3631,7 @@ function App() {
         }}
         onVerifyWebDavServer={handleVerifyWebDavServer}
         onSyncWebDavNow={handleSyncWebDavNow}
+        onRunUpgradeReadinessCheck={handleRunUpgradeReadinessCheck}
         onLoadWebDavPassword={loadWebDavPassword}
         onSaveWebDavPassword={({ username, password }) => saveWebDavPassword(username, password)}
         onCheckUpdates={async () => {

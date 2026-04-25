@@ -90,6 +90,12 @@ export type AgentConversationCount = {
   conversation_count: number;
 };
 
+export type ObservedProjectRootCount = {
+  source_agent: string;
+  project_root: string;
+  conversation_count: number;
+};
+
 export type RepoMemoryHealth = {
   repo_root: string;
   canonical_repo_root: string;
@@ -100,6 +106,7 @@ export type RepoMemoryHealth = {
   inherited_repo_roots: string[];
   conversation_counts_by_agent: AgentConversationCount[];
   repo_aliases: RepoAlias[];
+  latest_scan?: RepoScanSummary | null;
   warnings: string[];
 };
 
@@ -116,7 +123,32 @@ export type RepoScanReport = {
   linked_conversation_count: number;
   skipped_conversation_count: number;
   source_agents: AgentConversationCount[];
+  unmatched_project_roots?: ObservedProjectRootCount[];
   warnings: string[];
+  scanned_at?: string;
+};
+
+export type LocalHistoryImportReport = {
+  scanned_conversation_count: number;
+  imported_conversation_count: number;
+  skipped_conversation_count: number;
+  indexed_repo_count: number;
+  source_agents: AgentConversationCount[];
+  imported_project_roots: ObservedProjectRootCount[];
+  warnings: string[];
+  imported_at: string;
+};
+
+export type RepoScanSummary = {
+  repo_root: string;
+  canonical_repo_root: string;
+  scanned_conversation_count: number;
+  linked_conversation_count: number;
+  skipped_conversation_count: number;
+  source_agents: AgentConversationCount[];
+  unmatched_project_roots?: ObservedProjectRootCount[];
+  warnings: string[];
+  scanned_at: string;
 };
 
 export type ProjectContextPayload = {

@@ -46,6 +46,10 @@ function createDeferred<T>() {
   return { promise, resolve, reject };
 }
 
+async function openLocalHistoryView() {
+  fireEvent.click(await screen.findByRole("tab", { name: "Local history" }));
+}
+
 describe("Memory workspace", () => {
   beforeEach(() => {
     mockInvoke.mockReset();
@@ -138,7 +142,11 @@ describe("Memory workspace", () => {
             repo_root: "D:/VSP/agentswap-gui",
             slug: "commands",
             title: "Commands",
-            body: "# Commands\n\n- npm run test:run",
+            body:
+              "# Commands\n\n" +
+              "This wiki page starts with a deliberately long orientation paragraph so the card preview cannot contain everything. " +
+              "It explains that commands are only one slice of the project map and that the full reader must stay available. " +
+              "\n\n## Details\n\nFull wiki page includes source-backed onboarding details.",
             status: "fresh",
             source_memory_ids: ["mem-001"],
             source_episode_ids: [],
@@ -178,7 +186,7 @@ describe("Memory workspace", () => {
         };
       }
 
-      if (command === "review_memory_candidate") {
+      if (command === "review_memory_candidate" || command === "reverify_memory" || command === "retire_memory") {
         return null;
       }
 
@@ -193,36 +201,40 @@ describe("Memory workspace", () => {
 
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: "Memory workflow" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Memory" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Manage Rules" })).toBeNull();
     });
 
-    expect(screen.queryByRole("complementary", { name: "Project Memory" })).toBeNull();
+    expect(screen.queryByRole("complementary", { name: "Startup Rules" })).toBeNull();
     expect(screen.queryByText("Primary verification")).toBeNull();
     expect(screen.queryByText("Review pending memory")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Memory" }));
+    await openLocalHistoryView();
+    fireEvent.click(screen.getByRole("button", { name: "Manage Rules" }));
 
-    expect(await screen.findByRole("complementary", { name: "Project Memory" })).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "Inbox 1" })).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "Approved 1" })).toBeTruthy();
+    expect(await screen.findByRole("complementary", { name: "Startup Rules" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Review 1" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Rules 1" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Wiki 1" })).toBeTruthy();
     expect(screen.getByText("Review pending memory")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Approved 1" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Rules 1" }));
     expect(screen.getByText("Primary verification")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("tab", { name: "Wiki 1" }));
-    expect(screen.getByText("Commands")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Commands" })).toBeTruthy();
+    expect(screen.getByText(/source-backed onboarding details/)).toBeTruthy();
+    expect(screen.getByText("1 startup rule source")).toBeTruthy();
   });
 
   it("reviews a pending memory candidate from the drawer", async () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
-    fireEvent.click(await screen.findByRole("button", { name: "Memory" }));
+    await openLocalHistoryView();
+    fireEvent.click(await screen.findByRole("button", { name: "Manage Rules" }));
     expect(await screen.findByText("Review pending memory")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    fireEvent.click(screen.getByRole("button", { name: "Approve startup rule" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("review_memory_candidate", {
@@ -238,7 +250,8 @@ describe("Memory workspace", () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
-    fireEvent.click(await screen.findByRole("button", { name: "Memory" }));
+    await openLocalHistoryView();
+    fireEvent.click(await screen.findByRole("button", { name: "Manage Rules" }));
     expect(await screen.findByText("Suggested rewrite")).toBeTruthy();
     expect(screen.getByText("Merge proposed by codex")).toBeTruthy();
     expect(screen.getByText(/npm run test:run/)).toBeTruthy();
@@ -257,10 +270,36 @@ describe("Memory workspace", () => {
     });
   });
 
-  it("shows local history status and rescans the active repo", async () => {
+  it("confirms and retires startup rules from the drawer", async () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
+    await openLocalHistoryView();
+    fireEvent.click(await screen.findByRole("button", { name: "Manage Rules" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Rules 1" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm still valid" }));
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("reverify_memory", {
+        memoryId: "mem-001",
+        verifiedBy: "claude",
+      });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Retire rule" }));
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("retire_memory", {
+        memoryId: "mem-001",
+        retiredBy: "claude",
+      });
+    });
+  });
+
+  it("shows local history status in its own workspace view and rescans the active repo", async () => {
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
+    await openLocalHistoryView();
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("get_repo_memory_health", {
@@ -268,18 +307,17 @@ describe("Memory workspace", () => {
       });
     });
 
-    const localHistoryPanel = (await screen.findByText("Local history")).closest("section");
+    const localHistoryPanel = screen
+      .getByRole("heading", { level: 2, name: "D:/VSP/agentswap-gui" })
+      .closest("section");
     const conversationToolbar = document.querySelector(".conversation-toolbar");
     const conversationMetaStrip = document.querySelector(".conversation-meta-strip.compact");
     expect(localHistoryPanel).toBeTruthy();
-    expect(conversationToolbar).toBeTruthy();
-    expect(conversationMetaStrip).toBeTruthy();
+    expect(conversationToolbar).toBeNull();
+    expect(conversationMetaStrip).toBeNull();
     expect(
-      Boolean(localHistoryPanel!.compareDocumentPosition(conversationToolbar!) & Node.DOCUMENT_POSITION_FOLLOWING),
-    ).toBe(true);
-    expect(
-      Boolean(localHistoryPanel!.compareDocumentPosition(conversationMetaStrip!) & Node.DOCUMENT_POSITION_FOLLOWING),
-    ).toBe(true);
+      localHistoryPanel!.querySelector(".memory-drawer-trigger"),
+    ).toBe(screen.getByRole("button", { name: "Manage Rules" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Rescan local history" }));
 
@@ -288,6 +326,80 @@ describe("Memory workspace", () => {
         repoRoot: "D:/VSP/agentswap-gui",
       });
     });
+  });
+
+  it("recalls local history evidence from the top local-history panel", async () => {
+    const baseImplementation = mockInvoke.getMockImplementation();
+    if (!baseImplementation) {
+      throw new Error("Missing base invoke mock implementation");
+    }
+
+    mockInvoke.mockImplementation((command: string, payload?: Record<string, unknown>) => {
+      if (command === "get_project_context") {
+        return Promise.resolve({
+          repo_summary: "Project context for D:/VSP/agentswap-gui",
+          intent: "recall",
+          approved_memories: [],
+          priority_gotchas: [],
+          recent_handoff: null,
+          relevant_history: [
+            {
+              type: "chunk",
+              title: "EasyMD parser discussion",
+              summary: "We discussed EasyMD import paths and why ChatMem did not discover them.",
+              why_matched: "keyword + vector",
+              score: 0.88,
+              evidence_refs: [
+                {
+                  conversation_id: "conv-001",
+                  message_id: "msg-001",
+                  excerpt: "EasyMD files were mentioned while debugging local history indexing.",
+                },
+              ],
+            },
+          ],
+          pending_candidates: [],
+          repo_diagnostics: {
+            repo_root: "D:/VSP/agentswap-gui",
+            canonical_repo_root: "D:/VSP/agentswap-gui",
+            approved_memory_count: 1,
+            pending_candidate_count: 1,
+            search_document_count: 4,
+            indexed_chunk_count: 8,
+            inherited_repo_roots: [],
+            conversation_counts_by_agent: [{ source_agent: "claude", conversation_count: 1 }],
+            repo_aliases: [],
+            warnings: [],
+          },
+        });
+      }
+
+      return baseImplementation(command, payload);
+    });
+
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
+    await openLocalHistoryView();
+
+    const recallInput = await screen.findByPlaceholderText("Ask local history...");
+    fireEvent.change(recallInput, {
+      target: { value: "Did we discuss EasyMD?" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Recall" }));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("get_project_context", {
+        repoRoot: "D:/VSP/agentswap-gui",
+        query: "Did we discuss EasyMD?",
+        intent: "recall",
+        limit: 5,
+      });
+    });
+
+    expect(await screen.findByText("EasyMD parser discussion")).toBeTruthy();
+    expect(screen.getByText(/ChatMem did not discover them/)).toBeTruthy();
+    expect(screen.getByText(/Evidence: EasyMD files were mentioned/)).toBeTruthy();
   });
 
   it("shows bootstrap scan status copy while auto-import is still running", async () => {
@@ -337,6 +449,7 @@ describe("Memory workspace", () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
+    await openLocalHistoryView();
 
     expect(
       await screen.findByText(
@@ -406,6 +519,7 @@ describe("Memory workspace", () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
+    await openLocalHistoryView();
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("scan_repo_conversations", {
@@ -417,7 +531,9 @@ describe("Memory workspace", () => {
       expect(screen.getByRole("button", { name: "Rescan local history" })).toBeTruthy();
     });
 
-    const localHistoryPanel = screen.getByText("Local history").closest("section");
+    const localHistoryPanel = screen
+      .getByRole("heading", { level: 2, name: "D:/VSP/agentswap-gui" })
+      .closest("section");
     expect(localHistoryPanel).toBeTruthy();
 
     await waitFor(() => {
@@ -504,6 +620,7 @@ describe("Memory workspace", () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
+    await openLocalHistoryView();
 
     expect(
       await screen.findByText(
@@ -655,6 +772,7 @@ describe("Memory workspace", () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Repo A first conversation"))[0]);
+    await openLocalHistoryView();
 
     expect(
       await screen.findByText(
@@ -683,9 +801,9 @@ describe("Memory workspace", () => {
       file_changes: [],
     });
 
-    await waitFor(() => {
-      expect(screen.getByRole("heading", { name: "Repo B conversation" })).toBeTruthy();
-    });
+    expect(
+      await screen.findByRole("heading", { level: 2, name: "D:/VSP/another-repo" }),
+    ).toBeTruthy();
   });
 
   it("manual rescan does not show the ready notice", async () => {
@@ -719,6 +837,7 @@ describe("Memory workspace", () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
+    await openLocalHistoryView();
 
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Rescan local history" })).toBeTruthy();
@@ -874,6 +993,7 @@ describe("Memory workspace", () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Repo A first conversation"))[0]);
+    await openLocalHistoryView();
 
     await waitFor(() => {
       expect(
@@ -885,8 +1005,9 @@ describe("Memory workspace", () => {
       ).toHaveLength(1);
     });
 
-    const localHistoryLabel = await screen.findByText("Local history");
-    const localHistoryPanel = localHistoryLabel.closest("section");
+    const localHistoryPanel = (
+      await screen.findByRole("heading", { level: 2, name: "D:/VSP/agentswap-gui" })
+    ).closest("section");
     expect(localHistoryPanel).toBeTruthy();
 
     await waitFor(() => {
@@ -908,7 +1029,7 @@ describe("Memory workspace", () => {
     fireEvent.click((await screen.findAllByText("Repo B conversation"))[0]);
 
     await waitFor(() => {
-      expect(screen.getByRole("heading", { name: "Repo B conversation" })).toBeTruthy();
+      expect(screen.getByRole("heading", { level: 2, name: "D:/VSP/another-repo" })).toBeTruthy();
     });
 
     expect(
@@ -922,7 +1043,7 @@ describe("Memory workspace", () => {
     fireEvent.click((await screen.findAllByText("Repo A second conversation"))[0]);
 
     await waitFor(() => {
-      expect(screen.getByRole("heading", { name: "Repo A second conversation" })).toBeTruthy();
+      expect(screen.getByRole("heading", { level: 2, name: "D:/VSP/agentswap-gui" })).toBeTruthy();
     });
 
     await waitFor(() => {
@@ -1063,6 +1184,7 @@ describe("Memory workspace", () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Repo A first conversation"))[0]);
+    await openLocalHistoryView();
 
     await screen.findByText(
       "Importing local history for this project. Older conversations may not be fully searchable yet. When indexing finishes, you can ask what was discussed before.",
@@ -1071,7 +1193,10 @@ describe("Memory workspace", () => {
     fireEvent.click((await screen.findAllByText("Repo A second conversation"))[0]);
 
     await waitFor(() => {
-      expect(screen.getByRole("heading", { name: "Repo A second conversation" })).toBeTruthy();
+      expect(mockInvoke).toHaveBeenCalledWith("read_conversation", {
+        agent: "claude",
+        id: "conv-002",
+      });
     });
 
     scanDeferred.resolve({
@@ -1088,9 +1213,9 @@ describe("Memory workspace", () => {
       "Local history is ready for this project. You can now ask what was discussed before.",
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Memory" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage Rules" }));
 
-    expect((await screen.findByRole("tab", { name: "Approved 1" })).getAttribute("aria-selected")).toBe(
+    expect((await screen.findByRole("tab", { name: "Rules 1" })).getAttribute("aria-selected")).toBe(
       "true",
     );
 
@@ -1162,6 +1287,7 @@ describe("Memory workspace", () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
+    await openLocalHistoryView();
 
     await screen.findByText(
       "Importing local history for this project. Older conversations may not be fully searchable yet. When indexing finishes, you can ask what was discussed before.",
@@ -1181,9 +1307,9 @@ describe("Memory workspace", () => {
       "Local history is ready for this project. You can now ask what was discussed before.",
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Memory" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage Rules" }));
 
-    expect((await screen.findByRole("tab", { name: "Approved 1" })).getAttribute("aria-selected")).toBe(
+    expect((await screen.findByRole("tab", { name: "Rules 1" })).getAttribute("aria-selected")).toBe(
       "true",
     );
 
@@ -1255,6 +1381,7 @@ describe("Memory workspace", () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
+    await openLocalHistoryView();
 
     await screen.findByText(
       "Importing local history for this project. Older conversations may not be fully searchable yet. When indexing finishes, you can ask what was discussed before.",
@@ -1274,19 +1401,19 @@ describe("Memory workspace", () => {
       "Local history is ready for this project. You can now ask what was discussed before.",
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Memory" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage Rules" }));
 
     const firstCard = (await screen.findByText("Primary verification")).closest("article");
     await waitFor(() => {
       expect(document.activeElement).toBe(firstCard);
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Close memory drawer" }));
-    expect(screen.queryByRole("complementary", { name: "Project Memory" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Close startup rules drawer" }));
+    expect(screen.queryByRole("complementary", { name: "Startup Rules" })).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Memory" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage Rules" }));
 
-    await screen.findByRole("complementary", { name: "Project Memory" });
+    await screen.findByRole("complementary", { name: "Startup Rules" });
     await waitFor(() => {
       expect(document.activeElement).not.toBe(screen.getByText("Primary verification").closest("article"));
     });
@@ -1350,6 +1477,7 @@ describe("Memory workspace", () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
+    await openLocalHistoryView();
 
     await screen.findByText(
       "Importing local history for this project. Older conversations may not be fully searchable yet. When indexing finishes, you can ask what was discussed before.",
@@ -1369,13 +1497,13 @@ describe("Memory workspace", () => {
       "Local history is ready for this project. You can now ask what was discussed before.",
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Memory" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage Rules" }));
 
-    expect((await screen.findByRole("tab", { name: "Inbox 1" })).getAttribute("aria-selected")).toBe(
+    expect((await screen.findByRole("tab", { name: "Review 1" })).getAttribute("aria-selected")).toBe(
       "true",
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: "Approved 1" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Rules 1" }));
 
     const firstCard = await screen.findByText("Primary verification");
     await waitFor(() => {
@@ -1399,15 +1527,16 @@ describe("Memory workspace", () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Memory workflow"))[0]);
+    await openLocalHistoryView();
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Memory" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Manage Rules" })).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Memory" }));
-    expect(await screen.findByRole("complementary", { name: "Project Memory" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Manage Rules" }));
+    expect(await screen.findByRole("complementary", { name: "Startup Rules" })).toBeTruthy();
     expect(screen.getByText("Review pending memory")).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "Approved 1" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Rules 1" })).toBeTruthy();
     expect(mockInvoke).not.toHaveBeenCalledWith("scan_repo_conversations", {
       repoRoot: "D:/VSP/agentswap-gui",
     });
