@@ -213,12 +213,31 @@ fn extract_file_path(tool_name: &str, input: &Value) -> Option<String> {
 /// `/Users/foo/bar` becomes `-Users-foo-bar`.
 /// `D:\VSP` becomes `D--VSP`.
 fn encode_project_path(path: &str) -> String {
-    path.chars()
+    clean_project_path_for_claude(path)
+        .chars()
         .map(|ch| match ch {
-            '/' | '\\' | ':' => '-',
+            '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*' => '-',
+            ch if ch.is_control() => '-',
             _ => ch,
         })
         .collect()
+}
+
+fn clean_project_path_for_claude(path: &str) -> String {
+    let trimmed = path.trim();
+    if let Some(stripped) = trimmed.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{stripped}");
+    }
+    if let Some(stripped) = trimmed.strip_prefix(r"\\?\") {
+        return stripped.to_string();
+    }
+    if let Some(stripped) = trimmed.strip_prefix("//?/UNC/") {
+        return format!("//{stripped}");
+    }
+    if let Some(stripped) = trimmed.strip_prefix("//?/") {
+        return stripped.to_string();
+    }
+    trimmed.to_string()
 }
 
 /// Pending tool use info collected from assistant tool_use blocks.
@@ -607,9 +626,10 @@ impl AgentAdapter for ClaudeAdapter {
     fn write_conversation(&self, conv: &Conversation) -> Result<String> {
         // Generate a new session UUID for this conversation
         let session_id = Uuid::new_v4().to_string();
+        let project_cwd = clean_project_path_for_claude(&conv.project_dir);
 
         // Determine the project subdirectory using path encoding
-        let encoded_project = encode_project_path(&conv.project_dir);
+        let encoded_project = encode_project_path(&project_cwd);
         let project_dir = self.projects_dir.join(&encoded_project);
         fs::create_dir_all(&project_dir).with_context(|| {
             format!(
@@ -662,7 +682,7 @@ impl AgentAdapter for ClaudeAdapter {
                         "uuid": event_uuid,
                         "timestamp": ts,
                         "sessionId": session_id,
-                        "cwd": &conv.project_dir,
+                        "cwd": &project_cwd,
                         "isSidechain": false,
                         "message": {
                             "role": "user",
@@ -730,7 +750,7 @@ impl AgentAdapter for ClaudeAdapter {
                                 "uuid": result_uuid,
                                 "timestamp": ts,
                                 "sessionId": session_id,
-                                "cwd": &conv.project_dir,
+                                "cwd": &project_cwd,
                                 "isSidechain": false,
                                 "message": {
                                     "role": "user",
@@ -758,7 +778,7 @@ impl AgentAdapter for ClaudeAdapter {
                         "uuid": event_uuid,
                         "timestamp": ts,
                         "sessionId": session_id,
-                        "cwd": &conv.project_dir,
+                        "cwd": &project_cwd,
                         "isSidechain": false,
                         "message": {
                             "role": "assistant",
@@ -1368,6 +1388,11 @@ mod tests {
         assert_eq!(encode_project_path("/tmp"), "-tmp");
         assert_eq!(encode_project_path("D:\\VSP"), "D--VSP");
         assert_eq!(encode_project_path("D:/VSP"), "D--VSP");
+        assert_eq!(encode_project_path(r"\\?\D:\VSP"), "D--VSP");
+        assert_eq!(
+            encode_project_path(r"\\?\UNC\server\share\repo"),
+            "--server-share-repo"
+        );
         assert_eq!(
             encode_project_path("C:\\Users\\Liang\\Documents\\Code\\demo"),
             "C--Users-Liang-Documents-Code-demo"
@@ -1413,6 +1438,44 @@ mod tests {
         assert_eq!(
             read_conv.messages[0].content,
             "Hello from a Windows project"
+        );
+    }
+
+    #[test]
+    fn test_write_windows_extended_project_path_strips_verbatim_prefix() {
+        let tmp = TempDir::new().unwrap();
+        let adapter = ClaudeAdapter::with_projects_dir(tmp.path().to_path_buf());
+        let now = Utc::now();
+        let conv = Conversation {
+            id: "windows-extended-project".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir: r"\\?\D:\VSP".to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("Windows extended path migration".to_string()),
+            messages: vec![Message {
+                id: Uuid::new_v4(),
+                timestamp: now,
+                role: Role::User,
+                content: "Hello from an extended Windows path".to_string(),
+                tool_calls: Vec::new(),
+                metadata: HashMap::new(),
+            }],
+            file_changes: Vec::new(),
+        };
+
+        let session_id = adapter.write_conversation(&conv).unwrap();
+        let session_file = tmp
+            .path()
+            .join("D--VSP")
+            .join(format!("{}.jsonl", session_id));
+        assert!(session_file.exists());
+
+        let read_conv = adapter.read_conversation(&session_id).unwrap();
+        assert_eq!(read_conv.project_dir, r"D:\VSP");
+        assert_eq!(
+            read_conv.messages[0].content,
+            "Hello from an extended Windows path"
         );
     }
 

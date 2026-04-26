@@ -1632,9 +1632,10 @@ async fn migrate_conversation(
     let target_adapter = get_adapter(&target)?;
 
     // Read from source
-    let conversation = source_adapter
+    let mut conversation = source_adapter
         .read_conversation(&id)
         .map_err(|e| e.to_string())?;
+    conversation.project_dir = normalize_project_dir(&conversation.project_dir);
 
     // Write to target
     let new_id = target_adapter
