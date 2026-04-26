@@ -123,11 +123,7 @@ fn is_codex_new_chat_leaf(leaf: &str) -> bool {
         return false;
     };
 
-    suffix.is_empty()
-        || suffix
-            .strip_prefix('-')
-            .map(is_digits)
-            .unwrap_or(false)
+    suffix.is_empty() || suffix.strip_prefix('-').map(is_digits).unwrap_or(false)
 }
 
 fn is_codex_flat_new_chat_leaf(leaf: &str) -> bool {
@@ -153,9 +149,21 @@ fn is_codex_flat_new_chat_leaf(leaf: &str) -> bool {
             .unwrap_or(false)
 }
 
+pub(crate) fn is_root_project_placeholder(project_dir: &str) -> bool {
+    let normalized = crate::chatmem_memory::repo_identity::normalize_repo_root(project_dir);
+    normalized.is_empty()
+        || (normalized.len() == 2
+            && normalized.as_bytes()[0].is_ascii_alphabetic()
+            && normalized.as_bytes()[1] == b':')
+}
+
 pub(crate) fn is_codex_generated_chat_project_dir(agent: &str, project_dir: &str) -> bool {
     if agent != "codex" {
         return false;
+    }
+
+    if is_root_project_placeholder(project_dir) {
+        return true;
     }
 
     let normalized = crate::chatmem_memory::repo_identity::normalize_repo_root(project_dir);
@@ -176,12 +184,9 @@ pub(crate) fn is_codex_generated_chat_project_dir(agent: &str, project_dir: &str
             date_folder.len() == 10
                 && date_folder.as_bytes().get(4) == Some(&b'-')
                 && date_folder.as_bytes().get(7) == Some(&b'-')
-                && date_folder
-                    .chars()
-                    .enumerate()
-                    .all(|(index, character)| {
-                        index == 4 || index == 7 || character.is_ascii_digit()
-                    })
+                && date_folder.chars().enumerate().all(|(index, character)| {
+                    index == 4 || index == 7 || character.is_ascii_digit()
+                })
                 && is_codex_new_chat_leaf(leaf)
         }
         _ => false,
@@ -251,7 +256,9 @@ pub(crate) fn import_local_history_from_adapters(
                 }
             };
 
-            if is_codex_generated_chat_project_dir(agent, &conversation.project_dir) {
+            if is_root_project_placeholder(&conversation.project_dir)
+                || is_codex_generated_chat_project_dir(agent, &conversation.project_dir)
+            {
                 skipped += 1;
                 continue;
             }
@@ -337,7 +344,9 @@ pub fn scan_repo_conversations(
         let summaries = adapter.list_conversations()?;
         for summary in summaries {
             scanned += 1;
-            if is_codex_generated_chat_project_dir(agent, &summary.project_dir) {
+            if is_root_project_placeholder(&summary.project_dir)
+                || is_codex_generated_chat_project_dir(agent, &summary.project_dir)
+            {
                 skipped += 1;
                 continue;
             }
@@ -520,8 +529,8 @@ fn gemini_repo_hash_candidates(repo_root: &str, normalized_repo: &str) -> BTreeS
 mod tests {
     use super::{
         build_unmatched_project_roots, import_local_history_from_adapters,
-        is_codex_generated_chat_project_dir, record_unmatched_project_root,
-        summary_project_matches_repo,
+        is_codex_generated_chat_project_dir, is_root_project_placeholder,
+        record_unmatched_project_root, summary_project_matches_repo,
         summary_project_matches_repo_roots,
     };
     use crate::chatmem_memory::store::MemoryStore;
@@ -703,7 +712,13 @@ mod tests {
             "codex",
             "C:/Users/Liang/Documents/Codex/2026-04-21-new-chat-3"
         ));
+        assert!(is_codex_generated_chat_project_dir("codex", "C:"));
+        assert!(is_codex_generated_chat_project_dir("codex", "C:/"));
+        assert!(is_codex_generated_chat_project_dir("codex", "/"));
+        assert!(is_root_project_placeholder("C:"));
+        assert!(is_root_project_placeholder("/"));
         assert!(!is_codex_generated_chat_project_dir("codex", "D:/VSP"));
+        assert!(!is_root_project_placeholder("D:/VSP"));
         assert!(!is_codex_generated_chat_project_dir(
             "claude",
             "C:/Users/Liang/Documents/Codex/2026-04-25/new-chat-2"
@@ -769,12 +784,9 @@ mod tests {
             r"C:\Users\Liang\Documents\Codex\2026-04-25\new-chat-2",
             "临时新对话",
         );
-        let project_chat = fake_conversation(
-            "codex-vsp",
-            AgentKind::Codex,
-            "D:/VSP",
-            "项目对话",
-        );
+        let root_chat =
+            fake_conversation("codex-root-chat", AgentKind::Codex, "C:", "根目录临时对话");
+        let project_chat = fake_conversation("codex-vsp", AgentKind::Codex, "D:/VSP", "项目对话");
 
         let report = import_local_history_from_adapters(
             &store,
@@ -782,15 +794,15 @@ mod tests {
                 "codex",
                 Box::new(FakeAdapter::new(
                     AgentKind::Codex,
-                    vec![standalone_chat, project_chat],
+                    vec![standalone_chat, root_chat, project_chat],
                 )),
             )],
         )
         .unwrap();
 
-        assert_eq!(report.scanned_conversation_count, 2);
+        assert_eq!(report.scanned_conversation_count, 3);
         assert_eq!(report.imported_conversation_count, 1);
-        assert_eq!(report.skipped_conversation_count, 1);
+        assert_eq!(report.skipped_conversation_count, 2);
         assert_eq!(report.indexed_repo_count, 1);
         assert!(report
             .imported_project_roots

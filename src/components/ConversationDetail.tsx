@@ -71,6 +71,14 @@ function shouldCollapseMessage(message: Message) {
   return message.role === "assistant" && message.content.trim().length > COLLAPSIBLE_MESSAGE_LENGTH;
 }
 
+function getCollapsedPreview(content: string) {
+  const trimmed = content.trim();
+  if (trimmed.length <= COLLAPSIBLE_MESSAGE_LENGTH) {
+    return content;
+  }
+  return `${trimmed.slice(0, COLLAPSIBLE_MESSAGE_LENGTH)}...`;
+}
+
 function ConversationDetail({ conversation }: ConversationDetailProps) {
   const [expandedMessages, setExpandedMessages] = useState<Record<string, boolean>>({});
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
@@ -107,6 +115,9 @@ function ConversationDetail({ conversation }: ConversationDetailProps) {
           const hasContent = Boolean(message.content?.trim());
           const collapsible = shouldCollapseMessage(message);
           const isExpanded = expandedMessages[message.id] ?? false;
+          const visibleContent = collapsible && !isExpanded
+            ? getCollapsedPreview(message.content)
+            : message.content;
 
           return (
             <article key={message.id} className={`message message-${message.role}`}>
@@ -123,7 +134,7 @@ function ConversationDetail({ conversation }: ConversationDetailProps) {
                         collapsible ? (isExpanded ? "is-expanded" : "is-collapsed") : ""
                       }`.trim()}
                     >
-                      {message.content}
+                      {visibleContent}
                     </div>
 
                     {collapsible && (

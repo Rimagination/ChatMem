@@ -163,6 +163,10 @@ export type ProjectContextPayload = {
     summary: string;
     why_matched: string;
     score: number;
+    source_agent?: string | null;
+    conversation_id?: string | null;
+    conversation_title?: string | null;
+    conversation_updated_at?: string | null;
     evidence_refs: EvidenceRef[];
   }>;
   pending_candidates: MemoryCandidate[];

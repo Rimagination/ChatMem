@@ -11,9 +11,10 @@ use super::{
     models::{
         BuildHandoffPacketInput, CreateMemoryCandidateInput, CreateMemoryCandidateResult,
         CreateMemoryMergeProposalInput, CreateMemoryMergeProposalResult, EmbeddingRebuildReport,
-        EntityGraphPayload, GetProjectContextInput, GetRepoMemoryInput, ListMemoryCandidatesInput,
-        ListMemoryCandidatesPayload, ListWikiPagesPayload, LocalHistoryImportReport,
-        MemoryConflictResponse, ProjectContextPayload, RepoAliasResponse, RepoMemoryHealthResponse,
+        EntityGraphPayload, GetProjectContextInput, GetRepoMemoryInput, HistoryConversationPayload,
+        ListMemoryCandidatesInput, ListMemoryCandidatesPayload, ListWikiPagesPayload,
+        LocalHistoryImportReport, MemoryConflictResponse, ProjectContextPayload,
+        ReadHistoryConversationInput, RepoAliasResponse, RepoMemoryHealthResponse,
         RepoMemoryPayload, RepoScanReport, SearchHistoryPayload, SearchRepoHistoryInput,
     },
     runs::{self, ArtifactRecord, RunRecord},
@@ -135,6 +136,10 @@ impl ChatMemMcpService {
                 Self::search_repo_history,
             ))
             .with_route((
+                Self::read_history_conversation_tool_attr(),
+                Self::read_history_conversation,
+            ))
+            .with_route((
                 Self::create_memory_candidate_tool_attr(),
                 Self::create_memory_candidate,
             ))
@@ -200,7 +205,7 @@ impl ChatMemMcpService {
 
     #[tool(
         name = "get_project_context",
-        description = "Return approved startup rules plus recall-aware local history evidence for a repository query"
+        description = "Token-efficient first step for project recall/continuation: return approved startup rules, recent handoff, diagnostics, and small local-history evidence. Prefer limit=3 before broader search. If relevant_history has matches, name the source agent/conversation and ask whether to call read_history_conversation; do not ask the user to redescribe the topic first."
     )]
     async fn get_project_context(
         &self,
@@ -237,9 +242,7 @@ impl ChatMemMcpService {
         name = "import_all_local_history",
         description = "Import all available Claude, Codex, Gemini, and OpenCode local conversations into the local history index. Use this after first install, after changing history locations, or when recall misses because history has not been imported."
     )]
-    async fn import_all_local_history(
-        &self,
-    ) -> Result<Json<LocalHistoryImportReport>, McpError> {
+    async fn import_all_local_history(&self) -> Result<Json<LocalHistoryImportReport>, McpError> {
         sync::import_all_local_history(&self.store)
             .map(Json)
             .map_err(|error| internal_error(error.to_string()))
@@ -274,7 +277,7 @@ impl ChatMemMcpService {
 
     #[tool(
         name = "search_repo_history",
-        description = "Hybrid keyword/vector search over indexed local history, approved startup rules, and generated wiki projections"
+        description = "Second-stage targeted hybrid keyword/vector search over indexed local history, approved startup rules, and generated wiki projections. Start with limit<=3; when matches appear, list source_agent/conversation and ask whether to call read_history_conversation. Do not treat unapproved history hits as missing context or ask the user to redescribe before offering to read them."
     )]
     async fn search_repo_history(
         &self,
@@ -289,6 +292,27 @@ impl ChatMemMcpService {
         Ok(Json(SearchHistoryPayload {
             matches: search::trim_search_matches(matches, limit),
         }))
+    }
+
+    #[tool(
+        name = "read_history_conversation",
+        description = "Read a compact message window from an indexed local conversation after get_project_context/search_repo_history returns a conversation_id. Use this when the user wants to recall a found conversation; pass message_id from evidence_refs when available, or query for a low-token focused window."
+    )]
+    async fn read_history_conversation(
+        &self,
+        Parameters(input): Parameters<ReadHistoryConversationInput>,
+    ) -> Result<Json<HistoryConversationPayload>, McpError> {
+        let _ = sync::sync_repo_conversations(&self.store, &input.repo_root);
+        self.store
+            .read_history_conversation(
+                &input.repo_root,
+                &input.conversation_id,
+                input.message_id.as_deref(),
+                input.query.as_deref(),
+                input.limit,
+            )
+            .map(Json)
+            .map_err(|error| internal_error(error.to_string()))
     }
 
     #[tool(
@@ -590,6 +614,7 @@ mod tests {
             ChatMemMcpService::scan_repo_conversations_tool_attr().name,
             ChatMemMcpService::merge_repo_alias_tool_attr().name,
             ChatMemMcpService::search_repo_history_tool_attr().name,
+            ChatMemMcpService::read_history_conversation_tool_attr().name,
             ChatMemMcpService::create_memory_candidate_tool_attr().name,
             ChatMemMcpService::propose_memory_merge_tool_attr().name,
             ChatMemMcpService::create_checkpoint_tool_attr().name,
@@ -616,6 +641,25 @@ mod tests {
         }
 
         assert_eq!(names, expected_names);
+    }
+
+    #[test]
+    fn recall_tool_descriptions_require_history_followup_before_redescription() {
+        let project_context_description = ChatMemMcpService::get_project_context_tool_attr()
+            .description
+            .expect("get_project_context should have a description");
+        let search_description = ChatMemMcpService::search_repo_history_tool_attr()
+            .description
+            .expect("search_repo_history should have a description");
+        let read_description = ChatMemMcpService::read_history_conversation_tool_attr()
+            .description
+            .expect("read_history_conversation should have a description");
+
+        assert!(project_context_description.contains("source agent/conversation"));
+        assert!(project_context_description.contains("redescribe"));
+        assert!(search_description.contains("read_history_conversation"));
+        assert!(search_description.contains("unapproved history hits"));
+        assert!(read_description.contains("compact message window"));
     }
 
     #[tokio::test]

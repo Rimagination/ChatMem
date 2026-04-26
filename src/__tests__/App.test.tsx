@@ -233,7 +233,23 @@ describe("App", () => {
       }
 
       if (command === "migrate_conversation") {
-        return "migrated-001";
+        return {
+          newId: "migrated-001",
+          source: payload?.source ?? "claude",
+          target: payload?.target ?? "codex",
+          mode: payload?.mode ?? "copy",
+          verified: true,
+          verification: {
+            readBack: true,
+            listed: true,
+            sourceMessageCount: 1,
+            targetMessageCount: 1,
+            sourceFileCount: 0,
+            targetFileCount: 0,
+            firstUserPreserved: true,
+          },
+          warnings: [],
+        };
       }
 
       if (
@@ -294,7 +310,7 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "Choose a conversation" })).toBeTruthy();
   });
 
-  it("confirms before moving one sidebar conversation to trash", async () => {
+  it("opens an in-app card before moving one sidebar conversation to trash", async () => {
     localStorage.setItem(
       "chatmem.settings",
       JSON.stringify({ locale: "en", autoCheckUpdates: false }),
@@ -307,17 +323,31 @@ describe("App", () => {
     });
     fireEvent.click(deleteButton);
 
+    const dialog = await screen.findByRole("dialog", {
+      name: "Move this conversation to Trash?",
+    });
+    expect(within(dialog).getByText("Debug session")).toBeTruthy();
+    expect(within(dialog).getByText("Recovery snapshots are kept for 14 days.")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Move to Trash" }));
+
     await waitFor(() => {
-      expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("Debug session"));
-      expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("Trash"));
       expect(mockInvoke).toHaveBeenCalledWith("trash_conversation", {
         agent: "claude",
         id: "conv-001",
+        retentionDays: 14,
+        deleteRemoteBackup: false,
+        webdavScheme: "https",
+        webdavHost: "",
+        webdavPath: "",
+        remotePath: "chatmem",
+        username: "",
+        password: "",
       });
     });
+    expect(window.confirm).not.toHaveBeenCalled();
   });
 
-  it("moves selected sidebar conversations to trash after one bulk confirmation", async () => {
+  it("moves selected sidebar conversations to trash after one bulk confirmation card", async () => {
     localStorage.setItem(
       "chatmem.settings",
       JSON.stringify({ locale: "en", autoCheckUpdates: false }),
@@ -330,20 +360,40 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "Select Memory investigation" }));
 
     fireEvent.click(screen.getByRole("button", { name: "Move 2 selected to Trash" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "Move 2 conversations to Trash?",
+    });
+    expect(within(dialog).getByText("Debug session")).toBeTruthy();
+    expect(within(dialog).getByText("Memory investigation")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Move to Trash" }));
 
     await waitFor(() => {
-      expect(window.confirm).toHaveBeenCalledTimes(1);
-      expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("2 conversations"));
-      expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining("Trash"));
       expect(mockInvoke).toHaveBeenCalledWith("trash_conversation", {
         agent: "claude",
         id: "conv-001",
+        retentionDays: 14,
+        deleteRemoteBackup: false,
+        webdavScheme: "https",
+        webdavHost: "",
+        webdavPath: "",
+        remotePath: "chatmem",
+        username: "",
+        password: "",
       });
       expect(mockInvoke).toHaveBeenCalledWith("trash_conversation", {
         agent: "claude",
         id: "conv-002",
+        retentionDays: 14,
+        deleteRemoteBackup: false,
+        webdavScheme: "https",
+        webdavHost: "",
+        webdavPath: "",
+        remotePath: "chatmem",
+        username: "",
+        password: "",
       });
     });
+    expect(window.confirm).not.toHaveBeenCalled();
   });
 
   it("merges equivalent project paths and does not repeat project conversations as chats", async () => {
@@ -465,6 +515,26 @@ describe("App", () => {
             message_count: 5,
             file_count: 0,
           },
+          {
+            id: "codex-chat-drive-root",
+            source_agent: payload?.agent ?? "codex",
+            project_dir: "C:",
+            created_at: "2026-04-26T01:20:00Z",
+            updated_at: "2026-04-26T02:20:00Z",
+            summary: "What skills do you have?",
+            message_count: 5,
+            file_count: 0,
+          },
+          {
+            id: "codex-chat-slash-root",
+            source_agent: payload?.agent ?? "codex",
+            project_dir: "/",
+            created_at: "2026-04-26T01:30:00Z",
+            updated_at: "2026-04-26T02:30:00Z",
+            summary: "No project cwd",
+            message_count: 2,
+            file_count: 0,
+          },
         ];
       }
 
@@ -501,9 +571,13 @@ describe("App", () => {
       expect(projectText).not.toContain("new-chat");
       expect(projectText).not.toContain("new-chat-2");
       expect(projectText).not.toContain("2026-04-21-new-chat");
+      expect(projectText).not.toContain("C:");
+      expect(projectText).not.toContain("What skills do you have?");
       expect(chatSection).toBeTruthy();
       expect(chatSection?.textContent).toContain("Where are our conversation files?");
       expect(chatSection?.textContent).toContain("Which model is this chat using?");
+      expect(chatSection?.textContent).toContain("What skills do you have?");
+      expect(chatSection?.textContent).toContain("No project cwd");
       expect(chatSection?.textContent).not.toContain("VSP project work");
       expect(chatSection?.textContent).not.toContain("Data project work");
     });
@@ -1758,6 +1832,107 @@ describe("App", () => {
     expect(workspacePath?.getAttribute("title")).toBe(
       "D:/VSP/agentswap-gui/.worktrees/chatmem-control-plane-v2",
     );
+  });
+
+  it("does not reload repo memory when switching conversations inside the same repo", async () => {
+    mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
+      if (command === "list_conversations") {
+        return [
+          {
+            id: "conv-001",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/VSP/demo",
+            created_at: "2026-04-08T08:00:00Z",
+            updated_at: "2026-04-08T09:00:00Z",
+            summary: "First same repo session",
+            message_count: 2,
+            file_count: 1,
+          },
+          {
+            id: "conv-002",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/VSP/demo",
+            created_at: "2026-04-08T10:00:00Z",
+            updated_at: "2026-04-08T11:00:00Z",
+            summary: "Second same repo session",
+            message_count: 4,
+            file_count: 0,
+          },
+        ];
+      }
+
+      if (command === "read_conversation") {
+        const isSecond = payload?.id === "conv-002";
+        return {
+          id: isSecond ? "conv-002" : "conv-001",
+          source_agent: payload?.agent ?? "claude",
+          project_dir: "D:/VSP/demo",
+          created_at: isSecond ? "2026-04-08T10:00:00Z" : "2026-04-08T08:00:00Z",
+          updated_at: isSecond ? "2026-04-08T11:00:00Z" : "2026-04-08T09:00:00Z",
+          summary: isSecond ? "Second same repo session" : "First same repo session",
+          storage_path: "C:/Users/demo/.codex/sessions/2026/04/08/rollout-conv.jsonl",
+          resume_command: "codex resume conv",
+          messages: [],
+          file_changes: [],
+        };
+      }
+
+      if (
+        command === "list_repo_memories" ||
+        command === "list_memory_candidates" ||
+        command === "list_wiki_pages" ||
+        command === "list_handoffs" ||
+        command === "list_checkpoints"
+      ) {
+        return [];
+      }
+
+      if (command === "get_repo_memory_health") {
+        return {
+          repo_root: "D:/VSP/demo",
+          canonical_repo_root: "D:/VSP/demo",
+          approved_memory_count: 0,
+          pending_candidate_count: 0,
+          search_document_count: 4,
+          indexed_chunk_count: 8,
+          inherited_repo_roots: [],
+          conversation_counts_by_agent: [{ source_agent: "claude", conversation_count: 2 }],
+          repo_aliases: [],
+          warnings: [],
+        };
+      }
+
+      return [];
+    });
+
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+    );
+
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("First same repo session"))[0]);
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("list_repo_memories", {
+        repoRoot: "D:/VSP/demo",
+      });
+    });
+
+    fireEvent.click((await screen.findAllByText("Second same repo session"))[0]);
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("read_conversation", {
+        agent: "claude",
+        id: "conv-002",
+      });
+    });
+
+    await Promise.resolve();
+    expect(mockInvoke.mock.calls.filter(([command]) => command === "list_repo_memories")).toHaveLength(1);
+
+    fireEvent.click((await screen.findAllByText("First same repo session"))[0]);
+    await Promise.resolve();
+    expect(mockInvoke.mock.calls.filter(([command]) => command === "read_conversation")).toHaveLength(2);
   });
 
   it("searches conversations by message body content", async () => {

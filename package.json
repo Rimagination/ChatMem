@@ -1,8 +1,8 @@
 {
   "name": "chatmem",
   "private": true,
-  "version": "1.0.12",
-  "description": "Your AI conversations, forever remembered",
+  "version": "1.0.24",
+  "description": "Local-first memory for AI coding agents",
   "type": "module",
   "scripts": {
     "dev": "vite",

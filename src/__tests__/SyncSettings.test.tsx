@@ -50,16 +50,21 @@ describe("Sync settings", () => {
   it("persists a Zotero-style WebDAV conversation-data profile without a fake provider dropdown", async () => {
     renderApp();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
-
+    fireEvent.click(await screen.findByRole("button", { name: "About us" }));
     expect(await screen.findByRole("heading", { name: "About ChatMem" })).toBeTruthy();
     expect(screen.getByText(/local-first memory layer/i)).toBeTruthy();
+    expect(screen.getByText("Positioning and advantages")).toBeTruthy();
+    expect(screen.getByText("Rimagination/ChatMem")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Acknowledgements" })).toBeNull();
-    fireEvent.click(screen.getByText("Design references and acknowledgements"));
+    expect(screen.getByText("Design references and acknowledgements")).toBeTruthy();
     expect(screen.getByText(/mem0/)).toBeTruthy();
     expect(screen.getByText(/Letta/)).toBeTruthy();
     expect(screen.getByText(/Zep/)).toBeTruthy();
     expect(screen.getByText(/LLM Wiki/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    expect(screen.queryByRole("heading", { name: "About ChatMem" })).toBeNull();
     expect(await screen.findByRole("heading", { name: "Conversation Data Sync" })).toBeTruthy();
     expect(screen.queryByText(/Use a generic WebDAV server/)).toBeNull();
     expect(screen.queryByText(/Account details/)).toBeNull();
@@ -278,6 +283,72 @@ describe("Sync settings", () => {
       expect(screen.getByText("Native settings file")).toBeTruthy();
       expect(screen.getByText("WebDAV password")).toBeTruthy();
       expect(screen.getByText("Memory database")).toBeTruthy();
+    });
+  });
+
+  it("installs ChatMem MCP and Skill into local agents from settings", async () => {
+    mockInvoke.mockImplementation((command: string, payload?: Record<string, unknown>) => {
+      if (command === "detect_agent_integrations") {
+        return Promise.resolve([
+          {
+            agent: "codex",
+            label: "Codex",
+            configPath: "C:/Users/demo/.codex/config.toml",
+            instructionsPath: "C:/Users/demo/.codex/skills/chatmem/SKILL.md",
+            mcpInstalled: false,
+            instructionsInstalled: false,
+            configExists: true,
+            status: "not_installed",
+            statusLabel: "未安装",
+            commandPreview: '"C:/Program Files/ChatMem/ChatMem.exe" --mcp',
+            details: [],
+          },
+        ]);
+      }
+
+      if (command === "install_agent_integration") {
+        expect(payload).toEqual({ agent: "all" });
+        return Promise.resolve([
+          {
+            agent: "codex",
+            label: "Codex",
+            changed: true,
+            message: "Codex integration installed.",
+            backupPaths: [],
+            status: {
+              agent: "codex",
+              label: "Codex",
+              configPath: "C:/Users/demo/.codex/config.toml",
+              instructionsPath: "C:/Users/demo/.agents/skills/chatmem/SKILL.md",
+              mcpInstalled: true,
+              instructionsInstalled: true,
+              configExists: true,
+              status: "ready",
+              statusLabel: "已就绪",
+              commandPreview: '"C:/Program Files/ChatMem/ChatMem.exe" --mcp',
+              details: [],
+            },
+          },
+        ]);
+      }
+
+      return Promise.resolve([]);
+    });
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    expect(await screen.findByRole("heading", { name: "Agent integration" })).toBeTruthy();
+    expect((await screen.findAllByText("Codex")).length).toBeGreaterThan(0);
+    expect(screen.getByText(/MCP plus each agent's native guidance entry/)).toBeTruthy();
+    expect(screen.getAllByText("Guidance").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Install all" }));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("install_agent_integration", { agent: "all" });
+      expect(screen.getByText("Installed or repaired all detected integrations.")).toBeTruthy();
+      expect(screen.getByText("Ready")).toBeTruthy();
     });
   });
 });

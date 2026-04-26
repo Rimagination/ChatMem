@@ -137,6 +137,14 @@ pub struct SearchHistoryMatch {
     pub summary: String,
     pub why_matched: String,
     pub score: f64,
+    #[serde(default)]
+    pub source_agent: Option<String>,
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    #[serde(default)]
+    pub conversation_title: Option<String>,
+    #[serde(default)]
+    pub conversation_updated_at: Option<String>,
     pub evidence_refs: Vec<EvidenceRef>,
 }
 
@@ -152,6 +160,31 @@ pub struct EmbeddingRebuildReport {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SearchHistoryPayload {
     pub matches: Vec<SearchHistoryMatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HistoryConversationMessage {
+    pub message_id: String,
+    pub role: String,
+    pub timestamp: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HistoryConversationPayload {
+    pub conversation_id: String,
+    pub source_agent: String,
+    pub source_conversation_id: String,
+    pub repo_root: String,
+    pub title: String,
+    pub started_at: String,
+    pub updated_at: String,
+    pub storage_path: Option<String>,
+    pub total_message_count: usize,
+    pub returned_message_count: usize,
+    pub token_estimate: usize,
+    pub focused_message_id: Option<String>,
+    pub messages: Vec<HistoryConversationMessage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -295,6 +328,15 @@ pub struct GetRepoMemoryInput {
 pub struct SearchRepoHistoryInput {
     pub repo_root: String,
     pub query: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReadHistoryConversationInput {
+    pub repo_root: String,
+    pub conversation_id: String,
+    pub message_id: Option<String>,
+    pub query: Option<String>,
     pub limit: Option<usize>,
 }
 

@@ -14,8 +14,9 @@ use super::{
         AgentConversationCount, ApprovedMemoryResponse, CreateMemoryCandidateInput,
         CreateMemoryMergeProposalInput, EmbeddingRebuildReport, EntityGraphPayload,
         EntityLinkResponse, EntityNodeResponse, EpisodeResponse, EvidenceRef,
-        HandoffPacketResponse, MemoryCandidateResponse, MemoryConflictResponse,
-        MemoryMergeSuggestion, ObservedProjectRootCount, ProjectContextPayload, RepoAliasResponse,
+        HandoffPacketResponse, HistoryConversationMessage, HistoryConversationPayload,
+        MemoryCandidateResponse, MemoryConflictResponse, MemoryMergeSuggestion,
+        ObservedProjectRootCount, ProjectContextPayload, RepoAliasResponse,
         RepoMemoryHealthResponse, RepoScanReport, RepoScanSummary, SearchHistoryMatch,
         WikiPageResponse,
     },
@@ -2023,6 +2024,80 @@ impl MemoryStore {
         }
     }
 
+    pub fn read_history_conversation(
+        &self,
+        repo_root: &str,
+        conversation_id: &str,
+        message_id: Option<&str>,
+        query: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<HistoryConversationPayload> {
+        let requested_repo_root = repo_identity::normalize_repo_root(repo_root);
+        let conn = self.conn()?;
+        let provenance = load_conversation_provenance_from_conn(&conn, conversation_id)?
+            .with_context(|| format!("conversation {conversation_id} not found"))?;
+
+        if !repo_roots_are_related(&requested_repo_root, &provenance.repo_root) {
+            anyhow::bail!(
+                "conversation {conversation_id} belongs to {}, not {}",
+                provenance.repo_root,
+                requested_repo_root
+            );
+        }
+
+        let mut stmt = conn.prepare(
+            "SELECT message_id, role, timestamp, content
+             FROM messages
+             WHERE conversation_id = ?1
+             ORDER BY timestamp ASC, message_id ASC",
+        )?;
+        let rows = stmt.query_map([conversation_id], |row| {
+            Ok(HistoryConversationMessage {
+                message_id: row.get(0)?,
+                role: row.get(1)?,
+                timestamp: row.get(2)?,
+                content: row.get(3)?,
+            })
+        })?;
+        let messages = rows.collect::<Result<Vec<_>, _>>()?;
+        let total_message_count = messages.len();
+        let capped_limit = limit.unwrap_or(12).clamp(1, 30);
+        let focus_index = find_history_message_focus(&messages, message_id, query);
+        let (start, end) = history_message_window(total_message_count, focus_index, capped_limit);
+        let focused_message_id = focus_index
+            .and_then(|index| messages.get(index))
+            .map(|message| message.message_id.clone());
+        let window_messages = messages[start..end]
+            .iter()
+            .map(|message| HistoryConversationMessage {
+                message_id: message.message_id.clone(),
+                role: message.role.clone(),
+                timestamp: message.timestamp.clone(),
+                content: truncate_text(&message.content, 1_800),
+            })
+            .collect::<Vec<_>>();
+        let token_estimate = window_messages
+            .iter()
+            .map(|message| message.content.chars().count().div_ceil(4).max(1))
+            .sum();
+
+        Ok(HistoryConversationPayload {
+            conversation_id: provenance.conversation_id,
+            source_agent: provenance.source_agent,
+            source_conversation_id: provenance.source_conversation_id,
+            repo_root: provenance.repo_root,
+            title: provenance.title,
+            started_at: provenance.started_at,
+            updated_at: provenance.updated_at,
+            storage_path: provenance.storage_path,
+            total_message_count,
+            returned_message_count: window_messages.len(),
+            token_estimate,
+            focused_message_id,
+            messages: window_messages,
+        })
+    }
+
     pub fn rebuild_repo_embeddings(&self, repo_root: &str) -> Result<EmbeddingRebuildReport> {
         let config = embedding::EmbeddingConfig::from_env();
         match self.rebuild_repo_embeddings_with_config(repo_root, &config) {
@@ -2084,9 +2159,6 @@ impl MemoryStore {
         let conn = self.conn()?;
         let mut matches =
             search_history_in_repo_id_with_embedding_config(&conn, &repo_id, query, limit, config)?;
-        if has_direct_history_signal(&matches) {
-            return Ok(matches);
-        }
 
         for (ancestor_repo_id, _) in ancestor_repo_roots_from_conn(&conn, repo_root)? {
             let ancestor_matches = search_history_in_repo_id_with_embedding_config(
@@ -2097,9 +2169,6 @@ impl MemoryStore {
                 config,
             )?;
             matches = merge_search_matches(matches, ancestor_matches, limit);
-            if has_direct_history_signal(&matches) {
-                return Ok(matches);
-            }
         }
 
         for (descendant_repo_id, _) in
@@ -2113,9 +2182,6 @@ impl MemoryStore {
                 config,
             )?;
             matches = merge_search_matches(matches, descendant_matches, limit);
-            if has_direct_history_signal(&matches) {
-                return Ok(matches);
-            }
         }
 
         Ok(matches)
@@ -2199,21 +2265,28 @@ fn search_history_in_repo_id_with_embedding_config(
                 &candidate.doc_ref_id,
             )?
         };
+        let provenance = if let Some(conversation_id) =
+            search_match_conversation_id(&candidate, &evidence_refs)
+        {
+            load_conversation_provenance_from_conn(conn, &conversation_id)?
+        } else {
+            None
+        };
         matches.push(SearchHistoryMatch {
             r#type: candidate.doc_type.clone(),
             title: candidate.title,
             summary: truncate_text(&candidate.body, 280),
             why_matched,
             score: candidate.score,
+            source_agent: provenance.as_ref().map(|item| item.source_agent.clone()),
+            conversation_id: provenance.as_ref().map(|item| item.conversation_id.clone()),
+            conversation_title: provenance.as_ref().map(|item| item.title.clone()),
+            conversation_updated_at: provenance.as_ref().map(|item| item.updated_at.clone()),
             evidence_refs,
         });
     }
 
     Ok(matches)
-}
-
-fn has_direct_history_signal(matches: &[SearchHistoryMatch]) -> bool {
-    matches.iter().any(search_match_has_direct_signal)
 }
 
 fn search_match_has_direct_signal(item: &SearchHistoryMatch) -> bool {
@@ -2315,19 +2388,7 @@ fn descendant_repo_roots_matching_query_from_conn(
 }
 
 fn descendant_prefilter_terms(query: &str) -> Vec<String> {
-    let mut seen = HashSet::new();
-    query
-        .split_whitespace()
-        .map(|term| {
-            term.trim_matches(|ch: char| {
-                !(ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
-            })
-            .to_lowercase()
-        })
-        .filter(|term| term.chars().count() >= 2)
-        .filter(|term| seen.insert(term.clone()))
-        .take(8)
-        .collect()
+    search_query_terms(query).into_iter().take(8).collect()
 }
 
 fn repo_has_like_match_for_any_term(
@@ -2422,6 +2483,18 @@ fn evidence_owner_for_doc_type(doc_type: &str) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ConversationProvenance {
+    conversation_id: String,
+    source_agent: String,
+    source_conversation_id: String,
+    repo_root: String,
+    title: String,
+    started_at: String,
+    updated_at: String,
+    storage_path: Option<String>,
+}
+
 const VECTOR_MATCH_THRESHOLD: f64 = 0.18;
 
 #[derive(Debug, Clone)]
@@ -2513,18 +2586,153 @@ fn collect_fts_search_candidates(
     Ok(())
 }
 
+const MAX_SEARCH_QUERY_TERMS: usize = 16;
+
+fn search_query_terms(query: &str) -> Vec<String> {
+    let mut terms = Vec::new();
+    let mut seen = HashSet::new();
+    let normalized = query
+        .to_lowercase()
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '.' {
+                ch
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>();
+
+    for segment in normalized.split_whitespace() {
+        push_search_query_term(&mut terms, &mut seen, segment);
+        if contains_cjk(segment) {
+            let cleaned = clean_cjk_query_segment(segment);
+            for cleaned_segment in cleaned.split_whitespace() {
+                push_search_query_term(&mut terms, &mut seen, cleaned_segment);
+                push_cjk_ngrams(&mut terms, &mut seen, cleaned_segment);
+            }
+        }
+        if terms.len() >= MAX_SEARCH_QUERY_TERMS {
+            break;
+        }
+    }
+
+    terms.truncate(MAX_SEARCH_QUERY_TERMS);
+    terms
+}
+
+fn push_search_query_term(terms: &mut Vec<String>, seen: &mut HashSet<String>, term: &str) {
+    if terms.len() >= MAX_SEARCH_QUERY_TERMS {
+        return;
+    }
+    let normalized = term
+        .trim_matches(|ch: char| !(ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '.'))
+        .trim()
+        .to_lowercase();
+    if normalized.chars().count() < 2
+        || is_broad_query_token(&normalized)
+        || is_cjk_query_noise_term(&normalized)
+    {
+        return;
+    }
+    if seen.insert(normalized.clone()) {
+        terms.push(normalized);
+    }
+}
+
+fn clean_cjk_query_segment(segment: &str) -> String {
+    let mut cleaned = segment.to_string();
+    for phrase in CJK_QUERY_NOISE_PHRASES {
+        cleaned = cleaned.replace(phrase, " ");
+    }
+    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn push_cjk_ngrams(terms: &mut Vec<String>, seen: &mut HashSet<String>, term: &str) {
+    let chars = term.chars().collect::<Vec<_>>();
+    if chars.len() < 3 || !chars.iter().any(|ch| is_cjk(*ch)) {
+        return;
+    }
+    for window_len in [4usize, 3usize] {
+        if chars.len() < window_len {
+            continue;
+        }
+        for window in chars.windows(window_len) {
+            if terms.len() >= MAX_SEARCH_QUERY_TERMS {
+                return;
+            }
+            let ngram = window.iter().collect::<String>();
+            push_search_query_term(terms, seen, &ngram);
+        }
+    }
+}
+
+fn contains_cjk(text: &str) -> bool {
+    text.chars().any(is_cjk)
+}
+
+fn is_cjk(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{3400}'..='\u{4DBF}'
+            | '\u{4E00}'..='\u{9FFF}'
+            | '\u{F900}'..='\u{FAFF}'
+            | '\u{20000}'..='\u{2A6DF}'
+            | '\u{2A700}'..='\u{2B73F}'
+            | '\u{2B740}'..='\u{2B81F}'
+            | '\u{2B820}'..='\u{2CEAF}'
+    )
+}
+
+const CJK_QUERY_NOISE_PHRASES: &[&str] = &[
+    "你还记得",
+    "还记得",
+    "记得",
+    "我们之前",
+    "之前",
+    "以前",
+    "刚才",
+    "上次",
+    "讨论过",
+    "聊过",
+    "说过",
+    "提到过",
+    "有没有",
+    "是不是",
+    "是否",
+    "这个",
+    "那个",
+    "一个",
+    "一下",
+    "关于",
+    "有关",
+    "项目",
+    "话题",
+    "问题",
+    "事情",
+    "内容",
+    "吗",
+    "呢",
+    "吧",
+    "啊",
+    "的",
+    "了",
+];
+
+fn is_cjk_query_noise_term(term: &str) -> bool {
+    CJK_QUERY_NOISE_PHRASES.contains(&term)
+}
+
 fn build_fts_match_query(query: &str) -> Option<String> {
-    let terms = query
-        .split_whitespace()
-        .map(|term| term.trim())
-        .filter(|term| !term.is_empty())
+    let terms = search_query_terms(query)
+        .into_iter()
         .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
         .collect::<Vec<_>>();
 
     if terms.is_empty() {
         None
     } else {
-        Some(terms.join(" "))
+        Some(terms.join(" OR "))
     }
 }
 
@@ -2535,7 +2743,11 @@ fn collect_like_search_candidates(
     limit: usize,
     candidates: &mut HashMap<String, SearchCandidate>,
 ) -> Result<()> {
-    let like = format!("%{}%", query.to_lowercase());
+    let terms = search_query_terms(query);
+    if terms.is_empty() {
+        return Ok(());
+    }
+
     let mut stmt = conn.prepare(
         "SELECT doc_id, doc_type, doc_ref_id, title, body, updated_at
          FROM search_documents
@@ -2543,23 +2755,27 @@ fn collect_like_search_candidates(
          ORDER BY updated_at DESC
          LIMIT ?3",
     )?;
-    let rows = stmt.query_map(params![repo_id, like, limit as i64], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, String>(4)?,
-            row.get::<_, String>(5)?,
-        ))
-    })?;
 
-    for row in rows {
-        let (doc_id, doc_type, doc_ref_id, title, body, updated_at) = row?;
-        let candidate = search_candidate_entry(
-            candidates, doc_id, doc_type, doc_ref_id, title, body, updated_at,
-        );
-        candidate.like_match = true;
+    for term in terms {
+        let like = format!("%{}%", term.to_lowercase());
+        let rows = stmt.query_map(params![repo_id, like, limit as i64], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        })?;
+
+        for row in rows {
+            let (doc_id, doc_type, doc_ref_id, title, body, updated_at) = row?;
+            let candidate = search_candidate_entry(
+                candidates, doc_id, doc_type, doc_ref_id, title, body, updated_at,
+            );
+            candidate.like_match = true;
+        }
     }
 
     Ok(())
@@ -2680,6 +2896,24 @@ fn score_search_candidate(candidate: &SearchCandidate, query: &str) -> f64 {
     let like_score = if candidate.like_match { 0.45 } else { 0.0 };
     let vector_score = candidate.vector_score.unwrap_or(0.0).max(0.0);
     let coverage = token_overlap(query, &format!("{} {}", candidate.title, candidate.body));
+    let candidate_text = format!("{} {}", candidate.title, candidate.body).to_lowercase();
+    let terms = search_query_terms(query);
+    let matched_terms = terms
+        .iter()
+        .filter(|term| candidate_text.contains(term.as_str()))
+        .collect::<Vec<_>>();
+    let term_coverage = if terms.is_empty() {
+        0.0
+    } else {
+        matched_terms.len() as f64 / terms.len().min(8) as f64
+    }
+    .min(1.0);
+    let longest_term_score = matched_terms
+        .iter()
+        .map(|term| term.chars().count())
+        .max()
+        .map(|len| (len as f64 / 12.0).min(1.0))
+        .unwrap_or(0.0);
     let type_bonus = match candidate.doc_type.as_str() {
         "memory" => 0.08,
         "wiki" => 0.05,
@@ -2688,9 +2922,11 @@ fn score_search_candidate(candidate: &SearchCandidate, query: &str) -> f64 {
     };
 
     (keyword_score * 0.48)
-        + (like_score * 0.18)
-        + (vector_score * 0.42)
+        + (like_score * 0.12)
+        + (vector_score * 0.36)
         + (coverage * 0.12)
+        + (term_coverage * 0.26)
+        + (longest_term_score * 0.28)
         + type_bonus
 }
 
@@ -2751,6 +2987,48 @@ fn count_document_embeddings(
     )?;
 
     Ok(count as usize)
+}
+
+fn load_conversation_provenance_from_conn(
+    conn: &Connection,
+    conversation_id: &str,
+) -> Result<Option<ConversationProvenance>> {
+    conn.query_row(
+        "SELECT c.conversation_id, c.source_agent, c.source_conversation_id,
+                r.repo_root, COALESCE(c.summary, c.source_conversation_id),
+                c.started_at, c.updated_at, c.storage_path
+         FROM conversations c
+         JOIN repos r ON r.repo_id = c.repo_id
+         WHERE c.conversation_id = ?1",
+        [conversation_id],
+        |row| {
+            Ok(ConversationProvenance {
+                conversation_id: row.get(0)?,
+                source_agent: row.get(1)?,
+                source_conversation_id: row.get(2)?,
+                repo_root: row.get(3)?,
+                title: row.get(4)?,
+                started_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                storage_path: row.get(7)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn search_match_conversation_id(
+    candidate: &SearchCandidate,
+    evidence_refs: &[EvidenceRef],
+) -> Option<String> {
+    if candidate.doc_type == "conversation" {
+        return Some(candidate.doc_ref_id.clone());
+    }
+
+    evidence_refs
+        .iter()
+        .find_map(|evidence| evidence.conversation_id.clone())
 }
 
 fn load_evidence_refs_from_conn(
@@ -4438,6 +4716,71 @@ fn evaluate_memory_freshness(
     }
 }
 
+fn repo_roots_are_related(left: &str, right: &str) -> bool {
+    let left = repo_identity::normalize_repo_root(left);
+    let right = repo_identity::normalize_repo_root(right);
+    if left.is_empty() || right.is_empty() {
+        return true;
+    }
+    left == right
+        || left.starts_with(&format!("{right}/"))
+        || right.starts_with(&format!("{left}/"))
+}
+
+fn message_id_matches(stored_message_id: &str, requested_message_id: &str) -> bool {
+    let requested = requested_message_id.trim();
+    !requested.is_empty()
+        && (stored_message_id == requested
+            || stored_message_id.ends_with(&format!(":{requested}"))
+            || requested.ends_with(&format!(":{stored_message_id}")))
+}
+
+fn find_history_message_focus(
+    messages: &[HistoryConversationMessage],
+    message_id: Option<&str>,
+    query: Option<&str>,
+) -> Option<usize> {
+    if let Some(message_id) = message_id {
+        if let Some(index) = messages
+            .iter()
+            .position(|message| message_id_matches(&message.message_id, message_id))
+        {
+            return Some(index);
+        }
+    }
+
+    let terms = query.map(search_query_terms).unwrap_or_default();
+    if terms.is_empty() {
+        return None;
+    }
+
+    messages.iter().position(|message| {
+        let content = message.content.to_lowercase();
+        terms.iter().any(|term| content.contains(term))
+    })
+}
+
+fn history_message_window(
+    total_message_count: usize,
+    focus_index: Option<usize>,
+    limit: usize,
+) -> (usize, usize) {
+    if total_message_count == 0 {
+        return (0, 0);
+    }
+    if total_message_count <= limit {
+        return (0, total_message_count);
+    }
+
+    let focus_index = focus_index.unwrap_or(0).min(total_message_count - 1);
+    let before = limit / 2;
+    let mut start = focus_index.saturating_sub(before);
+    let mut end = (start + limit).min(total_message_count);
+    start = end.saturating_sub(limit);
+    end = (start + limit).min(total_message_count);
+    (start, end)
+}
+
 fn truncate_text(text: &str, max_chars: usize) -> String {
     let mut chars = text.chars();
     let truncated = chars.by_ref().take(max_chars).collect::<String>();
@@ -5265,6 +5608,228 @@ mod tests {
         assert!(matches
             .iter()
             .any(|item| { item.r#type == "chunk" && item.summary.contains("TAURI_PRIVATE_KEY") }));
+    }
+
+    #[test]
+    fn search_history_extracts_chinese_keywords_from_recall_sentence() {
+        let store = new_store();
+        let repo_root = "d:/vsp";
+        let now = Utc::now();
+        let conversation = Conversation {
+            id: "conv-ultraman-pig-hero".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir: repo_root.to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("小游戏项目讨论".to_string()),
+            messages: vec![Message {
+                id: Uuid::from_u128(0x8100_0000_0000_0000_0000_0000_0000_0001),
+                timestamp: now,
+                role: Role::User,
+                content: "我们之前聊过奥特曼打猪猪侠这个小游戏项目，还讨论了角色技能和关卡设定。"
+                    .to_string(),
+                tool_calls: vec![],
+                metadata: HashMap::new(),
+            }],
+            file_changes: vec![],
+        };
+
+        store
+            .upsert_conversation_snapshot("codex", &conversation, None)
+            .unwrap();
+
+        let matches = store
+            .search_history(repo_root, "你还记得奥特曼打猪猪侠的项目吗？", 5)
+            .unwrap();
+
+        assert!(
+            matches
+                .iter()
+                .any(|item| item.summary.contains("奥特曼打猪猪侠")),
+            "expected Chinese keyword recall to find the exact prior topic, got {matches:#?}"
+        );
+    }
+
+    #[test]
+    fn search_history_exposes_conversation_provenance_for_agent_followup() {
+        let store = new_store();
+        let repo_root = "d:/vsp";
+        let now = Utc::now();
+        let message_id = Uuid::from_u128(0x8300_0000_0000_0000_0000_0000_0000_0001);
+        let conversation = Conversation {
+            id: "conv-pmodel-notes".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir: repo_root.to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("Pmodel discussion notes".to_string()),
+            messages: vec![Message {
+                id: message_id,
+                timestamp: now,
+                role: Role::User,
+                content: "We discussed Pmodel and the compact recall flow.".to_string(),
+                tool_calls: vec![],
+                metadata: HashMap::new(),
+            }],
+            file_changes: vec![],
+        };
+
+        store
+            .upsert_conversation_snapshot(
+                "codex",
+                &conversation,
+                Some("C:/Users/Liang/.codex/sessions/rollout.jsonl".to_string()),
+            )
+            .unwrap();
+
+        let matches = store.search_history(repo_root, "Pmodel", 3).unwrap();
+        let hit = matches
+            .iter()
+            .find(|item| item.summary.contains("Pmodel"))
+            .expect("expected a Pmodel history hit");
+
+        assert_eq!(hit.source_agent.as_deref(), Some("codex"));
+        assert_eq!(
+            hit.conversation_id.as_deref(),
+            Some("codex:conv-pmodel-notes")
+        );
+        assert_eq!(
+            hit.conversation_title.as_deref(),
+            Some("Pmodel discussion notes")
+        );
+        assert!(hit.conversation_updated_at.is_some());
+        assert_eq!(
+            hit.evidence_refs[0].conversation_id.as_deref(),
+            Some("codex:conv-pmodel-notes")
+        );
+    }
+
+    #[test]
+    fn read_history_conversation_returns_focused_low_token_window() {
+        let store = new_store();
+        let repo_root = "d:/vsp";
+        let now = Utc::now();
+        let target_message_id = Uuid::from_u128(0x8400_0000_0000_0000_0000_0000_0000_0003);
+        let messages = (0..6)
+            .map(|index| Message {
+                id: if index == 3 {
+                    target_message_id
+                } else {
+                    Uuid::from_u128(0x8400_0000_0000_0000_0000_0000_0000_0010 + index as u128)
+                },
+                timestamp: now,
+                role: if index % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
+                content: if index == 3 {
+                    "Pmodel decision: use a project recall prompt before loading raw transcript."
+                        .to_string()
+                } else {
+                    format!("Ordinary conversation turn {index}")
+                },
+                tool_calls: vec![],
+                metadata: HashMap::new(),
+            })
+            .collect::<Vec<_>>();
+        let conversation = Conversation {
+            id: "conv-pmodel-window".to_string(),
+            source_agent: AgentKind::Claude,
+            project_dir: repo_root.to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("Pmodel window discussion".to_string()),
+            messages,
+            file_changes: vec![],
+        };
+
+        store
+            .upsert_conversation_snapshot("claude", &conversation, None)
+            .unwrap();
+
+        let payload = store
+            .read_history_conversation(
+                repo_root,
+                "claude:conv-pmodel-window",
+                Some(&target_message_id.to_string()),
+                Some("Pmodel"),
+                Some(3),
+            )
+            .unwrap();
+
+        assert_eq!(payload.source_agent, "claude");
+        assert_eq!(payload.title, "Pmodel window discussion");
+        assert_eq!(payload.total_message_count, 6);
+        assert_eq!(payload.returned_message_count, 3);
+        assert!(payload
+            .messages
+            .iter()
+            .any(|message| message.content.contains("Pmodel decision")));
+        let expected_focus_id = format!("claude:conv-pmodel-window:{target_message_id}");
+        assert_eq!(
+            payload.focused_message_id.as_deref(),
+            Some(expected_focus_id.as_str())
+        );
+    }
+
+    #[test]
+    fn search_history_uses_chinese_keywords_to_find_descendant_exact_topic() {
+        let store = new_store();
+        let parent_repo = "d:/vsp";
+        let child_repo = "d:/vsp/games";
+        let now = Utc::now();
+        let parent_conversation = Conversation {
+            id: "conv-ultraman-geology".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir: parent_repo.to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("奥特曼落地地质灾害评估".to_string()),
+            messages: vec![Message {
+                id: Uuid::from_u128(0x8200_0000_0000_0000_0000_0000_0000_0001),
+                timestamp: now,
+                role: Role::User,
+                content: "奥特曼落地地质灾害风险评估项目需要整理城市地表沉降材料。".to_string(),
+                tool_calls: vec![],
+                metadata: HashMap::new(),
+            }],
+            file_changes: vec![],
+        };
+        let child_conversation = Conversation {
+            id: "conv-ultraman-pig-hero-child".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir: child_repo.to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("奥特曼打猪猪侠小游戏".to_string()),
+            messages: vec![Message {
+                id: Uuid::from_u128(0x8200_0000_0000_0000_0000_0000_0000_0002),
+                timestamp: now,
+                role: Role::User,
+                content: "奥特曼打猪猪侠这个项目要做成横版小游戏，重点是技能和关卡。".to_string(),
+                tool_calls: vec![],
+                metadata: HashMap::new(),
+            }],
+            file_changes: vec![],
+        };
+
+        store
+            .upsert_conversation_snapshot("codex", &parent_conversation, None)
+            .unwrap();
+        store
+            .upsert_conversation_snapshot("codex", &child_conversation, None)
+            .unwrap();
+
+        let matches = store
+            .search_history(parent_repo, "你还记得奥特曼打猪猪侠的项目吗？", 1)
+            .unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert!(
+            matches[0].summary.contains("奥特曼打猪猪侠"),
+            "expected exact child topic to outrank parent distractor, got {matches:#?}"
+        );
     }
 
     #[test]

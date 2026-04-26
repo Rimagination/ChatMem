@@ -763,12 +763,36 @@ impl AgentAdapter for CodexAdapter {
 
             match msg.role {
                 Role::User | Role::System => {
+                    let response_role = if msg.role == Role::System {
+                        "developer"
+                    } else {
+                        "user"
+                    };
+                    let response_message = json!({
+                        "timestamp": ts,
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": response_role,
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": msg.content.clone()
+                                }
+                            ]
+                        }
+                    });
+                    writeln!(file, "{}", serde_json::to_string(&response_message)?)?;
+
                     let event = json!({
                         "timestamp": ts,
                         "type": "event_msg",
                         "payload": {
                             "type": "user_message",
-                            "message": msg.content
+                            "message": msg.content,
+                            "images": [],
+                            "local_images": [],
+                            "text_elements": []
                         }
                     });
                     writeln!(file, "{}", serde_json::to_string(&event)?)?;
@@ -806,10 +830,28 @@ impl AgentAdapter for CodexAdapter {
                             "payload": {
                                 "type": "agent_message",
                                 "message": msg.content,
-                                "phase": "commentary"
+                                "phase": "commentary",
+                                "memory_citation": null
                             }
                         });
                         writeln!(file, "{}", serde_json::to_string(&event)?)?;
+
+                        let response_message = json!({
+                            "timestamp": ts,
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [
+                                    {
+                                        "type": "output_text",
+                                        "text": msg.content.clone()
+                                    }
+                                ],
+                                "phase": "commentary"
+                            }
+                        });
+                        writeln!(file, "{}", serde_json::to_string(&response_message)?)?;
                     }
 
                     // Emit tool calls as function_call + function_call_output pairs
@@ -1769,6 +1811,26 @@ mod tests {
         // Write
         let thread_id = adapter.write_conversation(&conv).unwrap();
         assert!(!thread_id.is_empty());
+
+        let thread = adapter.find_thread(&thread_id).unwrap();
+        let rollout = fs::read_to_string(&thread.rollout_path).unwrap();
+        let response_items: Vec<Value> = rollout
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|event| event["type"] == "response_item")
+            .collect();
+        assert!(response_items.iter().any(|event| {
+            event["payload"]["type"] == "message"
+                && event["payload"]["role"] == "user"
+                && event["payload"]["content"][0]["type"] == "input_text"
+                && event["payload"]["content"][0]["text"] == "Hello Codex!"
+        }));
+        assert!(response_items.iter().any(|event| {
+            event["payload"]["type"] == "message"
+                && event["payload"]["role"] == "assistant"
+                && event["payload"]["content"][0]["type"] == "output_text"
+                && event["payload"]["content"][0]["text"] == "Let me help you."
+        }));
 
         // Read back
         let read_conv = adapter.read_conversation(&thread_id).unwrap();

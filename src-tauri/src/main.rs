@@ -3,11 +3,18 @@
     windows_subsystem = "windows"
 )]
 
-use std::{fs, path::PathBuf, time::Duration};
+mod agent_integration;
+
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use chatmem::chatmem_memory::{
     a2a::AgentCard,
     checkpoints::{CheckpointRecord, CreateCheckpointInput},
+    mcp::ChatMemMcpService,
     models::{
         ApprovedMemoryResponse, EmbeddingRebuildReport, EntityGraphPayload, EpisodeResponse,
         HandoffPacketResponse, LocalHistoryImportReport, MemoryCandidateResponse,
@@ -22,6 +29,7 @@ use chatmem::chatmem_memory::{
         sync_conversation_into_store,
     },
 };
+use rmcp::{transport::stdio, ServiceExt};
 use serde::{Deserialize, Serialize};
 use tauri::command;
 
@@ -32,6 +40,8 @@ use agentswap_core::adapter::AgentAdapter;
 use agentswap_core::types::{AgentKind, Conversation, ConversationSummary};
 use agentswap_gemini::GeminiAdapter;
 use agentswap_opencode::OpenCodeAdapter;
+
+const DEFAULT_TRASH_RETENTION_DAYS: i64 = 14;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ConversationSummaryResponse {
@@ -57,6 +67,30 @@ struct ConversationResponse {
     resume_command: Option<String>,
     messages: Vec<MessageResponse>,
     file_changes: Vec<FileChangeResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MigrationVerificationResponse {
+    read_back: bool,
+    listed: bool,
+    source_message_count: usize,
+    target_message_count: usize,
+    source_file_count: usize,
+    target_file_count: usize,
+    first_user_preserved: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MigrationResponse {
+    new_id: String,
+    source: String,
+    target: String,
+    mode: String,
+    verified: bool,
+    verification: MigrationVerificationResponse,
+    warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +155,16 @@ struct WebDavConversationUpload {
     body: Vec<u8>,
 }
 
+#[derive(Debug, Clone)]
+struct WebDavDeleteSettings {
+    webdav_scheme: String,
+    webdav_host: String,
+    webdav_path: String,
+    remote_path: String,
+    username: String,
+    password: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SyncSettingsPayload {
@@ -137,8 +181,65 @@ struct SyncSettingsPayload {
 #[serde(rename_all = "camelCase")]
 struct AppSettingsPayload {
     locale: String,
+    #[serde(default = "default_font_family")]
+    font_family: String,
     auto_check_updates: bool,
+    #[serde(default = "default_trash_retention_days")]
+    trash_retention_days: i64,
     sync: SyncSettingsPayload,
+}
+
+fn default_font_family() -> String {
+    "system".to_string()
+}
+
+fn default_trash_retention_days() -> i64 {
+    DEFAULT_TRASH_RETENTION_DAYS
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TrashConversationRecord {
+    schema_version: u8,
+    trash_id: String,
+    original_id: String,
+    source_agent: String,
+    project_dir: String,
+    summary: Option<String>,
+    trashed_at: String,
+    expires_at: String,
+    storage_path: Option<String>,
+    resume_command: Option<String>,
+    remote_backup_deleted: bool,
+    remote_backup_path: Option<String>,
+    warnings: Vec<String>,
+    conversation: Conversation,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrashConversationResponse {
+    trash_id: String,
+    original_id: String,
+    source_agent: String,
+    project_dir: String,
+    summary: Option<String>,
+    trashed_at: String,
+    expires_at: String,
+    storage_path: Option<String>,
+    resume_command: Option<String>,
+    remote_backup_deleted: bool,
+    remote_backup_path: Option<String>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RestoreTrashResponse {
+    trash_id: String,
+    original_id: String,
+    restored_id: String,
+    source_agent: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -187,8 +288,118 @@ fn agent_key(agent: &AgentKind) -> &'static str {
 }
 
 fn contains_query(haystack: &str, query: &str) -> bool {
-    haystack.to_lowercase().contains(query)
+    let haystack = haystack.to_lowercase();
+    if haystack.contains(query) {
+        return true;
+    }
+    cjk_query_terms(query)
+        .iter()
+        .any(|term| haystack.contains(term))
 }
+
+fn cjk_query_terms(query: &str) -> Vec<String> {
+    if !query.chars().any(is_cjk) {
+        return vec![];
+    }
+
+    let mut terms = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let normalized = query
+        .to_lowercase()
+        .chars()
+        .map(|ch| if ch.is_alphanumeric() { ch } else { ' ' })
+        .collect::<String>();
+
+    for segment in normalized.split_whitespace() {
+        let cleaned = clean_cjk_query_segment(segment);
+        for term in cleaned.split_whitespace() {
+            push_cjk_query_term(&mut terms, &mut seen, term);
+            let chars = term.chars().collect::<Vec<_>>();
+            for window_len in [4usize, 3usize] {
+                if chars.len() < window_len {
+                    continue;
+                }
+                for window in chars.windows(window_len) {
+                    let ngram = window.iter().collect::<String>();
+                    push_cjk_query_term(&mut terms, &mut seen, &ngram);
+                    if terms.len() >= 12 {
+                        return terms;
+                    }
+                }
+            }
+        }
+    }
+
+    terms
+}
+
+fn clean_cjk_query_segment(segment: &str) -> String {
+    let mut cleaned = segment.to_string();
+    for phrase in CJK_QUERY_NOISE_PHRASES {
+        cleaned = cleaned.replace(phrase, " ");
+    }
+    cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn push_cjk_query_term(
+    terms: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+    term: &str,
+) {
+    let term = term.trim().to_string();
+    if terms.len() >= 12
+        || term.chars().count() < 2
+        || CJK_QUERY_NOISE_PHRASES.contains(&term.as_str())
+    {
+        return;
+    }
+    if seen.insert(term.clone()) {
+        terms.push(term);
+    }
+}
+
+fn is_cjk(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{3400}'..='\u{4DBF}'
+            | '\u{4E00}'..='\u{9FFF}'
+            | '\u{F900}'..='\u{FAFF}'
+            | '\u{20000}'..='\u{2A6DF}'
+            | '\u{2A700}'..='\u{2B73F}'
+            | '\u{2B740}'..='\u{2B81F}'
+            | '\u{2B820}'..='\u{2CEAF}'
+    )
+}
+
+const CJK_QUERY_NOISE_PHRASES: &[&str] = &[
+    "你还记得",
+    "还记得",
+    "记得",
+    "我们之前",
+    "之前",
+    "以前",
+    "上次",
+    "讨论过",
+    "聊过",
+    "说过",
+    "提到过",
+    "有没有",
+    "是不是",
+    "是否",
+    "这个",
+    "那个",
+    "关于",
+    "有关",
+    "项目",
+    "话题",
+    "问题",
+    "事情",
+    "吗",
+    "呢",
+    "吧",
+    "的",
+    "了",
+];
 
 fn is_file_like_path_leaf(leaf: &str) -> bool {
     let extension = leaf
@@ -323,6 +534,90 @@ fn conversation_matches_query(conversation: &Conversation, query: &str) -> bool 
     })
 }
 
+fn meaningful_message_count(conversation: &Conversation) -> usize {
+    conversation
+        .messages
+        .iter()
+        .filter(|message| !message.content.trim().is_empty() || !message.tool_calls.is_empty())
+        .count()
+}
+
+fn first_user_message(conversation: &Conversation) -> Option<&str> {
+    conversation
+        .messages
+        .iter()
+        .find(|message| {
+            message.role == agentswap_core::types::Role::User && !message.content.trim().is_empty()
+        })
+        .map(|message| message.content.trim())
+}
+
+fn normalize_compare_text(value: &str) -> String {
+    value
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn first_user_preserved(source: &Conversation, target: &Conversation) -> bool {
+    let Some(source_first_user) = first_user_message(source) else {
+        return true;
+    };
+    let Some(target_first_user) = first_user_message(target) else {
+        return false;
+    };
+    let source = normalize_compare_text(source_first_user);
+    let target = normalize_compare_text(target_first_user);
+    source == target || source.contains(&target) || target.contains(&source)
+}
+
+fn build_migration_verification(
+    source: &Conversation,
+    target: &Conversation,
+    listed: bool,
+) -> (MigrationVerificationResponse, Vec<String>) {
+    let source_message_count = meaningful_message_count(source);
+    let target_message_count = meaningful_message_count(target);
+    let source_file_count = source.file_changes.len();
+    let target_file_count = target.file_changes.len();
+    let first_user_preserved = first_user_preserved(source, target);
+    let mut warnings = Vec::new();
+
+    if target_message_count == 0 && source_message_count > 0 {
+        warnings.push("目标对话读回成功，但没有可用消息；目标客户端可能显示为空。".to_string());
+    } else if target_message_count < source_message_count {
+        warnings.push(format!(
+            "目标消息数少于源对话：源 {} 条，目标 {} 条。请抽查目标客户端显示。",
+            source_message_count, target_message_count
+        ));
+    }
+
+    if target_file_count < source_file_count {
+        warnings.push(format!(
+            "目标文件变更数少于源对话：源 {} 个，目标 {} 个。",
+            source_file_count, target_file_count
+        ));
+    }
+
+    if !first_user_preserved {
+        warnings.push("目标对话首条用户消息与源对话不一致。".to_string());
+    }
+
+    (
+        MigrationVerificationResponse {
+            read_back: true,
+            listed,
+            source_message_count,
+            target_message_count,
+            source_file_count,
+            target_file_count,
+            first_user_preserved,
+        },
+        warnings,
+    )
+}
+
 fn convert_summary(summary: ConversationSummary) -> ConversationSummaryResponse {
     ConversationSummaryResponse {
         id: summary.id,
@@ -405,6 +700,146 @@ fn app_settings_path() -> Result<PathBuf, String> {
         .or_else(dirs::home_dir)
         .ok_or_else(|| "Unable to resolve a settings directory for ChatMem".to_string())?;
     Ok(base.join("ChatMem").join("settings.json"))
+}
+
+fn app_data_dir() -> Result<PathBuf, String> {
+    let base = dirs::data_local_dir()
+        .or_else(dirs::config_dir)
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| "Unable to resolve a local data directory for ChatMem".to_string())?;
+    Ok(base.join("ChatMem"))
+}
+
+fn trash_root_dir() -> Result<PathBuf, String> {
+    Ok(app_data_dir()?.join("trash"))
+}
+
+fn normalize_trash_retention_days(retention_days: Option<i64>) -> i64 {
+    retention_days
+        .unwrap_or(DEFAULT_TRASH_RETENTION_DAYS)
+        .clamp(1, 365)
+}
+
+fn make_trash_id(agent: &str, id: &str, trashed_at: chrono::DateTime<chrono::Utc>) -> String {
+    format!(
+        "{}-{}-{}",
+        safe_remote_file_name(agent),
+        safe_remote_file_name(id),
+        trashed_at.timestamp_millis()
+    )
+}
+
+fn trash_record_path(agent: &str, trash_id: &str) -> Result<PathBuf, String> {
+    Ok(trash_root_dir()?
+        .join(safe_remote_file_name(agent))
+        .join(format!("{}.json", safe_remote_file_name(trash_id))))
+}
+
+fn write_trash_record(record: &TrashConversationRecord) -> Result<PathBuf, String> {
+    let path = trash_record_path(&record.source_agent, &record.trash_id)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Cannot create ChatMem Trash directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let body = serde_json::to_vec_pretty(record)
+        .map_err(|error| format!("Cannot serialize Trash record: {error}"))?;
+    fs::write(&path, body)
+        .map_err(|error| format!("Cannot write Trash record {}: {error}", path.display()))?;
+    Ok(path)
+}
+
+fn read_trash_record(path: &Path) -> Result<TrashConversationRecord, String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|error| format!("Cannot read Trash record {}: {error}", path.display()))?;
+    serde_json::from_str::<TrashConversationRecord>(&raw)
+        .map_err(|error| format!("Cannot parse Trash record {}: {error}", path.display()))
+}
+
+fn trash_record_to_response(record: &TrashConversationRecord) -> TrashConversationResponse {
+    TrashConversationResponse {
+        trash_id: record.trash_id.clone(),
+        original_id: record.original_id.clone(),
+        source_agent: record.source_agent.clone(),
+        project_dir: record.project_dir.clone(),
+        summary: record.summary.clone(),
+        trashed_at: record.trashed_at.clone(),
+        expires_at: record.expires_at.clone(),
+        storage_path: record.storage_path.clone(),
+        resume_command: record.resume_command.clone(),
+        remote_backup_deleted: record.remote_backup_deleted,
+        remote_backup_path: record.remote_backup_path.clone(),
+        warnings: record.warnings.clone(),
+    }
+}
+
+fn list_trash_record_paths() -> Result<Vec<PathBuf>, String> {
+    let root = trash_root_dir()?;
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut paths = Vec::new();
+    for agent_entry in fs::read_dir(&root)
+        .map_err(|error| format!("Cannot read Trash directory {}: {error}", root.display()))?
+    {
+        let agent_entry = agent_entry.map_err(|error| error.to_string())?;
+        let agent_path = agent_entry.path();
+        if !agent_path.is_dir() {
+            continue;
+        }
+
+        for record_entry in fs::read_dir(&agent_path).map_err(|error| {
+            format!(
+                "Cannot read Trash agent directory {}: {error}",
+                agent_path.display()
+            )
+        })? {
+            let record_entry = record_entry.map_err(|error| error.to_string())?;
+            let path = record_entry.path();
+            if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
+                paths.push(path);
+            }
+        }
+    }
+    Ok(paths)
+}
+
+fn find_trash_record_path(trash_id: &str) -> Result<PathBuf, String> {
+    let safe_id = safe_remote_file_name(trash_id);
+    for path in list_trash_record_paths()? {
+        if path.file_stem().and_then(|stem| stem.to_str()) == Some(safe_id.as_str()) {
+            return Ok(path);
+        }
+    }
+    Err(format!("Trash record not found: {trash_id}"))
+}
+
+fn remove_expired_trash_records() -> Result<Vec<String>, String> {
+    let now = chrono::Utc::now();
+    let mut removed = Vec::new();
+
+    for path in list_trash_record_paths()? {
+        let record = match read_trash_record(&path) {
+            Ok(record) => record,
+            Err(_) => continue,
+        };
+        let expires_at = match chrono::DateTime::parse_from_rfc3339(&record.expires_at) {
+            Ok(value) => value.with_timezone(&chrono::Utc),
+            Err(_) => continue,
+        };
+        if expires_at <= now {
+            fs::remove_file(&path).map_err(|error| {
+                format!("Cannot purge Trash record {}: {error}", path.display())
+            })?;
+            removed.push(record.trash_id);
+        }
+    }
+
+    Ok(removed)
 }
 
 fn read_app_settings_from_disk() -> Result<Option<AppSettingsPayload>, String> {
@@ -780,6 +1215,165 @@ async fn put_webdav_json(
     }
 }
 
+fn collect_webdav_conversation_uploads() -> Result<Vec<WebDavConversationUpload>, String> {
+    let mut uploads = Vec::new();
+
+    for agent in ["claude", "codex", "gemini", "opencode"] {
+        let adapter = get_adapter(agent)?;
+        if !adapter.is_available() {
+            continue;
+        }
+
+        let summaries = adapter
+            .list_conversations()
+            .map_err(|error| error.to_string())?;
+        for summary in summaries {
+            let mut conversation = adapter
+                .read_conversation(&summary.id)
+                .map_err(|error| error.to_string())?;
+            conversation.project_dir = normalize_project_dir(&conversation.project_dir);
+            let id = conversation.id.clone();
+            let project_dir = conversation.project_dir.clone();
+            let updated_at = conversation.updated_at.to_rfc3339();
+            let file_name = format!("{}.json", safe_remote_file_name(&id));
+            let remote_file = format!("conversations/{agent}/{file_name}");
+            let storage_path = resolve_storage_path(agent, &id);
+            let resume_command = build_resume_command(agent, &id);
+            let payload = convert_conversation(conversation, storage_path, resume_command);
+            let body = serde_json::to_vec_pretty(&payload).map_err(|error| error.to_string())?;
+
+            uploads.push(WebDavConversationUpload {
+                agent: agent.to_string(),
+                id,
+                project_dir,
+                updated_at,
+                file_name,
+                remote_file,
+                body,
+            });
+        }
+    }
+
+    uploads.sort_by(|left, right| {
+        left.agent
+            .cmp(&right.agent)
+            .then_with(|| left.project_dir.cmp(&right.project_dir))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(uploads)
+}
+
+fn build_webdav_manifest(uploads: &[WebDavConversationUpload]) -> WebDavManifest {
+    WebDavManifest {
+        schema_version: 1,
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        synced_at: chrono::Utc::now().to_rfc3339(),
+        conversations: uploads
+            .iter()
+            .map(|upload| WebDavManifestEntry {
+                source_agent: upload.agent.clone(),
+                id: upload.id.clone(),
+                project_dir: upload.project_dir.clone(),
+                updated_at: upload.updated_at.clone(),
+                remote_file: upload.remote_file.clone(),
+            })
+            .collect(),
+    }
+}
+
+async fn upload_webdav_manifest(
+    client: &reqwest::Client,
+    remote_url: &reqwest::Url,
+    username: &str,
+    password: &str,
+    uploads: &[WebDavConversationUpload],
+) -> Result<(), String> {
+    let manifest = build_webdav_manifest(uploads);
+    let manifest_url = build_webdav_child_url(remote_url, &["manifest.json".to_string()], false)?;
+    let manifest_body = serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?;
+    put_webdav_json(client, &manifest_url, username, password, manifest_body).await
+}
+
+fn validate_webdav_delete_settings(
+    webdav_scheme: Option<String>,
+    webdav_host: Option<String>,
+    webdav_path: Option<String>,
+    remote_path: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+) -> Result<WebDavDeleteSettings, String> {
+    let settings = WebDavDeleteSettings {
+        webdav_scheme: webdav_scheme.unwrap_or_else(|| "https".to_string()),
+        webdav_host: webdav_host.unwrap_or_default(),
+        webdav_path: webdav_path.unwrap_or_default(),
+        remote_path: remote_path.unwrap_or_else(|| "chatmem".to_string()),
+        username: username.unwrap_or_default().trim().to_string(),
+        password: password.unwrap_or_default(),
+    };
+
+    if settings.webdav_host.trim().is_empty()
+        || settings.remote_path.trim().is_empty()
+        || settings.username.trim().is_empty()
+        || settings.password.trim().is_empty()
+    {
+        return Err("Missing WebDAV settings or password".to_string());
+    }
+
+    Ok(settings)
+}
+
+async fn delete_webdav_conversation_backup(
+    client: &reqwest::Client,
+    settings: &WebDavDeleteSettings,
+    agent: &str,
+    id: &str,
+) -> Result<(reqwest::Url, String), String> {
+    let remote_url = build_webdav_remote_collection_url(
+        &settings.webdav_scheme,
+        &settings.webdav_host,
+        &settings.webdav_path,
+        &settings.remote_path,
+    )?;
+    let conversations_url =
+        build_webdav_child_url(&remote_url, &["conversations".to_string()], true)?;
+    let agent_url = build_webdav_child_url(&conversations_url, &[agent.to_string()], true)?;
+    let file_name = format!("{}.json", safe_remote_file_name(id));
+    let remote_file = format!("conversations/{agent}/{file_name}");
+    let file_url = build_webdav_child_url(&agent_url, &[file_name], false)?;
+
+    let response = client
+        .delete(file_url.clone())
+        .basic_auth(settings.username.as_str(), Some(settings.password.as_str()))
+        .send()
+        .await
+        .map_err(|error| format!("Cannot delete WebDAV backup {file_url}: {error}"))?;
+    let status = response.status();
+
+    if status.is_success() || status == reqwest::StatusCode::NOT_FOUND {
+        Ok((remote_url, remote_file))
+    } else {
+        Err(format!(
+            "Server returned HTTP {status} while deleting WebDAV backup {file_url}"
+        ))
+    }
+}
+
+async fn upload_current_webdav_manifest(
+    client: &reqwest::Client,
+    remote_url: &reqwest::Url,
+    settings: &WebDavDeleteSettings,
+) -> Result<(), String> {
+    let uploads = collect_webdav_conversation_uploads()?;
+    upload_webdav_manifest(
+        client,
+        remote_url,
+        settings.username.as_str(),
+        settings.password.as_str(),
+        &uploads,
+    )
+    .await
+}
+
 #[command]
 async fn get_agent_card() -> Result<AgentCard, String> {
     Ok(AgentCard::chatmem_default())
@@ -906,43 +1500,7 @@ async fn sync_webdav_now(
         return Err("Missing WebDAV username or password".to_string());
     }
 
-    let mut uploads = Vec::new();
-
-    for agent in ["claude", "codex", "gemini", "opencode"] {
-        let adapter = get_adapter(agent)?;
-        if !adapter.is_available() {
-            continue;
-        }
-
-        let summaries = adapter
-            .list_conversations()
-            .map_err(|error| error.to_string())?;
-        for summary in summaries {
-            let mut conversation = adapter
-                .read_conversation(&summary.id)
-                .map_err(|error| error.to_string())?;
-            conversation.project_dir = normalize_project_dir(&conversation.project_dir);
-            let id = conversation.id.clone();
-            let project_dir = conversation.project_dir.clone();
-            let updated_at = conversation.updated_at.to_rfc3339();
-            let file_name = format!("{}.json", safe_remote_file_name(&id));
-            let remote_file = format!("conversations/{agent}/{file_name}");
-            let storage_path = resolve_storage_path(agent, &id);
-            let resume_command = build_resume_command(agent, &id);
-            let payload = convert_conversation(conversation, storage_path, resume_command);
-            let body = serde_json::to_vec_pretty(&payload).map_err(|error| error.to_string())?;
-
-            uploads.push(WebDavConversationUpload {
-                agent: agent.to_string(),
-                id,
-                project_dir,
-                updated_at,
-                file_name,
-                remote_file,
-                body,
-            });
-        }
-    }
+    let uploads = collect_webdav_conversation_uploads()?;
 
     let remote_url = build_webdav_remote_collection_url(
         &webdav_scheme,
@@ -961,7 +1519,6 @@ async fn sync_webdav_now(
         build_webdav_child_url(&remote_url, &["conversations".to_string()], true)?;
     ensure_webdav_collection(&client, &conversations_url, &username, &password).await?;
 
-    let mut manifest_entries = Vec::new();
     let mut uploaded_count = 0usize;
 
     for agent in ["claude", "codex", "gemini", "opencode"] {
@@ -979,25 +1536,10 @@ async fn sync_webdav_now(
             )
             .await?;
             uploaded_count += 1;
-            manifest_entries.push(WebDavManifestEntry {
-                source_agent: upload.agent.clone(),
-                id: upload.id.clone(),
-                project_dir: upload.project_dir.clone(),
-                updated_at: upload.updated_at.clone(),
-                remote_file: upload.remote_file.clone(),
-            });
         }
     }
 
-    let manifest = WebDavManifest {
-        schema_version: 1,
-        app_version: env!("CARGO_PKG_VERSION").to_string(),
-        synced_at: chrono::Utc::now().to_rfc3339(),
-        conversations: manifest_entries,
-    };
-    let manifest_url = build_webdav_child_url(&remote_url, &["manifest.json".to_string()], false)?;
-    let manifest_body = serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?;
-    put_webdav_json(&client, &manifest_url, &username, &password, manifest_body).await?;
+    upload_webdav_manifest(&client, &remote_url, &username, &password, &uploads).await?;
     uploaded_count += 1;
 
     Ok(WebDavSyncResponse {
@@ -1081,7 +1623,11 @@ async fn migrate_conversation(
     target: String,
     id: String,
     mode: String, // "copy" or "cut"
-) -> Result<String, String> {
+) -> Result<MigrationResponse, String> {
+    if mode != "copy" && mode != "cut" {
+        return Err(format!("Unsupported migration mode: {mode}"));
+    }
+
     let source_adapter = get_adapter(&source)?;
     let target_adapter = get_adapter(&target)?;
 
@@ -1095,28 +1641,198 @@ async fn migrate_conversation(
         .write_conversation(&conversation)
         .map_err(|e| e.to_string())?;
 
-    // If cut mode, delete from source
+    // Verify target readability and list visibility before reporting success or deleting the source.
+    let target_conversation = target_adapter.read_conversation(&new_id).map_err(|e| {
+        format!("Target write verification failed for {target} conversation {new_id}: {e}")
+    })?;
+    let target_summaries = target_adapter
+        .list_conversations()
+        .map_err(|e| format!("Target list verification failed for {target}: {e}"))?;
+    let listed = target_summaries.iter().any(|summary| summary.id == new_id);
+    if !listed {
+        return Err(format!(
+            "Target visibility verification failed: {target} conversation {new_id} was readable but did not appear in the target conversation list"
+        ));
+    }
+    let (verification, warnings) =
+        build_migration_verification(&conversation, &target_conversation, listed);
+
+    // If cut mode, delete from source after target verification succeeds.
     if mode == "cut" {
         source_adapter
             .delete_conversation(&id)
             .map_err(|e| e.to_string())?;
     }
 
-    Ok(new_id)
+    Ok(MigrationResponse {
+        new_id,
+        source,
+        target,
+        mode,
+        verified: true,
+        verification,
+        warnings,
+    })
 }
 
 #[command]
 async fn delete_conversation(agent: String, id: String) -> Result<(), String> {
-    trash_conversation(agent, id).await
+    trash_conversation(agent, id, None, None, None, None, None, None, None, None)
+        .await
+        .map(|_| ())
 }
 
 #[command]
-async fn trash_conversation(agent: String, id: String) -> Result<(), String> {
-    let adapter = get_adapter(&agent)?;
-    adapter
-        .delete_conversation(&id)
-        .map_err(|e| e.to_string())?;
-    Ok(())
+async fn trash_conversation(
+    agent: String,
+    id: String,
+    retention_days: Option<i64>,
+    delete_remote_backup: Option<bool>,
+    webdav_scheme: Option<String>,
+    webdav_host: Option<String>,
+    webdav_path: Option<String>,
+    remote_path: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+) -> Result<TrashConversationResponse, String> {
+    let conversation = {
+        let adapter = get_adapter(&agent)?;
+        adapter
+            .read_conversation(&id)
+            .map_err(|error| error.to_string())?
+    };
+    let retention_days = normalize_trash_retention_days(retention_days);
+    let trashed_at = chrono::Utc::now();
+    let expires_at = trashed_at + chrono::Duration::days(retention_days);
+    let trash_id = make_trash_id(&agent, &id, trashed_at);
+    let storage_path = resolve_storage_path(&agent, &id);
+    let resume_command = build_resume_command(&agent, &id);
+    let mut record = TrashConversationRecord {
+        schema_version: 1,
+        trash_id,
+        original_id: id.clone(),
+        source_agent: agent.clone(),
+        project_dir: normalize_project_dir(&conversation.project_dir),
+        summary: conversation.summary.clone(),
+        trashed_at: trashed_at.to_rfc3339(),
+        expires_at: expires_at.to_rfc3339(),
+        storage_path,
+        resume_command,
+        remote_backup_deleted: false,
+        remote_backup_path: None,
+        warnings: Vec::new(),
+        conversation,
+    };
+    let record_path = write_trash_record(&record)?;
+
+    let should_delete_remote = delete_remote_backup.unwrap_or(false);
+    let mut remote_manifest_update: Option<(reqwest::Client, reqwest::Url, WebDavDeleteSettings)> =
+        None;
+
+    if should_delete_remote {
+        let settings = validate_webdav_delete_settings(
+            webdav_scheme,
+            webdav_host,
+            webdav_path,
+            remote_path,
+            username,
+            password,
+        )
+        .inspect_err(|_| {
+            let _ = fs::remove_file(&record_path);
+        })?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|error| error.to_string())
+            .inspect_err(|_| {
+                let _ = fs::remove_file(&record_path);
+            })?;
+        let (remote_url, remote_file) =
+            delete_webdav_conversation_backup(&client, &settings, &agent, &id)
+                .await
+                .inspect_err(|_| {
+                    let _ = fs::remove_file(&record_path);
+                })?;
+        record.remote_backup_deleted = true;
+        record.remote_backup_path = Some(remote_file);
+        remote_manifest_update = Some((client, remote_url, settings));
+    }
+
+    {
+        let adapter = get_adapter(&agent)?;
+        adapter.delete_conversation(&id).map_err(|error| {
+            let _ = fs::remove_file(&record_path);
+            error.to_string()
+        })?;
+    }
+
+    if let Some((client, remote_url, settings)) = remote_manifest_update {
+        if let Err(error) = upload_current_webdav_manifest(&client, &remote_url, &settings).await {
+            record.warnings.push(format!(
+                "WebDAV backup was deleted, but manifest refresh failed: {error}"
+            ));
+        }
+    }
+
+    write_trash_record(&record)?;
+    Ok(trash_record_to_response(&record))
+}
+
+#[command]
+async fn list_trashed_conversations() -> Result<Vec<TrashConversationResponse>, String> {
+    let _ = remove_expired_trash_records()?;
+    let mut records = Vec::new();
+    for path in list_trash_record_paths()? {
+        match read_trash_record(&path) {
+            Ok(record) => records.push(record),
+            Err(error) => eprintln!("{error}"),
+        }
+    }
+    records.sort_by(|left, right| right.trashed_at.cmp(&left.trashed_at));
+    Ok(records.iter().map(trash_record_to_response).collect())
+}
+
+#[command]
+async fn restore_trashed_conversation(trash_id: String) -> Result<RestoreTrashResponse, String> {
+    let path = find_trash_record_path(&trash_id)?;
+    let record = read_trash_record(&path)?;
+    let restored_id = if record.source_agent == "opencode" {
+        if let Some(storage_path) = record.storage_path.as_deref() {
+            let db_path = Path::new(storage_path);
+            if db_path.exists() {
+                OpenCodeAdapter::restore_conversation_in_db(db_path, &record.original_id)
+                    .map_err(|error| error.to_string())?;
+            } else {
+                OpenCodeAdapter::new()
+                    .restore_conversation(&record.original_id)
+                    .map_err(|error| error.to_string())?;
+            }
+        } else {
+            OpenCodeAdapter::new()
+                .restore_conversation(&record.original_id)
+                .map_err(|error| error.to_string())?;
+        }
+        record.original_id.clone()
+    } else {
+        let adapter = get_adapter(&record.source_agent)?;
+        adapter
+            .write_conversation(&record.conversation)
+            .map_err(|error| error.to_string())?
+    };
+    fs::remove_file(&path).map_err(|error| {
+        format!(
+            "Cannot remove restored Trash record {}: {error}",
+            path.display()
+        )
+    })?;
+
+    Ok(RestoreTrashResponse {
+        trash_id: record.trash_id,
+        original_id: record.original_id,
+        restored_id,
+        source_agent: record.source_agent,
+    })
 }
 
 #[command]
@@ -1380,15 +2096,39 @@ async fn create_checkpoint(
         .map_err(|e| e.to_string())
 }
 
+fn run_mcp_stdio() -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async {
+        let store = MemoryStore::open_app()?;
+        let service = ChatMemMcpService::new(store);
+        let server = service.serve(stdio()).await?;
+        server.waiting().await?;
+        anyhow::Ok(())
+    })
+}
+
 fn main() {
+    if std::env::args().any(|arg| arg == "--mcp") {
+        if let Err(error) = run_mcp_stdio() {
+            eprintln!("ChatMem MCP failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            agent_integration::detect_agent_integrations,
+            agent_integration::install_agent_integration,
+            agent_integration::uninstall_agent_integration,
             list_conversations,
             search_conversations,
             read_conversation,
             migrate_conversation,
             delete_conversation,
             trash_conversation,
+            list_trashed_conversations,
+            restore_trashed_conversation,
             check_agent_available,
             get_agent_card,
             load_app_settings,
@@ -1429,10 +2169,11 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_resume_command, build_webdav_probe_url, build_webdav_remote_collection_url,
-        conversation_matches_query, normalize_project_dir, AgentKind, Conversation,
+        build_migration_verification, build_resume_command, build_webdav_probe_url,
+        build_webdav_remote_collection_url, conversation_matches_query, normalize_project_dir,
+        AgentKind, Conversation,
     };
-    use agentswap_core::types::{Message, Role, ToolCall, ToolStatus};
+    use agentswap_core::types::{ChangeType, FileChange, Message, Role, ToolCall, ToolStatus};
     use chrono::Utc;
     use serde_json::json;
     use std::collections::HashMap;
@@ -1479,11 +2220,117 @@ mod tests {
     }
 
     #[test]
+    fn migration_verification_accepts_preserved_messages_and_files() {
+        let now = Utc::now();
+        let user_message_id = Uuid::new_v4();
+        let assistant_message_id = Uuid::new_v4();
+        let source = Conversation {
+            id: "source-001".to_string(),
+            source_agent: AgentKind::Claude,
+            project_dir: "D:/VSP".to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("迁移测试".to_string()),
+            messages: vec![
+                Message {
+                    id: user_message_id,
+                    timestamp: now,
+                    role: Role::User,
+                    content: "请继续优化迁移流程。".to_string(),
+                    tool_calls: vec![],
+                    metadata: HashMap::new(),
+                },
+                Message {
+                    id: assistant_message_id,
+                    timestamp: now,
+                    role: Role::Assistant,
+                    content: "我会先验证目标对话可读。".to_string(),
+                    tool_calls: vec![],
+                    metadata: HashMap::new(),
+                },
+            ],
+            file_changes: vec![FileChange {
+                path: "src/App.tsx".to_string(),
+                change_type: ChangeType::Modified,
+                timestamp: now,
+                message_id: assistant_message_id,
+            }],
+        };
+        let target = Conversation {
+            id: "target-001".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir: source.project_dir.clone(),
+            created_at: now,
+            updated_at: now,
+            summary: source.summary.clone(),
+            messages: source.messages.clone(),
+            file_changes: source.file_changes.clone(),
+        };
+
+        let (verification, warnings) = build_migration_verification(&source, &target, true);
+
+        assert!(verification.read_back);
+        assert!(verification.listed);
+        assert_eq!(verification.source_message_count, 2);
+        assert_eq!(verification.target_message_count, 2);
+        assert_eq!(verification.source_file_count, 1);
+        assert_eq!(verification.target_file_count, 1);
+        assert!(verification.first_user_preserved);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn migration_verification_warns_when_target_loses_messages() {
+        let now = Utc::now();
+        let source = Conversation {
+            id: "source-empty-target".to_string(),
+            source_agent: AgentKind::Claude,
+            project_dir: "D:/VSP".to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("白屏风险".to_string()),
+            messages: vec![Message {
+                id: Uuid::new_v4(),
+                timestamp: now,
+                role: Role::User,
+                content: "这段对话迁移过去不能变成白屏。".to_string(),
+                tool_calls: vec![],
+                metadata: HashMap::new(),
+            }],
+            file_changes: vec![],
+        };
+        let target = Conversation {
+            id: "target-empty".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir: source.project_dir.clone(),
+            created_at: now,
+            updated_at: now,
+            summary: source.summary.clone(),
+            messages: vec![],
+            file_changes: vec![],
+        };
+
+        let (verification, warnings) = build_migration_verification(&source, &target, true);
+
+        assert_eq!(verification.source_message_count, 1);
+        assert_eq!(verification.target_message_count, 0);
+        assert!(!verification.first_user_preserved);
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("没有可用消息")));
+        assert!(warnings
+            .iter()
+            .any(|warning| warning.contains("首条用户消息")));
+    }
+
+    #[test]
     fn upgrade_check_report_flags_missing_webdav_password_without_failing_database() {
         let report = super::build_upgrade_readiness_report(
             Some(super::AppSettingsPayload {
                 locale: "zh-CN".to_string(),
+                font_family: "system".to_string(),
                 auto_check_updates: true,
+                trash_retention_days: super::DEFAULT_TRASH_RETENTION_DAYS,
                 sync: super::SyncSettingsPayload {
                     provider: "webdav".to_string(),
                     webdav_scheme: "https".to_string(),
@@ -1566,5 +2413,32 @@ mod tests {
         };
 
         assert!(conversation_matches_query(&conversation, "内存泄漏"));
+    }
+
+    #[test]
+    fn full_text_search_extracts_chinese_keywords_from_recall_sentence() {
+        let now = Utc::now();
+        let conversation = Conversation {
+            id: "conv-ultraman-pig-hero".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir: "D:/VSP/games".to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("小游戏项目讨论".to_string()),
+            messages: vec![Message {
+                id: Uuid::new_v4(),
+                timestamp: now,
+                role: Role::User,
+                content: "我们之前聊过奥特曼打猪猪侠这个小游戏项目。".to_string(),
+                tool_calls: vec![],
+                metadata: HashMap::new(),
+            }],
+            file_changes: vec![],
+        };
+
+        assert!(conversation_matches_query(
+            &conversation,
+            "你还记得奥特曼打猪猪侠的项目吗？"
+        ));
     }
 }

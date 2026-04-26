@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import { appWindow } from "@tauri-apps/api/window";
 import ConversationDetail from "./components/ConversationDetail";
 import MigrateModal from "./components/MigrateModal";
 import SettingsPanel, {
+  type AgentIntegrationOperationResult,
+  type AgentIntegrationStatus,
   type SettingsSyncCopy,
   type UpgradeReadinessReport,
   type WebDavSyncResult,
@@ -18,6 +20,7 @@ import RepoMemoryPanel from "./components/RepoMemoryPanel";
 import { useI18n } from "./i18n/I18nProvider";
 import type { Locale } from "./i18n/types";
 import {
+  APP_FONT_OPTIONS,
   loadNativeSettings,
   loadSettings,
   loadWebDavPassword,
@@ -25,6 +28,7 @@ import {
   saveNativeSettings,
   saveWebDavPassword,
   updateSettings,
+  type AppFontFamily,
   type AppSettings,
 } from "./settings/storage";
 import { installAvailableUpdate, runUpdateCheck, type UpdateState } from "./updater/updater";
@@ -48,6 +52,7 @@ import {
   listHandoffs,
   listMemoryCandidates,
   listRepoMemories,
+  listWikiPages,
   markHandoffConsumed,
   mergeRepoAlias,
   rebuildRepoWiki,
@@ -94,6 +99,35 @@ interface Conversation {
   file_changes: FileChange[];
 }
 
+type TrashTarget = Pick<ConversationSummary, "id" | "source_agent" | "summary">;
+
+interface TrashedConversation {
+  trashId: string;
+  originalId: string;
+  sourceAgent: string;
+  projectDir: string;
+  summary: string | null;
+  trashedAt: string;
+  expiresAt: string;
+  storagePath?: string | null;
+  resumeCommand?: string | null;
+  remoteBackupDeleted: boolean;
+  remoteBackupPath?: string | null;
+  warnings: string[];
+}
+
+type TrashConfirmState = {
+  targets: TrashTarget[];
+  deleteRemoteBackup: boolean;
+  busy: boolean;
+  error: string | null;
+} | null;
+
+type AppNotice = {
+  kind: "success" | "error";
+  message: string;
+} | null;
+
 interface Message {
   id: string;
   timestamp: string;
@@ -122,6 +156,24 @@ type TopPage = "continue" | "review" | "history" | "help";
 type HistoryView = "conversations" | "recovery" | "transfers" | "outputs";
 type MemoryDrawerTab = "inbox" | "approved" | "wiki" | "continuation";
 type MigrateMode = "copy" | "cut";
+type MigrationVerification = {
+  readBack: boolean;
+  listed: boolean;
+  sourceMessageCount: number;
+  targetMessageCount: number;
+  sourceFileCount: number;
+  targetFileCount: number;
+  firstUserPreserved: boolean;
+};
+type MigrationResult = {
+  newId: string;
+  source: AgentType;
+  target: AgentType;
+  mode: MigrateMode;
+  verified: boolean;
+  verification: MigrationVerification;
+  warnings: string[];
+};
 type CopyTarget = "location" | "resume";
 type CopyState = {
   target: CopyTarget | null;
@@ -150,12 +202,27 @@ type HelpCard = {
   onSelect: () => void;
 };
 
+function readableError(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
 type ShellCopy = {
   nav: Record<TopPage, string>;
   navAria: string;
   projectSection: string;
   chatSection: string;
   settings: string;
+  aboutChatMem: string;
   continueTitle: string;
   continueSubtitle: string;
   reviewTitle: string;
@@ -232,6 +299,7 @@ type ShellCopy = {
   restoreProjects: string;
   openOrganizer: string;
   refreshList: string;
+  trash: string;
   bulkSelect: string;
   cancelBulkSelect: string;
   bulkSelectionToolbar: string;
@@ -240,11 +308,31 @@ type ShellCopy = {
   clearSelection: string;
   selectedCount: (count: number) => string;
   moveSelectedToTrash: (count: number) => string;
-  confirmTrashSingle: (title: string) => string;
-  confirmTrashBulk: (count: number) => string;
+  confirmTrashTitle: (count: number) => string;
+  confirmTrashBody: (count: number) => string;
+  confirmTrashLocalHint: (days: number) => string;
+  confirmTrashRemoteBackup: string;
+  confirmTrashRemoteUnavailable: string;
+  confirmTrashRemotePasswordMissing: string;
+  cancel: string;
+  moveToTrash: string;
+  movingToTrash: string;
   trashSuccessSingle: string;
   trashSuccessBulk: (count: number) => string;
   trashFailed: string;
+  trashWorkspaceTitle: string;
+  trashWorkspaceSubtitle: string;
+  trashEmptyTitle: string;
+  trashEmptyBody: string;
+  trashRetentionDays: string;
+  trashRetentionHint: string;
+  restore: string;
+  restoring: string;
+  restoreSuccess: string;
+  restoreFailed: string;
+  trashLoadFailed: string;
+  remoteBackupDeleted: string;
+  expiresAt: string;
   migrate: string;
   delete: string;
   helpHowItWorks: string;
@@ -504,6 +592,11 @@ function isCodexGeneratedChatPath(projectDir: string) {
   );
 }
 
+function isRootProjectPlaceholder(projectDir: string) {
+  const normalized = normalizeProjectPath(projectDir);
+  return normalized === "/" || /^[a-zA-Z]:\/?$/.test(normalized);
+}
+
 function getConversationProjectDir(
   conversation: Pick<ConversationSummary, "project_dir" | "source_agent">,
 ) {
@@ -512,10 +605,11 @@ function getConversationProjectDir(
     return "";
   }
 
-  if (
-    conversation.source_agent.toLowerCase() === "codex" &&
-    isCodexGeneratedChatPath(projectDir)
-  ) {
+  if (isRootProjectPlaceholder(projectDir)) {
+    return "";
+  }
+
+  if (conversation.source_agent.toLowerCase() === "codex" && isCodexGeneratedChatPath(projectDir)) {
     return "";
   }
 
@@ -554,6 +648,7 @@ function getShellCopy(locale: Locale): ShellCopy {
       projectSection: "Projects",
       chatSection: "Chats",
       settings: "Settings",
+      aboutChatMem: "About us",
       continueTitle: "Continue Work",
       continueSubtitle: "Pick up the latest progress, commands, and next steps.",
       reviewTitle: "Needs Review",
@@ -635,6 +730,7 @@ function getShellCopy(locale: Locale): ShellCopy {
       restoreProjects: "Restore previous expansion",
       openOrganizer: "Filter, sort, and organize conversations",
       refreshList: "Refresh conversations",
+      trash: "Trash",
       bulkSelect: "Select conversations",
       cancelBulkSelect: "Cancel selection",
       bulkSelectionToolbar: "Bulk conversation actions",
@@ -644,14 +740,38 @@ function getShellCopy(locale: Locale): ShellCopy {
       selectedCount: (count) => `${count} selected`,
       moveSelectedToTrash: (count) =>
         count > 0 ? `Move ${count} selected to Trash` : "Move selected to Trash",
-      confirmTrashSingle: (title) =>
-        `Move this conversation to Trash?\n\n"${title}"\n\nThe local conversation file will be moved to the system Trash when possible.`,
-      confirmTrashBulk: (count) =>
-        `Move ${count} conversation${count === 1 ? "" : "s"} to Trash?\n\nThe local files will be moved to the system Trash when possible and removed from this list.`,
+      confirmTrashTitle: (count) =>
+        count === 1 ? "Move this conversation to Trash?" : `Move ${count} conversations to Trash?`,
+      confirmTrashBody: (count) =>
+        count === 1
+          ? "ChatMem will keep a recovery snapshot and move the local conversation to the system Trash when possible."
+          : "ChatMem will keep recovery snapshots and move local conversations to the system Trash when possible.",
+      confirmTrashLocalHint: (days) =>
+        `Recovery snapshots are kept for ${days} day${days === 1 ? "" : "s"}.`,
+      confirmTrashRemoteBackup: "Also delete the WebDAV cloud backup",
+      confirmTrashRemoteUnavailable: "WebDAV sync is not configured, so no cloud backup will be deleted.",
+      confirmTrashRemotePasswordMissing: "WebDAV password is missing. Save it in Settings before deleting cloud backups.",
+      cancel: "Cancel",
+      moveToTrash: "Move to Trash",
+      movingToTrash: "Moving...",
       trashSuccessSingle: "Conversation moved to Trash.",
       trashSuccessBulk: (count) =>
         `${count} conversation${count === 1 ? "" : "s"} moved to Trash.`,
       trashFailed: "Could not move conversation to Trash",
+      trashWorkspaceTitle: "Trash",
+      trashWorkspaceSubtitle:
+        "Deleted conversations stay recoverable here before the retention window expires.",
+      trashEmptyTitle: "Trash is empty",
+      trashEmptyBody: "Deleted conversations will appear here with a restore action.",
+      trashRetentionDays: "Retention days",
+      trashRetentionHint: "Applies to new deletions. Existing items keep their current expiry.",
+      restore: "Restore",
+      restoring: "Restoring...",
+      restoreSuccess: "Conversation restored.",
+      restoreFailed: "Could not restore conversation",
+      trashLoadFailed: "Could not load Trash",
+      remoteBackupDeleted: "WebDAV backup deleted",
+      expiresAt: "Expires",
       migrate: "Migrate",
       delete: "Delete",
       helpHowItWorks: "How ChatMem works in the background",
@@ -669,6 +789,7 @@ function getShellCopy(locale: Locale): ShellCopy {
     projectSection: "项目",
     chatSection: "对话",
     settings: "设置",
+    aboutChatMem: "关于我们",
     continueTitle: "继续工作",
     continueSubtitle: "把最近的进度、恢复命令和下一步放在一起。",
     reviewTitle: "待确认",
@@ -750,22 +871,44 @@ function getShellCopy(locale: Locale): ShellCopy {
     restoreProjects: "恢复之前展开的分组",
     openOrganizer: "筛选、排序和整理对话",
     refreshList: "刷新会话列表",
+    trash: "垃圾箱",
     bulkSelect: "\u6279\u91cf\u9009\u62e9",
     cancelBulkSelect: "\u53d6\u6d88\u9009\u62e9",
     bulkSelectionToolbar: "\u6279\u91cf\u5bf9\u8bdd\u64cd\u4f5c",
     selectConversation: "\u9009\u62e9",
-    selectVisible: "\u9009\u4e2d\u5f53\u524d\u5217\u8868",
+    selectVisible: "\u5168\u9009\u53ef\u89c1",
     clearSelection: "\u6e05\u7a7a",
     selectedCount: (count) => `\u5df2\u9009 ${count}`,
-    moveSelectedToTrash: (count) =>
-      count > 0 ? `\u79fb\u5230\u5783\u573e\u7bb1 ${count}` : "\u79fb\u5230\u5783\u573e\u7bb1",
-    confirmTrashSingle: (title) =>
-      `\u786e\u5b9a\u8981\u628a\u8fd9\u6bb5\u5bf9\u8bdd\u79fb\u5230\u5783\u573e\u7bb1\u5417\uff1f\n\n"${title}"\n\n\u4f1a\u5c3d\u91cf\u628a\u672c\u5730\u5bf9\u8bdd\u6587\u4ef6\u79fb\u5165\u7cfb\u7edf\u5783\u573e\u7bb1\u3002`,
-    confirmTrashBulk: (count) =>
-      `\u786e\u5b9a\u8981\u628a ${count} \u6bb5\u5bf9\u8bdd\u79fb\u5230\u5783\u573e\u7bb1\u5417\uff1f\n\n\u4f1a\u5c3d\u91cf\u628a\u672c\u5730\u5bf9\u8bdd\u6587\u4ef6\u79fb\u5165\u7cfb\u7edf\u5783\u573e\u7bb1\uff0c\u5e76\u4ece\u5f53\u524d\u5217\u8868\u79fb\u9664\u3002`,
+    moveSelectedToTrash: () => "\u79fb\u5230\u5783\u573e\u7bb1",
+    confirmTrashTitle: (count) =>
+      count === 1 ? "移动这段对话到垃圾箱？" : `移动 ${count} 段对话到垃圾箱？`,
+    confirmTrashBody: (count) =>
+      count === 1
+        ? "ChatMem 会保留一份可恢复快照，并尽量把本地对话移入系统回收站。"
+        : "ChatMem 会保留可恢复快照，并尽量把这些本地对话移入系统回收站。",
+    confirmTrashLocalHint: (days) => `可恢复快照会保留 ${days} 天。`,
+    confirmTrashRemoteBackup: "同时删除 WebDAV 网盘备份",
+    confirmTrashRemoteUnavailable: "未配置 WebDAV 同步，不会处理云端备份。",
+    confirmTrashRemotePasswordMissing: "缺少 WebDAV 密码。请先在设置里保存密码，再删除云端备份。",
+    cancel: "取消",
+    moveToTrash: "移到垃圾箱",
+    movingToTrash: "正在移动...",
     trashSuccessSingle: "\u5bf9\u8bdd\u5df2\u79fb\u5230\u5783\u573e\u7bb1\u3002",
     trashSuccessBulk: (count) => `${count} \u6bb5\u5bf9\u8bdd\u5df2\u79fb\u5230\u5783\u573e\u7bb1\u3002`,
     trashFailed: "\u79fb\u5230\u5783\u573e\u7bb1\u5931\u8d25",
+    trashWorkspaceTitle: "垃圾箱",
+    trashWorkspaceSubtitle: "误删的对话先放在这里，保留期内可以恢复。",
+    trashEmptyTitle: "垃圾箱是空的",
+    trashEmptyBody: "删除后的对话会出现在这里，并提供恢复操作。",
+    trashRetentionDays: "保留天数",
+    trashRetentionHint: "影响之后删除的对话；已有项目保留原到期时间。",
+    restore: "恢复",
+    restoring: "正在恢复...",
+    restoreSuccess: "对话已恢复。",
+    restoreFailed: "恢复对话失败",
+    trashLoadFailed: "加载垃圾箱失败",
+    remoteBackupDeleted: "已删除 WebDAV 备份",
+    expiresAt: "到期",
     migrate: "迁移",
     delete: "删除",
     helpHowItWorks: "了解后台工作方式",
@@ -828,6 +971,16 @@ function getSyncCopy(locale: Locale): SettingsSyncCopy {
   };
 }
 
+const ACKNOWLEDGED_SYSTEMS = [
+  "mem0",
+  "Letta / MemGPT",
+  "Zep",
+  "Cognee",
+  "LangGraph / LangMem",
+  "LLM Wiki / DeepWiki / CodeWiki",
+  "OpenAI / Claude native memory",
+];
+
 function WindowButtonIcon({
   type,
 }: {
@@ -839,6 +992,9 @@ function WindowButtonIcon({
     | "restoreExpansion"
     | "organize"
     | "bulkSelect"
+    | "trash"
+    | "settings"
+    | "help"
     | "chevron";
 }) {
   if (type === "minimize") {
@@ -907,6 +1063,38 @@ function WindowButtonIcon({
     );
   }
 
+  if (type === "trash") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M5.5 4.5h5" />
+        <path d="M6.5 4.5V3.3h3v1.2" />
+        <path d="M4.5 6h7" />
+        <path d="M5.2 6.2l.5 6.3h4.6l.5-6.3" />
+        <path d="M7.1 8v3" />
+        <path d="M8.9 8v3" />
+      </svg>
+    );
+  }
+
+  if (type === "settings") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12.2 2h-.4a2 2 0 0 0-2 2v.2a2 2 0 0 1-1 1.7l-.4.2a2 2 0 0 1-2 0l-.2-.1a2 2 0 0 0-2.7.7l-.2.4a2 2 0 0 0 .7 2.7l.2.1a2 2 0 0 1 1 1.7v.6a2 2 0 0 1-1 1.7l-.2.1a2 2 0 0 0-.7 2.7l.2.4a2 2 0 0 0 2.7.7l.2-.1a2 2 0 0 1 2 0l.4.2a2 2 0 0 1 1 1.7v.2a2 2 0 0 0 2 2h.4a2 2 0 0 0 2-2v-.2a2 2 0 0 1 1-1.7l.4-.2a2 2 0 0 1 2 0l.2.1a2 2 0 0 0 2.7-.7l.2-.4a2 2 0 0 0-.7-2.7l-.2-.1a2 2 0 0 1-1-1.7v-.6a2 2 0 0 1 1-1.7l.2-.1a2 2 0 0 0 .7-2.7l-.2-.4a2 2 0 0 0-2.7-.7l-.2.1a2 2 0 0 1-2 0l-.4-.2a2 2 0 0 1-1-1.7V4a2 2 0 0 0-2-2z" />
+        <circle cx="12" cy="12" r="3" />
+      </svg>
+    );
+  }
+
+  if (type === "help") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="8" cy="8" r="5.3" />
+        <path d="M6.6 6.4A1.5 1.5 0 0 1 8.1 5c.9 0 1.5.5 1.5 1.3 0 .6-.3 1-.9 1.4-.6.4-.8.7-.8 1.4" />
+        <path d="M8 11.1h.01" />
+      </svg>
+    );
+  }
+
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true">
       <path d="M6 4l4 4-4 4" />
@@ -923,6 +1111,8 @@ function App() {
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [showMigrateModal, setShowMigrateModal] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showTrash, setShowTrash] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
   const [memoryDrawerOpen, setMemoryDrawerOpen] = useState(false);
   const [memoryDrawerTab, setMemoryDrawerTab] = useState<MemoryDrawerTab>("inbox");
   const [listLoading, setListLoading] = useState(false);
@@ -931,6 +1121,11 @@ function App() {
   const [bulkSelectionMode, setBulkSelectionMode] = useState(false);
   const [selectedConversationKeys, setSelectedConversationKeys] = useState<string[]>([]);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [trashConfirm, setTrashConfirm] = useState<TrashConfirmState>(null);
+  const [trashedConversations, setTrashedConversations] = useState<TrashedConversation[]>([]);
+  const [trashLoading, setTrashLoading] = useState(false);
+  const [restoringTrashId, setRestoringTrashId] = useState<string | null>(null);
+  const [appNotice, setAppNotice] = useState<AppNotice>(null);
   const [memoryLoading, setMemoryLoading] = useState(false);
   const [repoMemoryHealth, setRepoMemoryHealth] = useState<RepoMemoryHealth | null>(null);
   const [lastLocalHistoryImportReport, setLastLocalHistoryImportReport] =
@@ -978,8 +1173,16 @@ function App() {
   const activeRepoRootRef = useRef<string | null>(activeRepoRoot);
   const repoScanRequestIdRef = useRef(0);
   const repoScanActiveCountRef = useRef(0);
+  const conversationDetailCacheRef = useRef<Record<string, Conversation>>({});
+  const conversationDetailRequestIdRef = useRef(0);
   const autoBootstrapAttemptedReposRef = useRef<Record<string, true>>({});
   const globalHistoryImportAttemptedRef = useRef(false);
+  const selectedFontOption =
+    APP_FONT_OPTIONS.find((option) => option.id === appSettings.fontFamily) ?? APP_FONT_OPTIONS[0];
+  const appShellStyle = {
+    "--font-sans": selectedFontOption.cssFamily,
+    fontFamily: selectedFontOption.cssFamily,
+  } as CSSProperties & Record<"--font-sans", string>;
   const availableHandoffTargets = ["claude", "codex", "gemini", "opencode"].filter(
     (agent) => agent !== selectedAgent,
   );
@@ -1035,12 +1238,22 @@ function App() {
   useEffect(() => {
     setSelectedConversation(null);
     setShowSettings(false);
+    setShowTrash(false);
+    setShowAbout(false);
     setCopyState({ target: null, status: "idle" });
     setBulkSelectionMode(false);
     setSelectedConversationKeys([]);
     setActivePage("continue");
     setHistoryView("conversations");
   }, [selectedAgent]);
+
+  useEffect(() => {
+    if (!appNotice) {
+      return;
+    }
+    const timer = window.setTimeout(() => setAppNotice(null), 2600);
+    return () => window.clearTimeout(timer);
+  }, [appNotice]);
 
   useEffect(() => {
     void loadConversations(searchQuery, selectedAgent);
@@ -1226,12 +1439,12 @@ function App() {
       setMemoryLoading(true);
       setRepoHealthLoading(true);
       const requestRepoRoot = activeRepoRoot;
-      const requestConversationId = activeConversationId;
+      const requestConversationId = activeConversationIdRef.current;
       try {
         const [nextMemories, nextCandidates, nextWikiPages, nextCheckpoints, nextHandoffs] = await Promise.all([
           listRepoMemories(activeRepoRoot),
           listMemoryCandidates(activeRepoRoot, "pending_review"),
-          rebuildRepoWiki(activeRepoRoot),
+          listWikiPages(activeRepoRoot),
           listCheckpoints(activeRepoRoot),
           listHandoffs(activeRepoRoot),
         ]);
@@ -1282,7 +1495,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeConversationId, activeRepoRoot, runRepoScan]);
+  }, [activeRepoRoot, runRepoScan]);
 
   const handleScanRepoConversations = async () => {
     if (!activeRepoRoot) {
@@ -1333,55 +1546,120 @@ function App() {
     }
   };
 
-  const loadConversationDetail = async (id: string, agent = selectedAgent) => {
+  const loadConversationDetail = async (
+    id: string,
+    agent = selectedAgent,
+    options: { throwOnError?: boolean } = {},
+  ) => {
+    const requestId = ++conversationDetailRequestIdRef.current;
+    const cacheKey = `${agent}:${id}`;
     if (id !== activeConversationIdRef.current) {
       setBootstrapReadyConversationId(null);
     }
     setShowSettings(false);
+    setShowTrash(false);
+    setShowAbout(false);
+    const cachedConversation = conversationDetailCacheRef.current[cacheKey];
+    if (cachedConversation) {
+      setSelectedConversation(cachedConversation);
+      setDetailLoading(false);
+      return true;
+    }
     setDetailLoading(true);
     try {
       const result = await invoke<Conversation>("read_conversation", {
         agent,
         id,
       });
-      setSelectedConversation(normalizeConversationProject(result));
+      if (requestId !== conversationDetailRequestIdRef.current) {
+        return false;
+      }
+      const normalizedConversation = normalizeConversationProject(result);
+      conversationDetailCacheRef.current[cacheKey] = normalizedConversation;
+      setSelectedConversation(normalizedConversation);
+      return true;
     } catch (error) {
       console.error("Failed to load conversation:", error);
+      if (options.throwOnError) {
+        throw error;
+      }
+      return false;
     } finally {
-      setDetailLoading(false);
+      if (requestId === conversationDetailRequestIdRef.current) {
+        setDetailLoading(false);
+      }
     }
   };
+
+  const loadTrashConversations = async () => {
+    setTrashLoading(true);
+    try {
+      const result = await invoke<TrashedConversation[]>("list_trashed_conversations");
+      setTrashedConversations(result);
+    } catch (error) {
+      console.error("Failed to load Trash:", error);
+      setAppNotice({ kind: "error", message: shell.trashLoadFailed });
+    } finally {
+      setTrashLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (showTrash) {
+      void loadTrashConversations();
+    }
+  }, [showTrash]);
+
+  useEffect(() => {
+    void loadTrashConversations();
+  }, []);
 
   const handleMigrate = async (targetAgent: AgentType, mode: MigrateMode) => {
     if (!selectedConversation) {
       return;
     }
 
+    const sourceAgent = selectedAgent;
+    const sourceConversation = selectedConversation;
     setDetailLoading(true);
     try {
-      const newId = await invoke<string>("migrate_conversation", {
-        source: selectedAgent,
+      const result = await invoke<MigrationResult>("migrate_conversation", {
+        source: sourceAgent,
         target: targetAgent,
-        id: selectedConversation.id,
+        id: sourceConversation.id,
         mode,
       });
-      const modeText = mode === "copy" ? "复制" : "剪切";
-      alert(`对话${modeText}成功，新 ID: ${newId}`);
-      setShowMigrateModal(false);
       setSearchQuery("");
-      setSelectedConversation(null);
       setSelectedAgent(targetAgent);
       await loadConversations("", targetAgent);
-      await loadConversationDetail(newId, targetAgent);
+      await loadConversationDetail(result.newId, targetAgent, { throwOnError: true });
+      setShowMigrateModal(false);
+      const modeText = mode === "copy" ? "复制" : "移动";
+      const verificationText =
+        result.warnings.length > 0
+          ? `，但有 ${result.warnings.length} 条需要检查：${result.warnings[0]}`
+          : "，已通过读回和列表验证";
+      setAppNotice({
+        kind: "success",
+        message: `对话已${modeText}到 ${targetAgent}${verificationText}。`,
+      });
     } catch (error) {
       console.error("Failed to migrate conversation:", error);
-      alert("对话迁移失败");
+      setSelectedAgent(sourceAgent);
+      setSelectedConversation(sourceConversation);
+      await loadConversations("", sourceAgent);
+      const message = readableError(error);
+      setAppNotice({
+        kind: "error",
+        message: `对话迁移失败：${message}`,
+      });
+      alert(`对话迁移失败：${message}`);
     } finally {
       setDetailLoading(false);
     }
   };
 
-  const moveConversationsToTrash = async (
+  const moveConversationsToTrash = (
     targets: Array<
       Pick<ConversationSummary, "id" | "source_agent" | "summary"> |
         Pick<Conversation, "id" | "source_agent" | "summary">
@@ -1391,17 +1669,47 @@ function App() {
       return;
     }
 
-    const isBulk = targets.length > 1;
-    const confirmMessage = isBulk
-      ? shell.confirmTrashBulk(targets.length)
-      : shell.confirmTrashSingle(targets[0].summary || targets[0].id);
-    if (!confirm(confirmMessage)) {
+    setTrashConfirm({
+      targets: targets.map((target) => ({
+        id: target.id,
+        source_agent: target.source_agent || selectedAgent,
+        summary: target.summary ?? null,
+      })),
+      deleteRemoteBackup: false,
+      busy: false,
+      error: null,
+    });
+  };
+
+  const confirmMoveConversationsToTrash = async () => {
+    if (!trashConfirm || trashConfirm.targets.length === 0) {
       return;
     }
 
+    const targets = trashConfirm.targets;
+    const isBulk = targets.length > 1;
     const deletingSelectedConversation = selectedConversation
       ? targets.some((conversation) => conversation.id === selectedConversation.id)
       : false;
+    const syncSettings = appSettings.sync;
+    const shouldDeleteRemote =
+      trashConfirm.deleteRemoteBackup &&
+      syncSettings.provider === "webdav" &&
+      syncSettings.webdavHost.trim().length > 0 &&
+      syncSettings.username.trim().length > 0;
+    let webdavPassword: string | null = null;
+
+    if (shouldDeleteRemote) {
+      webdavPassword = await loadWebDavPassword(syncSettings.username);
+      if (!webdavPassword) {
+        setTrashConfirm((current) =>
+          current
+            ? { ...current, busy: false, error: shell.confirmTrashRemotePasswordMissing }
+            : current,
+        );
+        return;
+      }
+    }
 
     if (isBulk) {
       setBulkDeleting(true);
@@ -1411,23 +1719,47 @@ function App() {
     if (deletingSelectedConversation) {
       setDetailLoading(true);
     }
+    setTrashConfirm((current) => (current ? { ...current, busy: true, error: null } : current));
     try {
       for (const conversation of targets) {
         await invoke("trash_conversation", {
           agent: conversation.source_agent || selectedAgent,
           id: conversation.id,
+          retentionDays: appSettings.trashRetentionDays,
+          deleteRemoteBackup: shouldDeleteRemote,
+          webdavScheme: syncSettings.webdavScheme,
+          webdavHost: syncSettings.webdavHost,
+          webdavPath: syncSettings.webdavPath,
+          remotePath: syncSettings.remotePath,
+          username: syncSettings.username,
+          password: webdavPassword ?? "",
         });
       }
-      alert(isBulk ? shell.trashSuccessBulk(targets.length) : shell.trashSuccessSingle);
+      setAppNotice({
+        kind: "success",
+        message: isBulk ? shell.trashSuccessBulk(targets.length) : shell.trashSuccessSingle,
+      });
       if (deletingSelectedConversation) {
         setSelectedConversation(null);
       }
       setSelectedConversationKeys([]);
       setBulkSelectionMode(false);
+      setTrashConfirm(null);
       await loadConversations();
+      if (showTrash) {
+        await loadTrashConversations();
+      }
     } catch (error) {
       console.error("Failed to move conversation to Trash:", error);
-      alert(shell.trashFailed);
+      setTrashConfirm((current) =>
+        current
+          ? {
+              ...current,
+              busy: false,
+              error: `${shell.trashFailed}: ${String(error)}`,
+            }
+          : current,
+      );
     } finally {
       setDeletingConversationId(null);
       setBulkDeleting(false);
@@ -1505,6 +1837,22 @@ function App() {
 
   const handleRunUpgradeReadinessCheck = async (): Promise<UpgradeReadinessReport> => {
     return invoke<UpgradeReadinessReport>("run_upgrade_readiness_check");
+  };
+
+  const handleDetectAgentIntegrations = async (): Promise<AgentIntegrationStatus[]> => {
+    return invoke<AgentIntegrationStatus[]>("detect_agent_integrations");
+  };
+
+  const handleInstallAgentIntegration = async (
+    agent: string,
+  ): Promise<AgentIntegrationOperationResult[]> => {
+    return invoke<AgentIntegrationOperationResult[]>("install_agent_integration", { agent });
+  };
+
+  const handleUninstallAgentIntegration = async (
+    agent: string,
+  ): Promise<AgentIntegrationOperationResult[]> => {
+    return invoke<AgentIntegrationOperationResult[]>("uninstall_agent_integration", { agent });
   };
 
   const handleApproveCandidate = async (
@@ -2174,6 +2522,25 @@ function App() {
     await moveConversationsToTrash(selectedConversationsForBulkAction);
   };
 
+  const getConversationProjectDisplay = (
+    conversation: Pick<ConversationSummary, "project_dir" | "source_agent">,
+  ) => getConversationProjectDir(conversation) || (locale === "en" ? "No project" : "无项目");
+
+  const handleRestoreTrashConversation = async (trashId: string) => {
+    setRestoringTrashId(trashId);
+    try {
+      await invoke("restore_trashed_conversation", { trashId });
+      setAppNotice({ kind: "success", message: shell.restoreSuccess });
+      await loadTrashConversations();
+      await loadConversations();
+    } catch (error) {
+      console.error("Failed to restore conversation:", error);
+      setAppNotice({ kind: "error", message: `${shell.restoreFailed}: ${String(error)}` });
+    } finally {
+      setRestoringTrashId(null);
+    }
+  };
+
   const renderConversationRow = (
     conversation: ConversationSummary,
     extraClassName = "",
@@ -2183,6 +2550,7 @@ function App() {
     const isSelected = selectedConversation?.id === conversation.id;
     const conversationKey = getConversationKey(conversation);
     const isBulkSelected = selectedConversationKeySet.has(conversationKey);
+    const projectDisplay = getConversationProjectDisplay(conversation);
 
     return (
       <div
@@ -2216,8 +2584,8 @@ function App() {
               <div className="conversation-item-title" title={title}>
                 {visibleTitle}
               </div>
-              <div className="conversation-item-path" title={conversation.project_dir}>
-                {conversation.project_dir}
+              <div className="conversation-item-path" title={conversation.project_dir || projectDisplay}>
+                {projectDisplay}
               </div>
             </div>
             <div className="conversation-item-time">{formatDistanceToNow(conversation.updated_at)}</div>
@@ -2263,7 +2631,7 @@ function App() {
           >
             <div>
               <strong>{normalizeConversationTitle(conversation.summary) || conversation.id}</strong>
-              <span>{conversation.project_dir}</span>
+              <span>{getConversationProjectDisplay(conversation)}</span>
             </div>
             <span>{formatDistanceToNow(conversation.updated_at)}</span>
           </button>
@@ -3045,7 +3413,7 @@ function App() {
             <div className="meta-block">
               <span className="meta-label">{shell.relatedPaths}</span>
               <span className="meta-value">
-                {selectedConversation?.project_dir || "--"}
+                {selectedConversation ? getConversationProjectDisplay(selectedConversation) : "--"}
                 {"\n"}
                 {selectedConversation?.storage_path || "--"}
               </span>
@@ -3343,6 +3711,281 @@ function App() {
     );
   };
 
+  const renderAboutWorkspace = () => (
+    <section className="about-workspace-page" aria-labelledby="about-chatmem-title">
+      <header className="settings-panel-header about-page-header">
+        <div className="about-title-cluster">
+          <div className="about-brand-mark" aria-hidden="true">
+            <img src={brandIcon} alt="" />
+          </div>
+          <div>
+            <p className="page-eyebrow">{shell.aboutChatMem}</p>
+            <h1 id="about-chatmem-title">{locale === "en" ? "About ChatMem" : "关于 ChatMem"}</h1>
+          </div>
+        </div>
+        <button type="button" className="toolbar-button" onClick={() => setShowAbout(false)}>
+          {locale === "en" ? "Back" : "返回"}
+        </button>
+      </header>
+
+      <section className="about-summary-section">
+        <p>
+          {locale === "en"
+            ? "ChatMem is a local-first memory layer for people who work with AI coding agents every day."
+            : "ChatMem 是给长期使用 AI 编程 Agent 的人准备的本地优先记忆层。"}
+        </p>
+        <p>
+          {locale === "en"
+            ? "It indexes local Claude, Codex, Gemini, and OpenCode history, keeps the original evidence traceable, and turns stable project knowledge into startup rules and Wiki context."
+            : "它索引本机 Claude、Codex、Gemini 和 OpenCode 历史，保留可追溯的原始证据，并把稳定的项目知识整理成启动规则和 Wiki 上下文。"}
+        </p>
+      </section>
+
+      <section className="about-detail-grid" aria-label={locale === "en" ? "Product details" : "产品说明"}>
+        <article className="about-detail-card">
+          <span>{locale === "en" ? "Version" : "版本"}</span>
+          <strong>v{packageInfo.version}</strong>
+        </article>
+        <article className="about-detail-card">
+          <span>{locale === "en" ? "Agent layer" : "Agent 层"}</span>
+          <strong>{locale === "en" ? "MCP + Native Guidance" : "MCP + 原生引导"}</strong>
+        </article>
+        <article className="about-detail-card">
+          <span>{locale === "en" ? "Data posture" : "数据方式"}</span>
+          <strong>{locale === "en" ? "Local-first" : "本地优先"}</strong>
+        </article>
+        <article className="about-detail-card">
+          <span>GitHub</span>
+          <a
+            className="about-github-link"
+            href="https://github.com/Rimagination/ChatMem"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Rimagination/ChatMem
+          </a>
+        </article>
+      </section>
+
+      <section className="about-prose-section" aria-label={locale === "en" ? "Product positioning" : "产品定位"}>
+        <article className="about-prose-block">
+          <h2>{locale === "en" ? "Why it exists" : "项目简介"}</h2>
+          <p>
+            {locale === "en"
+              ? "Model-native memory is useful, but it is usually tied to one product account. ChatMem treats local conversations as the durable source of truth, so past decisions, project paths, tool calls, and recovery commands can be found again without waiting for a model to remember them."
+              : "模型自带记忆很有用，但通常绑定在某一个产品账号里。ChatMem 把本地对话当成长期可信的来源，让过去的决策、项目路径、工具调用和恢复命令可以被重新找到，而不是只能寄希望于模型自己想起来。"}
+          </p>
+        </article>
+
+        <article className="about-prose-block">
+          <h2>{locale === "en" ? "Positioning and advantages" : "优势与生态位"}</h2>
+          <ul className="about-text-list">
+            {(locale === "en"
+              ? [
+                  "More portable than native memory: one local layer works across Claude, Codex, Gemini, and OpenCode.",
+                  "More auditable than pure vector memory: answers can point back to original conversations and files.",
+                  "Closer to coding work than generic memory stores: history search, startup rules, Wiki context, trash recovery, and agent installation are built around real project workflows.",
+                  "Local-first by default: WebDAV is optional backup, not a requirement for daily recall.",
+                ]
+              : [
+                  "比模型自带记忆更可迁移：同一层本地记忆可以跨 Claude、Codex、Gemini 和 OpenCode 使用。",
+                  "比单纯向量记忆更可审计：检索结果可以回到原始对话和文件证据。",
+                  "比通用记忆库更贴近编程工作流：历史检索、启动规则、Wiki 上下文、垃圾箱恢复和 Agent 安装都围绕真实项目展开。",
+                  "默认本地优先：WebDAV 只是可选备份，不是日常回忆能力的前提。",
+                ]
+            ).map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </article>
+      </section>
+
+      <section className="settings-section settings-about" aria-labelledby="about-acknowledgements-title">
+        <div className="about-section-heading">
+          <h2 id="about-acknowledgements-title">
+            {locale === "en" ? "Design references and acknowledgements" : "设计参考与致谢"}
+          </h2>
+          <p className="settings-helper">
+            {locale === "en"
+              ? "ChatMem learns from several memory, agent-state, and code-wiki directions, but it is not a clone of any single project. These references are acknowledgements, not dependencies or endorsements."
+              : "ChatMem 参考了多个记忆、Agent 状态管理和代码知识库方向，但它不是某一个项目的复刻。下面是设计灵感与致谢，不表示依赖、复刻或由相关项目背书。"}
+          </p>
+        </div>
+        <ul
+          className="acknowledgement-list"
+          aria-label={locale === "en" ? "Acknowledged projects" : "致谢项目"}
+        >
+          {ACKNOWLEDGED_SYSTEMS.map((system) => (
+            <li key={system} className="acknowledgement-item">
+              {system}
+            </li>
+          ))}
+        </ul>
+      </section>
+    </section>
+  );
+
+  const renderTrashWorkspace = () => (
+    <div className="trash-workspace-page">
+      <header className="trash-page-header">
+        <div>
+          <h1>{shell.trashWorkspaceTitle}</h1>
+          <p>{shell.trashWorkspaceSubtitle}</p>
+        </div>
+        <label className="trash-retention-control" htmlFor="trash-retention-days">
+          {shell.trashRetentionDays}
+          <input
+            id="trash-retention-days"
+            type="number"
+            min={1}
+            max={365}
+            value={appSettings.trashRetentionDays}
+            onChange={(event) => handleTrashRetentionDaysChange(Number(event.target.value))}
+          />
+        </label>
+      </header>
+
+      <p className="trash-retention-hint">{shell.trashRetentionHint}</p>
+
+      {trashLoading ? (
+        <div className="loading">
+          <div className="spinner"></div>
+        </div>
+      ) : trashedConversations.length === 0 ? (
+        <div className="empty-state empty-state-page">
+          <div className="empty-state-icon">
+            <WindowButtonIcon type="trash" />
+          </div>
+          <h2>{shell.trashEmptyTitle}</h2>
+          <div className="empty-state-text">{shell.trashEmptyBody}</div>
+        </div>
+      ) : (
+        <div className="trash-card-list">
+          {trashedConversations.map((item) => {
+            const title = normalizeConversationTitle(item.summary) || item.originalId;
+            const isRestoring = restoringTrashId === item.trashId;
+            return (
+              <article key={item.trashId} className="trash-card">
+                <div className="trash-card-main">
+                  <div>
+                    <span className="trash-card-agent">{item.sourceAgent}</span>
+                    <h3 title={title}>{title}</h3>
+                  </div>
+                  <p title={item.projectDir}>{item.projectDir}</p>
+                  <div className="trash-card-meta">
+                    <span>
+                      {shell.expiresAt}: {formatDateTime(item.expiresAt)}
+                    </span>
+                    {item.remoteBackupDeleted ? <span>{shell.remoteBackupDeleted}</span> : null}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => void handleRestoreTrashConversation(item.trashId)}
+                  disabled={isRestoring}
+                >
+                  {isRestoring ? shell.restoring : shell.restore}
+                </button>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+
+  const renderTrashConfirmModal = () => {
+    if (!trashConfirm) {
+      return null;
+    }
+
+    const remoteAvailable =
+      appSettings.sync.provider === "webdav" &&
+      appSettings.sync.webdavHost.trim().length > 0 &&
+      appSettings.sync.username.trim().length > 0;
+    const previewTargets = trashConfirm.targets.slice(0, 4);
+
+    return (
+      <div className="modal-overlay" onClick={() => !trashConfirm.busy && setTrashConfirm(null)}>
+        <div
+          className="modal trash-confirm-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="trash-confirm-title"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="modal-content">
+            <p className="page-eyebrow">{shell.trash}</p>
+            <h3 id="trash-confirm-title">{shell.confirmTrashTitle(trashConfirm.targets.length)}</h3>
+            <p>{shell.confirmTrashBody(trashConfirm.targets.length)}</p>
+            <p className="modal-helper-text">
+              {shell.confirmTrashLocalHint(appSettings.trashRetentionDays)}
+            </p>
+
+            <div className="trash-confirm-list">
+              {previewTargets.map((target) => (
+                <div key={`${target.source_agent}-${target.id}`} className="trash-confirm-item">
+                  <strong>{normalizeConversationTitle(target.summary) || target.id}</strong>
+                  <span>{target.source_agent}</span>
+                </div>
+              ))}
+              {trashConfirm.targets.length > previewTargets.length ? (
+                <div className="trash-confirm-more">
+                  +{trashConfirm.targets.length - previewTargets.length}
+                </div>
+              ) : null}
+            </div>
+
+            <label className={`trash-remote-option ${remoteAvailable ? "" : "is-disabled"}`}>
+              <input
+                type="checkbox"
+                checked={trashConfirm.deleteRemoteBackup && remoteAvailable}
+                disabled={!remoteAvailable || trashConfirm.busy}
+                onChange={(event) =>
+                  setTrashConfirm((current) =>
+                    current
+                      ? {
+                          ...current,
+                          deleteRemoteBackup: event.target.checked,
+                          error: null,
+                        }
+                      : current,
+                  )
+                }
+              />
+              <span>{shell.confirmTrashRemoteBackup}</span>
+            </label>
+            {!remoteAvailable ? (
+              <p className="trash-remote-note">{shell.confirmTrashRemoteUnavailable}</p>
+            ) : null}
+            {trashConfirm.error ? (
+              <p className="settings-notice is-danger">{trashConfirm.error}</p>
+            ) : null}
+          </div>
+          <div className="modal-actions">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setTrashConfirm(null)}
+              disabled={trashConfirm.busy}
+            >
+              {shell.cancel}
+            </button>
+            <button
+              type="button"
+              className="btn btn-danger"
+              onClick={() => void confirmMoveConversationsToTrash()}
+              disabled={trashConfirm.busy}
+            >
+              {trashConfirm.busy ? shell.movingToTrash : shell.moveToTrash}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderWorkspace = () => {
     if (!selectedConversation) {
       return (
@@ -3359,6 +4002,7 @@ function App() {
     const conversationTitle =
       normalizeConversationTitle(selectedConversation.summary) || selectedConversation.id;
     const visibleConversationTitle = truncateWorkspaceTitle(conversationTitle);
+    const selectedConversationProjectDisplay = getConversationProjectDisplay(selectedConversation);
     const memoryAttentionCount = memoryCandidates.length;
     const currentWorkspaceView: WorkspaceView = activeRepoRoot ? workspaceView : "conversation";
     const localHistoryPanel = activeRepoRoot ? (
@@ -3441,7 +4085,9 @@ function App() {
               <div className="conversation-title-block">
                 <p className="page-eyebrow">{getCurrentConversationLabel(selectedAgent, locale)}</p>
                 <h1 title={conversationTitle}>{visibleConversationTitle}</h1>
-                <span title={selectedConversation.project_dir}>{selectedConversation.project_dir}</span>
+                <span title={selectedConversation.project_dir || selectedConversationProjectDisplay}>
+                  {selectedConversationProjectDisplay}
+                </span>
               </div>
               <div className="conversation-toolbar-actions">
                 <button
@@ -3516,6 +4162,17 @@ function App() {
     }, 0);
   };
 
+  const handleTrashRetentionDaysChange = (nextDays: number) => {
+    const trashRetentionDays = Math.min(365, Math.max(1, Math.round(nextDays || 1)));
+    const nextSettings = updateSettings({ trashRetentionDays });
+    setAppSettings(nextSettings);
+  };
+
+  const handleFontFamilyChange = (fontFamily: AppFontFamily) => {
+    const nextSettings = updateSettings({ fontFamily });
+    setAppSettings(nextSettings);
+  };
+
   const renderSettingsPanel = () => (
     <SettingsPanel
       open={showSettings}
@@ -3523,6 +4180,7 @@ function App() {
       closeLabel={locale === "en" ? "Back" : "返回"}
       languageLabel={t("settings.language")}
       locale={appSettings.locale}
+      fontFamily={appSettings.fontFamily}
       autoCheckUpdates={appSettings.autoCheckUpdates}
       autoCheckLabel={t("settings.autoCheck")}
       checkUpdatesLabel={t("settings.checkUpdates")}
@@ -3540,6 +4198,7 @@ function App() {
         const nextSettings = { ...appSettings, locale: nextLocale };
         setAppSettings(nextSettings);
       }}
+      onFontFamilyChange={handleFontFamilyChange}
       onAutoCheckChange={(autoCheckUpdates: boolean) => {
         const nextSettings = updateSettings({ autoCheckUpdates });
         setAppSettings(nextSettings);
@@ -3556,6 +4215,9 @@ function App() {
       onVerifyWebDavServer={handleVerifyWebDavServer}
       onSyncWebDavNow={handleSyncWebDavNow}
       onRunUpgradeReadinessCheck={handleRunUpgradeReadinessCheck}
+      onDetectAgentIntegrations={handleDetectAgentIntegrations}
+      onInstallAgentIntegration={handleInstallAgentIntegration}
+      onUninstallAgentIntegration={handleUninstallAgentIntegration}
       onLoadWebDavPassword={loadWebDavPassword}
       onSaveWebDavPassword={({ username, password }) => saveWebDavPassword(username, password)}
       onCheckUpdates={async () => {
@@ -3584,7 +4246,7 @@ function App() {
   );
 
   return (
-    <div className={`app-shell ${isWindowFilled ? "is-window-filled" : ""}`}>
+    <div className={`app-shell ${isWindowFilled ? "is-window-filled" : ""}`} style={appShellStyle}>
       <header className="app-topbar" data-tauri-drag-region="true" onMouseDown={handleTopbarMouseDown}>
         <div className="topbar-left" data-tauri-drag-region="true">
           <img className="topbar-app-icon" src={brandIcon} alt="ChatMem icon" />
@@ -3621,7 +4283,11 @@ function App() {
         </div>
       </header>
 
-      <div className={`app-body ${libraryArrangement === "chats-first" ? "chats-first" : ""}`}>
+      <div
+        className={`app-body ${libraryArrangement === "chats-first" ? "chats-first" : ""} ${
+          showSettings || showAbout ? "is-full-page" : ""
+        }`}
+      >
         <aside className="sidebar">
           <div className="sidebar-scroll">
             <div className="sidebar-controls">
@@ -3790,30 +4456,32 @@ function App() {
                   <span className="bulk-selection-count">
                     {shell.selectedCount(selectedConversationCount)}
                   </span>
-                  <button
-                    type="button"
-                    className="bulk-selection-action"
-                    onClick={handleSelectVisibleConversations}
-                    disabled={allVisibleConversationsSelected || filteredConversations.length === 0}
-                  >
-                    {shell.selectVisible}
-                  </button>
-                  <button
-                    type="button"
-                    className="bulk-selection-action"
-                    onClick={handleClearConversationSelection}
-                    disabled={selectedConversationCount === 0 || bulkDeleting}
-                  >
-                    {shell.clearSelection}
-                  </button>
-                  <button
-                    type="button"
-                    className="bulk-selection-action danger"
-                    onClick={() => void handleBulkTrash()}
-                    disabled={selectedConversationCount === 0 || bulkDeleting}
-                  >
-                    {shell.moveSelectedToTrash(selectedConversationCount)}
-                  </button>
+                  <div className="bulk-selection-actions">
+                    <button
+                      type="button"
+                      className="bulk-selection-action"
+                      onClick={handleSelectVisibleConversations}
+                      disabled={allVisibleConversationsSelected || filteredConversations.length === 0}
+                    >
+                      {shell.selectVisible}
+                    </button>
+                    <button
+                      type="button"
+                      className="bulk-selection-action"
+                      onClick={handleClearConversationSelection}
+                      disabled={selectedConversationCount === 0 || bulkDeleting}
+                    >
+                      {shell.clearSelection}
+                    </button>
+                    <button
+                      type="button"
+                      className="bulk-selection-action danger"
+                      onClick={() => void handleBulkTrash()}
+                      disabled={selectedConversationCount === 0 || bulkDeleting}
+                    >
+                      {shell.moveSelectedToTrash(selectedConversationCount)}
+                    </button>
+                  </div>
                 </div>
               ) : null}
 
@@ -3883,23 +4551,79 @@ function App() {
             ) : null}
           </div>
 
-          <button
-            type="button"
-            className={`settings-row ${showSettings ? "active" : ""}`}
-            onClick={() => setShowSettings(true)}
-          >
-            {shell.settings}
-          </button>
+          <nav className="sidebar-utility-nav" aria-label={locale === "en" ? "App pages" : "应用页面"}>
+            <button
+              type="button"
+              className={`utility-nav-button ${showTrash ? "active" : ""}`}
+              aria-label={shell.trash}
+              onClick={() => {
+                setShowSettings(false);
+                setShowAbout(false);
+                setShowTrash(true);
+              }}
+            >
+              <WindowButtonIcon type="trash" />
+              <span className="utility-nav-label">{shell.trash}</span>
+              {trashedConversations.length > 0 ? (
+                <span className="utility-nav-count">{trashedConversations.length}</span>
+              ) : null}
+            </button>
+
+            <button
+              type="button"
+              className={`utility-nav-button ${showSettings ? "active" : ""}`}
+              aria-label={shell.settings}
+              onClick={() => {
+                setShowTrash(false);
+                setShowAbout(false);
+                setShowSettings(true);
+              }}
+            >
+              <WindowButtonIcon type="settings" />
+              <span className="utility-nav-label">{shell.settings}</span>
+            </button>
+
+            <button
+              type="button"
+              className={`utility-nav-button ${showAbout ? "active" : ""}`}
+              aria-label={shell.aboutChatMem}
+              onClick={() => {
+                setShowTrash(false);
+                setShowSettings(false);
+                setShowAbout(true);
+              }}
+            >
+              <WindowButtonIcon type="help" />
+              <span className="utility-nav-label">{shell.aboutChatMem}</span>
+            </button>
+          </nav>
         </aside>
 
-        <main className={`workspace ${showSettings ? "settings-workspace" : ""}`}>
+        <main
+          className={`workspace ${showSettings ? "settings-workspace" : ""} ${
+            showAbout ? "about-workspace" : ""
+          } ${showTrash ? "trash-workspace" : ""}`}
+        >
           <section className="workspace-surface">
-            {showSettings ? renderSettingsPanel() : renderWorkspace()}
+            {showSettings
+              ? renderSettingsPanel()
+              : showAbout
+                ? renderAboutWorkspace()
+                : showTrash
+                  ? renderTrashWorkspace()
+                  : renderWorkspace()}
           </section>
         </main>
       </div>
 
       {renderMemoryDrawer()}
+      {renderTrashConfirmModal()}
+
+      {appNotice ? (
+        <div className={`app-notice-toast is-${appNotice.kind}`} role="status" aria-live="polite">
+          {appNotice.message}
+        </div>
+      ) : null}
 
       {updateState.kind === "available" && (
         <div className="update-toast" role="status" aria-live="polite">

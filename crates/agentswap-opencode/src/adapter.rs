@@ -7,7 +7,7 @@ use agentswap_core::types::{
     AgentKind, ChangeType, Conversation, ConversationSummary, FileChange, Message, Role,
     ToolCall, ToolStatus,
 };
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
@@ -147,6 +147,31 @@ impl OpenCodeAdapter {
                 path.display()
             )
         })
+    }
+
+    pub fn restore_conversation_in_db(db_path: &Path, id: &str) -> Result<()> {
+        let conn = Connection::open_with_flags(
+            db_path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_URI,
+        )
+        .with_context(|| {
+            format!(
+                "Failed to open OpenCode database for restore: {}",
+                db_path.display()
+            )
+        })?;
+        let changed = conn.execute(
+            "UPDATE session SET time_archived = NULL, time_updated = ?1 WHERE id = ?2",
+            (Utc::now().timestamp_millis(), id),
+        )?;
+        if changed == 0 {
+            return Err(anyhow!("OpenCode session not found: {id}"));
+        }
+        Ok(())
+    }
+
+    pub fn restore_conversation(&self, id: &str) -> Result<()> {
+        Self::restore_conversation_in_db(&self.db_path(), id)
     }
 
     fn query_sessions(&self) -> Result<Vec<OpenCodeSessionRow>> {
@@ -460,6 +485,124 @@ impl OpenCodeAdapter {
 
         Ok((messages, file_changes))
     }
+
+    fn compact_id(prefix: &str) -> String {
+        format!("{prefix}_{}", Uuid::new_v4().simple())
+    }
+
+    fn conversation_title(conv: &Conversation) -> String {
+        conv.summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .or_else(|| {
+                conv.messages
+                    .iter()
+                    .find(|message| {
+                        message.role == Role::User && !message.content.trim().is_empty()
+                    })
+                    .map(|message| message.content.trim().to_string())
+            })
+            .map(|title| {
+                if title.chars().count() > 80 {
+                    format!("{}...", title.chars().take(80).collect::<String>())
+                } else {
+                    title
+                }
+            })
+            .unwrap_or_else(|| "ChatMem imported conversation".to_string())
+    }
+
+    fn slug_from_title(title: &str) -> String {
+        let mut slug = String::new();
+        let mut last_was_dash = false;
+        for ch in title.chars() {
+            if ch.is_ascii_alphanumeric() {
+                slug.push(ch.to_ascii_lowercase());
+                last_was_dash = false;
+            } else if ch.is_whitespace() || ch == '-' || ch == '_' {
+                if !last_was_dash && !slug.is_empty() {
+                    slug.push('-');
+                    last_was_dash = true;
+                }
+            }
+        }
+        let slug = slug.trim_matches('-');
+        if slug.is_empty() {
+            "chatmem-import".to_string()
+        } else {
+            slug.to_string()
+        }
+    }
+
+    fn project_name(project_dir: &str) -> String {
+        Path::new(project_dir)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(ToString::to_string)
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| "ChatMem".to_string())
+    }
+
+    fn latest_session_version(conn: &Connection) -> String {
+        conn.query_row(
+            "SELECT version FROM session WHERE version != '' ORDER BY time_updated DESC LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap_or_else(|_| "0.0.0".to_string())
+    }
+
+    fn find_or_create_project(conn: &Connection, project_dir: &str, now_ms: i64) -> Result<String> {
+        if let Ok(project_id) = conn.query_row(
+            "SELECT id FROM project WHERE worktree = ?1 ORDER BY time_updated DESC LIMIT 1",
+            [project_dir],
+            |row| row.get::<_, String>(0),
+        ) {
+            return Ok(project_id);
+        }
+
+        let project_id = Self::compact_id("project");
+        conn.execute(
+            "INSERT INTO project (id, worktree, vcs, name, time_created, time_updated, sandboxes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (
+                project_id.as_str(),
+                project_dir,
+                "git",
+                Self::project_name(project_dir),
+                now_ms,
+                now_ms,
+                "[]",
+            ),
+        )
+        .with_context(|| "Failed to create OpenCode project row")?;
+        Ok(project_id)
+    }
+
+    fn insert_part(
+        conn: &Connection,
+        message_id: &str,
+        session_id: &str,
+        timestamp_ms: i64,
+        data: Value,
+    ) -> Result<()> {
+        let part_id = Self::compact_id("part");
+        conn.execute(
+            "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            (
+                part_id,
+                message_id,
+                session_id,
+                timestamp_ms,
+                timestamp_ms,
+                data.to_string(),
+            ),
+        )?;
+        Ok(())
+    }
 }
 
 impl AgentAdapter for OpenCodeAdapter {
@@ -517,8 +660,178 @@ impl AgentAdapter for OpenCodeAdapter {
         })
     }
 
-    fn write_conversation(&self, _conv: &Conversation) -> Result<String> {
-        bail!("Writing conversations into OpenCode is not supported yet; use opencode import/export")
+    fn write_conversation(&self, conv: &Conversation) -> Result<String> {
+        let mut conn = self.open_db_rw()?;
+        let tx = conn.transaction()?;
+        let created_ms = conv.created_at.timestamp_millis();
+        let updated_ms = conv.updated_at.timestamp_millis();
+        let project_dir = conv.project_dir.trim();
+        let project_dir = if project_dir.is_empty() { "." } else { project_dir };
+        let project_id = Self::find_or_create_project(&tx, project_dir, created_ms)?;
+        let session_id = Self::compact_id("ses");
+        let title = Self::conversation_title(conv);
+        let slug = Self::slug_from_title(&title);
+        let version = Self::latest_session_version(&tx);
+        let file_count = conv
+            .file_changes
+            .iter()
+            .map(|change| change.path.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len() as i64;
+
+        tx.execute(
+            "INSERT INTO session (
+                id, project_id, slug, directory, title, version, summary_files, time_created, time_updated
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            (
+                session_id.as_str(),
+                project_id.as_str(),
+                slug,
+                project_dir,
+                title,
+                version,
+                file_count,
+                created_ms,
+                updated_ms,
+            ),
+        )
+        .with_context(|| "Failed to create OpenCode session row")?;
+
+        let mut previous_message_id: Option<String> = None;
+        for message in &conv.messages {
+            let message_id = Self::compact_id("msg");
+            let timestamp_ms = message.timestamp.timestamp_millis();
+            let role = match message.role {
+                Role::Assistant => "assistant",
+                Role::System => "system",
+                Role::User => "user",
+            };
+            let mut data = json!({
+                "role": role,
+                "time": { "created": timestamp_ms },
+                "path": { "cwd": project_dir, "root": project_dir },
+                "source": "chatmem"
+            });
+            if message.role == Role::Assistant {
+                data["time"]["completed"] = json!(timestamp_ms);
+                data["providerID"] = json!("chatmem");
+                data["modelID"] = json!("imported");
+                data["agent"] = json!("build");
+            }
+            if let Some(parent_id) = previous_message_id.as_deref() {
+                data["parentID"] = json!(parent_id);
+            }
+
+            tx.execute(
+                "INSERT INTO message (id, session_id, time_created, time_updated, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                (
+                    message_id.as_str(),
+                    session_id.as_str(),
+                    timestamp_ms,
+                    timestamp_ms,
+                    data.to_string(),
+                ),
+            )?;
+
+            if !message.content.trim().is_empty() {
+                Self::insert_part(
+                    &tx,
+                    &message_id,
+                    &session_id,
+                    timestamp_ms,
+                    json!({ "type": "text", "text": message.content.as_str() }),
+                )?;
+            }
+
+            if let Some(reasoning) = message.metadata.get("reasoning") {
+                let reasoning_text = reasoning
+                    .as_str()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| reasoning.to_string());
+                if !reasoning_text.trim().is_empty() {
+                    Self::insert_part(
+                        &tx,
+                        &message_id,
+                        &session_id,
+                        timestamp_ms,
+                        json!({ "type": "reasoning", "text": reasoning_text }),
+                    )?;
+                }
+            }
+
+            for tool_call in &message.tool_calls {
+                let status = match tool_call.status {
+                    ToolStatus::Error => "error",
+                    ToolStatus::Success => "completed",
+                };
+                Self::insert_part(
+                    &tx,
+                    &message_id,
+                    &session_id,
+                    timestamp_ms,
+                    json!({
+                        "type": "tool",
+                        "callID": Self::compact_id("call"),
+                        "tool": tool_call.name.as_str(),
+                        "state": {
+                            "status": status,
+                            "input": tool_call.input.clone(),
+                            "output": tool_call.output.as_deref(),
+                            "metadata": {},
+                            "time": { "start": timestamp_ms, "end": timestamp_ms }
+                        }
+                    }),
+                )?;
+            }
+
+            let changed_files = conv
+                .file_changes
+                .iter()
+                .filter(|change| change.message_id == message.id)
+                .map(|change| change.path.as_str())
+                .collect::<Vec<_>>();
+            if !changed_files.is_empty() {
+                Self::insert_part(
+                    &tx,
+                    &message_id,
+                    &session_id,
+                    timestamp_ms,
+                    json!({
+                        "type": "patch",
+                        "hash": Self::compact_id("patch"),
+                        "files": changed_files
+                    }),
+                )?;
+            }
+
+            previous_message_id = Some(message_id);
+        }
+
+        if conv.messages.is_empty() {
+            let timestamp_ms = created_ms;
+            let message_id = Self::compact_id("msg");
+            tx.execute(
+                "INSERT INTO message (id, session_id, time_created, time_updated, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                (
+                    message_id.as_str(),
+                    session_id.as_str(),
+                    timestamp_ms,
+                    timestamp_ms,
+                    json!({
+                        "role": "user",
+                        "time": { "created": timestamp_ms },
+                        "path": { "cwd": project_dir, "root": project_dir },
+                        "source": "chatmem"
+                    })
+                    .to_string(),
+                ),
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(session_id)
     }
 
     fn delete_conversation(&self, id: &str) -> Result<()> {
@@ -586,9 +899,12 @@ impl AgentAdapter for OpenCodeAdapter {
 mod tests {
     use super::*;
     use agentswap_core::adapter::AgentAdapter;
-    use agentswap_core::types::{AgentKind, ChangeType, Role, ToolStatus};
+    use agentswap_core::types::{
+        AgentKind, ChangeType, Conversation, Message, Role, ToolCall, ToolStatus,
+    };
     use rusqlite::Connection;
     use serde_json::json;
+    use std::collections::HashMap;
     use tempfile::TempDir;
 
     fn create_opencode_db(dir: &std::path::Path) -> std::path::PathBuf {
@@ -805,6 +1121,22 @@ mod tests {
     }
 
     #[test]
+    fn restores_archived_open_code_session() {
+        let tmp = TempDir::new().unwrap();
+        create_opencode_db(tmp.path());
+        let adapter = OpenCodeAdapter::with_data_dir(tmp.path().to_path_buf());
+
+        adapter.delete_conversation("ses_001").unwrap();
+        assert!(adapter.list_conversations().unwrap().is_empty());
+
+        adapter.restore_conversation("ses_001").unwrap();
+        let conversations = adapter.list_conversations().unwrap();
+
+        assert_eq!(conversations.len(), 1);
+        assert_eq!(conversations[0].id, "ses_001");
+    }
+
+    #[test]
     fn discovers_channel_specific_open_code_database() {
         let tmp = TempDir::new().unwrap();
         let db_path = create_opencode_db(tmp.path());
@@ -841,5 +1173,69 @@ mod tests {
         assert_eq!(conversation.file_changes.len(), 1);
         assert_eq!(conversation.file_changes[0].path, "src/App.tsx");
         assert_eq!(conversation.file_changes[0].change_type, ChangeType::Modified);
+    }
+
+    #[test]
+    fn writes_open_code_conversation_and_reads_it_back() {
+        let tmp = TempDir::new().unwrap();
+        create_opencode_db(tmp.path());
+        let adapter = OpenCodeAdapter::with_data_dir(tmp.path().to_path_buf());
+        let now = Utc::now();
+        let user_message_id = Uuid::new_v4();
+
+        let conv = Conversation {
+            id: "source-001".to_string(),
+            source_agent: AgentKind::Claude,
+            project_dir: "D:/VSP".to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("迁移到 OpenCode".to_string()),
+            messages: vec![
+                Message {
+                    id: user_message_id,
+                    timestamp: now,
+                    role: Role::User,
+                    content: "请继续这个任务".to_string(),
+                    tool_calls: Vec::new(),
+                    metadata: HashMap::new(),
+                },
+                Message {
+                    id: Uuid::new_v4(),
+                    timestamp: now,
+                    role: Role::Assistant,
+                    content: "我会继续。".to_string(),
+                    tool_calls: vec![ToolCall {
+                        name: "bash".to_string(),
+                        input: json!({ "command": "pwd" }),
+                        output: Some("D:/VSP".to_string()),
+                        status: ToolStatus::Success,
+                    }],
+                    metadata: HashMap::new(),
+                },
+            ],
+            file_changes: vec![FileChange {
+                path: "src/App.tsx".to_string(),
+                change_type: ChangeType::Modified,
+                timestamp: now,
+                message_id: user_message_id,
+            }],
+        };
+
+        let new_id = adapter.write_conversation(&conv).unwrap();
+        let read_back = adapter.read_conversation(&new_id).unwrap();
+
+        assert_eq!(read_back.source_agent, AgentKind::OpenCode);
+        assert_eq!(read_back.project_dir, "D:/VSP");
+        assert_eq!(read_back.summary.as_deref(), Some("迁移到 OpenCode"));
+        assert_eq!(read_back.messages.len(), 2);
+        assert_eq!(read_back.messages[0].role, Role::User);
+        assert_eq!(read_back.messages[0].content, "请继续这个任务");
+        assert_eq!(read_back.messages[1].role, Role::Assistant);
+        assert!(read_back.messages[1].content.contains("继续"));
+        assert_eq!(read_back.messages[1].tool_calls.len(), 1);
+        assert_eq!(read_back.messages[1].tool_calls[0].name, "bash");
+        assert_eq!(read_back.messages[1].tool_calls[0].input["command"], "pwd");
+        assert_eq!(read_back.file_changes.len(), 1);
+        assert_eq!(read_back.file_changes[0].path, "src/App.tsx");
     }
 }

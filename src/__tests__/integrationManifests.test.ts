@@ -36,6 +36,9 @@ describe("chatmem integration manifests", () => {
     expect(setupDoc).toContain("Codex App");
     expect(setupDoc).toContain("There is no local plugin wrapper");
     expect(setupDoc).toContain("Skill");
+    expect(setupDoc).toContain("AGENTS.md");
+    expect(setupDoc).toContain("CLAUDE.md");
+    expect(setupDoc).toContain("GEMINI.md");
     expect(setupDoc).toContain("chatmem-mcp");
     expect(setupDoc).toContain(".mcp.json");
     expect(setupDoc).toContain("mcp\\run-chatmem-mcp.ps1");
@@ -48,8 +51,15 @@ describe("chatmem integration manifests", () => {
     expect(skillDoc).toContain("create_memory_candidate");
     expect(skillDoc).toContain("build_handoff_packet");
     expect(skillDoc).toContain("get_project_context");
+    expect(skillDoc).toContain("read_history_conversation");
+    expect(skillDoc).toContain("记得吗");
+    expect(skillDoc).toContain("先查 ChatMem MCP");
     expect(skillDoc).toContain("history evidence");
     expect(skillDoc).toContain("approved startup rules");
+    expect(skillDoc).toContain("Do not ask the user to redescribe");
+    expect(skillDoc).toContain("Low-Token Project Recall");
+    expect(skillDoc).toContain("limit=3");
+    expect(skillDoc).toContain("要我先用 ChatMem 低成本回忆一下这个项目吗");
     expect(skillDoc.toLowerCase()).toContain("checkpoint");
     expect(skillDoc).toContain("@chatmem");
     expect(skillDoc).toContain("desktop app");
