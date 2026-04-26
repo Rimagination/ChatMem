@@ -284,7 +284,8 @@ fn read_json_object(path: &Path) -> Result<Value, String> {
 
     let raw = fs::read_to_string(path)
         .map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
-    let stripped = remove_json_comments(&raw);
+    let raw = raw.trim_start_matches('\u{feff}');
+    let stripped = remove_json_comments(raw);
     serde_json::from_str::<Value>(&stripped)
         .map_err(|error| format!("Cannot parse {}: {error}", path.display()))
 }
@@ -1016,6 +1017,26 @@ mod tests {
             .unwrap()
             .contains("中文用户问"));
         assert!(instructions_installed(IntegrationAgent::OpenCode, &paths));
+    }
+
+    #[test]
+    fn json_configs_with_utf8_bom_are_repaired_on_install() {
+        let paths = test_paths("json-bom");
+        let config = IntegrationAgent::OpenCode.config_path(&paths);
+        ensure_parent(&config).unwrap();
+        fs::write(
+            &config,
+            b"\xEF\xBB\xBF{\n  \"mcp\": {\n    \"other\": {\"type\": \"local\", \"command\": [\"node\", \"server.js\"]}\n  }\n}\n",
+        )
+        .unwrap();
+
+        install_one(IntegrationAgent::OpenCode, &paths).unwrap();
+        let bytes = fs::read(&config).unwrap();
+        let updated = read_json_object(&config).unwrap();
+
+        assert!(!bytes.starts_with(b"\xEF\xBB\xBF"));
+        assert!(updated["mcp"].get("other").is_some());
+        assert_eq!(updated["mcp"]["chatmem"]["type"], json!("local"));
     }
 
     #[test]
