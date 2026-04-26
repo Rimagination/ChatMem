@@ -146,13 +146,16 @@ fn test_real_render_prompt() {
 fn test_real_data_dir() {
     let adapter = ClaudeAdapter::new();
     let data_dir = adapter.data_dir();
-    // Should end with .claude/projects
-    let data_dir_str = data_dir.to_string_lossy();
+    let parts: Vec<String> = data_dir
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect();
     assert!(
-        data_dir_str.ends_with(".claude/projects"),
-        "data_dir should end with .claude/projects, got: {}",
-        data_dir_str
+        parts.len() >= 2,
+        "data_dir should have at least two path components"
     );
+    assert_eq!(parts[parts.len() - 2], ".claude");
+    assert_eq!(parts[parts.len() - 1], "projects");
 }
 
 #[test]

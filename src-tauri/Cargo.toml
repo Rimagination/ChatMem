@@ -1,6 +1,6 @@
 [package]
 name = "chatmem"
-version = "1.0.25"
+version = "1.0.26"
 default-run = "chatmem"
 description = "ChatMem - Local-first memory for AI coding agents"
 authors = ["ChatMem"]
