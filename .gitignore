@@ -1,7 +1,15 @@
 node_modules/
 dist/
 dist-portable/
+.tauri-target-build/
+.tauri-target-build-*/
+.tauri-target-local/
+.playwright-cli/
+output/
 src-tauri/target/
+target/
+.worktrees/
+.superpowers/
 __pycache__/
 *.log
 npm-debug.log*

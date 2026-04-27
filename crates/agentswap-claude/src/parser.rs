@@ -78,10 +78,21 @@ pub fn parse_event(line: &str) -> Option<ClaudeEvent> {
 
 /// Decode a Claude path-encoded project directory name back to the original path.
 ///
-/// Claude encodes `/Users/foo/bar` as `-Users-foo-bar`.
+/// Claude encodes `/Users/foo/bar` as `-Users-foo-bar`, and Windows paths
+/// such as `D:\VSP` as `D--VSP`.
 pub fn decode_project_path(encoded: &str) -> String {
     if encoded.is_empty() {
         return String::new();
+    }
+    if encoded.len() >= 3 {
+        let bytes = encoded.as_bytes();
+        if bytes[0].is_ascii_alphabetic() && bytes[1] == b'-' && bytes[2] == b'-' {
+            return format!(
+                "{}:/{}",
+                encoded.chars().next().unwrap(),
+                encoded[3..].replace('-', "/")
+            );
+        }
     }
     // Replace leading dash and all dashes with path separators.
     // The encoded string starts with `-` which becomes `/`.
@@ -97,6 +108,11 @@ mod tests {
         assert_eq!(
             decode_project_path("-Users-nimishgj-github"),
             "/Users/nimishgj/github"
+        );
+        assert_eq!(decode_project_path("D--VSP"), "D:/VSP");
+        assert_eq!(
+            decode_project_path("C--Users-Liang-Documents-Code"),
+            "C:/Users/Liang/Documents/Code"
         );
         assert_eq!(decode_project_path("-private-tmp"), "/private/tmp");
         assert_eq!(decode_project_path(""), "");

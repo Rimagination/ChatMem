@@ -44,11 +44,11 @@ const COLLAPSIBLE_MESSAGE_LENGTH = 280;
 function formatRole(role: string) {
   switch (role) {
     case "user":
-      return "你";
+      return "\u7528\u6237";
     case "assistant":
-      return "助手";
+      return "\u52a9\u624b";
     case "system":
-      return "系统";
+      return "\u7cfb\u7edf";
     default:
       return role;
   }
@@ -57,11 +57,11 @@ function formatRole(role: string) {
 function changeLabel(changeType: string) {
   switch (changeType) {
     case "created":
-      return "新增";
+      return "\u65b0\u589e";
     case "modified":
-      return "修改";
+      return "\u4fee\u6539";
     case "deleted":
-      return "删除";
+      return "\u5220\u9664";
     default:
       return changeType;
   }
@@ -69,6 +69,14 @@ function changeLabel(changeType: string) {
 
 function shouldCollapseMessage(message: Message) {
   return message.role === "assistant" && message.content.trim().length > COLLAPSIBLE_MESSAGE_LENGTH;
+}
+
+function getCollapsedPreview(content: string) {
+  const trimmed = content.trim();
+  if (trimmed.length <= COLLAPSIBLE_MESSAGE_LENGTH) {
+    return content;
+  }
+  return `${trimmed.slice(0, COLLAPSIBLE_MESSAGE_LENGTH)}...`;
 }
 
 function ConversationDetail({ conversation }: ConversationDetailProps) {
@@ -90,15 +98,15 @@ function ConversationDetail({ conversation }: ConversationDetailProps) {
       <div className="stats">
         <div className="stat-item">
           <div className="stat-value">{conversation.messages.length}</div>
-          <div className="stat-label">消息数</div>
+          <div className="stat-label">{"\u6d88\u606f\u6570"}</div>
         </div>
         <div className="stat-item">
           <div className="stat-value">{conversation.file_changes.length}</div>
-          <div className="stat-label">文件变更</div>
+          <div className="stat-label">{"\u6587\u4ef6\u53d8\u66f4"}</div>
         </div>
         <div className="stat-item">
           <div className="stat-value">{toolCallCount}</div>
-          <div className="stat-label">工具调用</div>
+          <div className="stat-label">{"\u5de5\u5177\u8c03\u7528"}</div>
         </div>
       </div>
 
@@ -107,6 +115,9 @@ function ConversationDetail({ conversation }: ConversationDetailProps) {
           const hasContent = Boolean(message.content?.trim());
           const collapsible = shouldCollapseMessage(message);
           const isExpanded = expandedMessages[message.id] ?? false;
+          const visibleContent = collapsible && !isExpanded
+            ? getCollapsedPreview(message.content)
+            : message.content;
 
           return (
             <article key={message.id} className={`message message-${message.role}`}>
@@ -123,7 +134,7 @@ function ConversationDetail({ conversation }: ConversationDetailProps) {
                         collapsible ? (isExpanded ? "is-expanded" : "is-collapsed") : ""
                       }`.trim()}
                     >
-                      {message.content}
+                      {visibleContent}
                     </div>
 
                     {collapsible && (
@@ -137,7 +148,7 @@ function ConversationDetail({ conversation }: ConversationDetailProps) {
                           }))
                         }
                       >
-                        {isExpanded ? "收起" : "展开全文"}
+                        {isExpanded ? "\u6536\u8d77" : "\u5c55\u5f00\u5168\u6587"}
                       </button>
                     )}
                   </div>
@@ -155,7 +166,7 @@ function ConversationDetail({ conversation }: ConversationDetailProps) {
                             <span className="tool-call-name">{toolCall.name}</span>
                             <div className="tool-call-actions">
                               <span className={`tool-call-status tool-call-status-${toolCall.status}`}>
-                                {toolCall.status === "success" ? "成功" : "异常"}
+                                {toolCall.status === "success" ? "\u6210\u529f" : "\u5f02\u5e38"}
                               </span>
                               <button
                                 type="button"
@@ -167,7 +178,9 @@ function ConversationDetail({ conversation }: ConversationDetailProps) {
                                   }))
                                 }
                               >
-                                {toolExpanded ? "收起工具详情" : "展开工具详情"}
+                                {toolExpanded
+                                  ? "\u6536\u8d77\u5de5\u5177\u8be6\u60c5"
+                                  : "\u5c55\u5f00\u5de5\u5177\u8be6\u60c5"}
                               </button>
                             </div>
                           </div>
@@ -195,7 +208,7 @@ function ConversationDetail({ conversation }: ConversationDetailProps) {
 
       {conversation.file_changes.length > 0 && (
         <div className="file-changes">
-          <h4>文件变更</h4>
+          <h4>{"\u6587\u4ef6\u53d8\u66f4"}</h4>
           <div className="file-change-list">
             {conversation.file_changes.map((fileChange, index) => (
               <div key={`${fileChange.path}-${fileChange.timestamp}-${index}`} className="file-change-item">

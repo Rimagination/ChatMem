@@ -5,8 +5,8 @@ export default defineConfig(async () => ({
   plugins: [react()],
   clearScreen: false,
   server: {
-    port: 3000,
-    strictPort: false,
+    port: 1420,
+    strictPort: true,
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {

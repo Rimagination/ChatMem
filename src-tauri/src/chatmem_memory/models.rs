@@ -1,0 +1,450 @@
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+fn default_memory_freshness_status() -> String {
+    "unknown".to_string()
+}
+
+fn default_handoff_status() -> String {
+    "draft".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EvidenceRef {
+    pub evidence_id: Option<String>,
+    pub conversation_id: Option<String>,
+    pub message_id: Option<String>,
+    pub tool_call_id: Option<String>,
+    pub file_change_id: Option<String>,
+    pub excerpt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ApprovedMemoryResponse {
+    pub memory_id: String,
+    pub kind: String,
+    pub title: String,
+    pub value: String,
+    pub usage_hint: String,
+    pub status: String,
+    pub last_verified_at: Option<String>,
+    #[serde(default = "default_memory_freshness_status")]
+    pub freshness_status: String,
+    #[serde(default)]
+    pub freshness_score: f64,
+    #[serde(default)]
+    pub verified_at: Option<String>,
+    #[serde(default)]
+    pub verified_by: Option<String>,
+    pub selected_because: Option<String>,
+    pub evidence_refs: Vec<EvidenceRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryMergeSuggestion {
+    #[serde(default)]
+    pub proposal_id: Option<String>,
+    pub candidate_id: String,
+    pub memory_id: String,
+    pub memory_title: String,
+    pub reason: String,
+    #[serde(default)]
+    pub proposed_title: Option<String>,
+    #[serde(default)]
+    pub proposed_value: Option<String>,
+    #[serde(default)]
+    pub proposed_usage_hint: Option<String>,
+    #[serde(default)]
+    pub risk_note: Option<String>,
+    #[serde(default)]
+    pub proposed_by: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryConflictResponse {
+    pub conflict_id: String,
+    pub candidate_id: String,
+    pub memory_id: String,
+    pub memory_title: String,
+    pub reason: String,
+    pub status: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryCandidateResponse {
+    pub candidate_id: String,
+    pub kind: String,
+    pub summary: String,
+    pub value: String,
+    pub why_it_matters: String,
+    pub confidence: f64,
+    pub proposed_by: String,
+    pub status: String,
+    pub created_at: String,
+    pub evidence_refs: Vec<EvidenceRef>,
+    #[serde(default)]
+    pub merge_suggestion: Option<MemoryMergeSuggestion>,
+    #[serde(default)]
+    pub conflict_suggestion: Option<MemoryConflictResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EpisodeResponse {
+    pub episode_id: String,
+    pub title: String,
+    pub summary: String,
+    pub outcome: String,
+    pub created_at: String,
+    pub source_conversation_id: String,
+    pub evidence_refs: Vec<EvidenceRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HandoffPacketResponse {
+    pub handoff_id: String,
+    pub repo_root: String,
+    pub from_agent: String,
+    pub to_agent: String,
+    #[serde(default = "default_handoff_status")]
+    pub status: String,
+    #[serde(default)]
+    pub checkpoint_id: Option<String>,
+    #[serde(default)]
+    pub target_profile: Option<String>,
+    #[serde(default)]
+    pub compression_strategy: Option<String>,
+    pub current_goal: String,
+    pub done_items: Vec<String>,
+    pub next_items: Vec<String>,
+    pub key_files: Vec<String>,
+    pub useful_commands: Vec<String>,
+    pub related_memories: Vec<ApprovedMemoryResponse>,
+    pub related_episodes: Vec<EpisodeResponse>,
+    #[serde(default)]
+    pub consumed_at: Option<String>,
+    #[serde(default)]
+    pub consumed_by: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SearchHistoryMatch {
+    pub r#type: String,
+    pub title: String,
+    pub summary: String,
+    pub why_matched: String,
+    pub score: f64,
+    #[serde(default)]
+    pub source_agent: Option<String>,
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    #[serde(default)]
+    pub conversation_title: Option<String>,
+    #[serde(default)]
+    pub conversation_updated_at: Option<String>,
+    pub evidence_refs: Vec<EvidenceRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EmbeddingRebuildReport {
+    pub provider: String,
+    pub embedding_model: String,
+    pub dimensions: usize,
+    pub indexed_documents: usize,
+    pub fallback_indexed_documents: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SearchHistoryPayload {
+    pub matches: Vec<SearchHistoryMatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HistoryConversationMessage {
+    pub message_id: String,
+    pub role: String,
+    pub timestamp: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HistoryConversationPayload {
+    pub conversation_id: String,
+    pub source_agent: String,
+    pub source_conversation_id: String,
+    pub repo_root: String,
+    pub title: String,
+    pub started_at: String,
+    pub updated_at: String,
+    pub storage_path: Option<String>,
+    pub total_message_count: usize,
+    pub returned_message_count: usize,
+    pub token_estimate: usize,
+    pub focused_message_id: Option<String>,
+    pub messages: Vec<HistoryConversationMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EntityNodeResponse {
+    pub entity_id: String,
+    pub name: String,
+    pub kind: String,
+    pub mention_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EntityLinkResponse {
+    pub entity_id: String,
+    pub entity_name: String,
+    pub owner_type: String,
+    pub owner_id: String,
+    pub relationship: String,
+    pub source_title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EntityGraphPayload {
+    pub entities: Vec<EntityNodeResponse>,
+    pub links: Vec<EntityLinkResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AgentConversationCount {
+    pub source_agent: String,
+    pub conversation_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ObservedProjectRootCount {
+    pub source_agent: String,
+    pub project_root: String,
+    pub conversation_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RepoAliasResponse {
+    pub alias_root: String,
+    pub alias_kind: String,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RepoScanReport {
+    pub repo_root: String,
+    pub canonical_repo_root: String,
+    pub scanned_conversation_count: usize,
+    pub linked_conversation_count: usize,
+    pub skipped_conversation_count: usize,
+    pub source_agents: Vec<AgentConversationCount>,
+    pub unmatched_project_roots: Vec<ObservedProjectRootCount>,
+    pub warnings: Vec<String>,
+    pub scanned_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LocalHistoryImportReport {
+    pub scanned_conversation_count: usize,
+    pub imported_conversation_count: usize,
+    pub skipped_conversation_count: usize,
+    pub indexed_repo_count: usize,
+    pub source_agents: Vec<AgentConversationCount>,
+    pub imported_project_roots: Vec<ObservedProjectRootCount>,
+    pub warnings: Vec<String>,
+    pub imported_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RepoScanSummary {
+    pub repo_root: String,
+    pub canonical_repo_root: String,
+    pub scanned_conversation_count: usize,
+    pub linked_conversation_count: usize,
+    pub skipped_conversation_count: usize,
+    pub source_agents: Vec<AgentConversationCount>,
+    pub unmatched_project_roots: Vec<ObservedProjectRootCount>,
+    pub warnings: Vec<String>,
+    pub scanned_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RepoMemoryHealthResponse {
+    pub repo_root: String,
+    pub canonical_repo_root: String,
+    pub approved_memory_count: usize,
+    pub pending_candidate_count: usize,
+    pub search_document_count: usize,
+    pub indexed_chunk_count: usize,
+    pub inherited_repo_roots: Vec<String>,
+    pub repo_aliases: Vec<RepoAliasResponse>,
+    pub conversation_counts_by_agent: Vec<AgentConversationCount>,
+    pub latest_scan: Option<RepoScanSummary>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WikiPageResponse {
+    pub page_id: String,
+    pub repo_root: String,
+    pub slug: String,
+    pub title: String,
+    pub body: String,
+    pub status: String,
+    pub source_memory_ids: Vec<String>,
+    pub source_episode_ids: Vec<String>,
+    pub last_built_at: String,
+    pub last_verified_at: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListWikiPagesPayload {
+    pub pages: Vec<WikiPageResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListMemoryCandidatesPayload {
+    pub candidates: Vec<MemoryCandidateResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RepoMemoryPayload {
+    pub repo_summary: String,
+    pub approved_memories: Vec<ApprovedMemoryResponse>,
+    pub priority_gotchas: Vec<ApprovedMemoryResponse>,
+    pub recent_handoff: Option<HandoffPacketResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GetRepoMemoryInput {
+    pub repo_root: String,
+    pub agent: String,
+    pub task_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SearchRepoHistoryInput {
+    pub repo_root: String,
+    pub query: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReadHistoryConversationInput {
+    pub repo_root: String,
+    pub conversation_id: String,
+    pub message_id: Option<String>,
+    pub query: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GetProjectContextInput {
+    pub repo_root: String,
+    pub query: String,
+    pub intent: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProjectContextPayload {
+    pub repo_summary: String,
+    pub intent: String,
+    pub approved_memories: Vec<ApprovedMemoryResponse>,
+    pub priority_gotchas: Vec<ApprovedMemoryResponse>,
+    pub recent_handoff: Option<HandoffPacketResponse>,
+    pub relevant_history: Vec<SearchHistoryMatch>,
+    pub pending_candidates: Vec<MemoryCandidateResponse>,
+    pub repo_diagnostics: RepoMemoryHealthResponse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CreateMemoryCandidateInput {
+    pub repo_root: String,
+    pub kind: String,
+    pub summary: String,
+    pub value: String,
+    pub why_it_matters: String,
+    pub evidence_refs: Vec<EvidenceRef>,
+    pub confidence: f64,
+    pub proposed_by: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CreateMemoryCandidateResult {
+    pub candidate_id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CreateMemoryMergeProposalInput {
+    pub repo_root: String,
+    pub candidate_id: String,
+    pub target_memory_id: String,
+    pub proposed_title: String,
+    pub proposed_value: String,
+    pub proposed_usage_hint: String,
+    pub risk_note: Option<String>,
+    pub proposed_by: String,
+    pub evidence_refs: Vec<EvidenceRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CreateMemoryMergeProposalResult {
+    pub proposal_id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListMemoryCandidatesInput {
+    pub repo_root: String,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BuildHandoffPacketInput {
+    pub repo_root: String,
+    pub from_agent: String,
+    pub to_agent: String,
+    pub goal_hint: Option<String>,
+    pub target_profile: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::chatmem_memory::runs::{ArtifactRecord, RunRecord};
+
+    #[test]
+    fn run_record_tracks_waiting_review_status() {
+        let run = RunRecord {
+            run_id: "run-001".into(),
+            repo_root: "d:/vsp/agentswap-gui".into(),
+            source_agent: "codex".into(),
+            task_hint: Some("Build the runs panel".into()),
+            status: "waiting_for_review".into(),
+            summary: "Needs human validation".into(),
+            started_at: "2026-04-20T10:00:00Z".into(),
+            ended_at: None,
+            artifact_count: 2,
+        };
+
+        assert_eq!(run.status, "waiting_for_review");
+    }
+
+    #[test]
+    fn artifact_record_stores_type_and_trust_state() {
+        let artifact = ArtifactRecord {
+            artifact_id: "artifact-001".into(),
+            run_id: "run-001".into(),
+            artifact_type: "patch_set".into(),
+            title: "Timeline patch".into(),
+            summary: "Adds the new panel".into(),
+            trust_state: "reviewed".into(),
+            created_at: "2026-04-20T10:05:00Z".into(),
+        };
+
+        assert_eq!(artifact.trust_state, "reviewed");
+    }
+}

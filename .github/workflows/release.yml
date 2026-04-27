@@ -36,7 +36,25 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: ChatMem ${{ github.ref_name }}
-          releaseBody: See the assets to download this version.
+          releaseBody: |
+            推荐下载 / Recommended downloads:
+            - Windows installer: download the `.exe` installer if you want the normal install flow.
+            - Windows portable: download `ChatMem-${{ github.ref_name }}-portable.zip` if you want a no-install portable build.
+            - macOS Apple Silicon (M1/M2/M3/M4): download `ChatMem-${{ github.ref_name }}-macOS-Apple-Silicon.dmg`.
+            - macOS Intel: download `ChatMem-${{ github.ref_name }}-macOS-Intel.dmg`.
+
+            What users should download:
+            - Regular users should download the release package above, not the GitHub source code zip/tar.gz.
+            - Source code archives are for developers, not for installing the app.
+
+            How to choose on macOS:
+            - Open Apple menu > About This Mac.
+            - If it shows "Chip Apple M1/M2/M3/M4", download Apple Silicon.
+            - If it shows "Processor Intel", download Intel.
+            - Apple Silicon Macs can run the Intel build through Rosetta, but the Apple Silicon build is recommended.
+
+            Note:
+            - macOS builds are currently unsigned and not notarized, so first launch may require allowing the app in macOS Security settings.
           releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true
@@ -52,3 +70,91 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist-portable/ChatMem-v*.zip
+
+  release-macos:
+    name: release-macos (${{ matrix.target }})
+    runs-on: ${{ matrix.platform }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-15-intel
+            target: x86_64-apple-darwin
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and publish Tauri macOS bundles
+        uses: tauri-apps/tauri-action@v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: ChatMem ${{ github.ref_name }}
+          releaseBody: |
+            推荐下载 / Recommended downloads:
+            - Windows installer: download the `.exe` installer if you want the normal install flow.
+            - Windows portable: download `ChatMem-${{ github.ref_name }}-portable.zip` if you want a no-install portable build.
+            - macOS Apple Silicon (M1/M2/M3/M4): download `ChatMem-${{ github.ref_name }}-macOS-Apple-Silicon.dmg`.
+            - macOS Intel: download `ChatMem-${{ github.ref_name }}-macOS-Intel.dmg`.
+
+            What users should download:
+            - Regular users should download the release package above, not the GitHub source code zip/tar.gz.
+            - Source code archives are for developers, not for installing the app.
+
+            How to choose on macOS:
+            - Open Apple menu > About This Mac.
+            - If it shows "Chip Apple M1/M2/M3/M4", download Apple Silicon.
+            - If it shows "Processor Intel", download Intel.
+            - Apple Silicon Macs can run the Intel build through Rosetta, but the Apple Silicon build is recommended.
+
+            Note:
+            - macOS builds are currently unsigned and not notarized, so first launch may require allowing the app in macOS Security settings.
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          args: --bundles dmg,app,updater --target ${{ matrix.target }}
+
+      - name: Prepare user-facing macOS DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          arch_label="Intel"
+          if [[ "${{ matrix.target }}" == "aarch64-apple-darwin" ]]; then
+            arch_label="Apple-Silicon"
+          fi
+          mkdir -p dist-release
+          dmg_path="$(find "src-tauri/target/${{ matrix.target }}/release/bundle/dmg" -maxdepth 1 -type f -name "*.dmg" | head -n 1)"
+          if [[ -z "${dmg_path}" ]]; then
+            echo "No DMG bundle found for ${{ matrix.target }}" >&2
+            exit 1
+          fi
+          cp "${dmg_path}" "dist-release/ChatMem-v${version}-macOS-${arch_label}.dmg"
+
+      - name: Upload user-facing macOS DMG
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-release/*.dmg
+          overwrite_files: true

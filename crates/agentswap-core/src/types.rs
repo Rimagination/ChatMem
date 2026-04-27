@@ -10,6 +10,7 @@ pub enum AgentKind {
     Claude,
     Codex,
     Gemini,
+    OpenCode,
 }
 
 /// The role of a participant in a conversation turn.
@@ -84,6 +85,7 @@ impl Conversation {
             AgentKind::Claude => "Claude Code",
             AgentKind::Codex => "Codex CLI",
             AgentKind::Gemini => "Gemini CLI",
+            AgentKind::OpenCode => "OpenCode",
         }
     }
 }

@@ -10,6 +10,7 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 
 use agentswap_core::adapter::AgentAdapter;
+use agentswap_core::files::move_path_to_trash;
 use agentswap_core::tool_mapping::map_tool;
 use agentswap_core::types::*;
 
@@ -76,7 +77,7 @@ impl ClaudeAdapter {
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        let project_dir = decode_project_path(&project_dir_encoded);
+        let mut project_dir = decode_project_path(&project_dir_encoded);
 
         let mut message_count: usize = 0;
         let mut file_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -84,6 +85,7 @@ impl ClaudeAdapter {
         let mut first_user_message: Option<String> = None;
         let mut first_timestamp: Option<DateTime<Utc>> = None;
         let mut last_timestamp: Option<DateTime<Utc>> = None;
+        let mut first_cwd: Option<String> = None;
 
         for line in reader.lines() {
             let line = line?;
@@ -91,6 +93,14 @@ impl ClaudeAdapter {
                 Some(e) => e,
                 None => continue,
             };
+
+            if first_cwd.is_none() {
+                if let Some(cwd) = &event.cwd {
+                    if !cwd.trim().is_empty() {
+                        first_cwd = Some(cwd.clone());
+                    }
+                }
+            }
 
             // Track timestamps
             if let Some(ts_str) = &event.timestamp {
@@ -157,6 +167,10 @@ impl ClaudeAdapter {
             }
         }
 
+        if let Some(cwd) = first_cwd {
+            project_dir = cwd;
+        }
+
         let now = Utc::now();
         Ok(ConversationSummary {
             id: session_id,
@@ -197,8 +211,54 @@ fn extract_file_path(tool_name: &str, input: &Value) -> Option<String> {
 /// Encode a project directory path into Claude's path-encoded format.
 ///
 /// `/Users/foo/bar` becomes `-Users-foo-bar`.
+/// `D:\VSP` becomes `D--VSP`.
 fn encode_project_path(path: &str) -> String {
-    path.replace('/', "-")
+    clean_project_path_for_claude(path)
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*' => '-',
+            ch if ch.is_control() => '-',
+            _ => ch,
+        })
+        .collect()
+}
+
+fn clean_project_path_for_claude(path: &str) -> String {
+    let trimmed = path.trim();
+    if let Some(stripped) = trimmed.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{stripped}");
+    }
+    if let Some(stripped) = trimmed.strip_prefix(r"\\?\") {
+        return stripped.to_string();
+    }
+    if let Some(stripped) = trimmed.strip_prefix("//?/UNC/") {
+        return format!("//{stripped}");
+    }
+    if let Some(stripped) = trimmed.strip_prefix("//?/") {
+        return stripped.to_string();
+    }
+    trimmed.to_string()
+}
+
+fn default_import_project_cwd() -> String {
+    dirs::home_dir()
+        .or_else(|| std::env::current_dir().ok())
+        .map(|path| clean_project_path_for_claude(path.to_string_lossy().as_ref()))
+        .filter(|path| !is_empty_or_relative_project_cwd(path))
+        .unwrap_or_else(|| "/".to_string())
+}
+
+fn is_empty_or_relative_project_cwd(path: &str) -> bool {
+    matches!(path.trim(), "" | ".")
+}
+
+fn project_cwd_for_claude(path: &str) -> String {
+    let cleaned = clean_project_path_for_claude(path);
+    if is_empty_or_relative_project_cwd(&cleaned) {
+        default_import_project_cwd()
+    } else {
+        cleaned
+    }
 }
 
 /// Pending tool use info collected from assistant tool_use blocks.
@@ -268,6 +328,7 @@ impl AgentAdapter for ClaudeAdapter {
         let mut summary: Option<String> = None;
         let mut first_timestamp: Option<DateTime<Utc>> = None;
         let mut last_timestamp: Option<DateTime<Utc>> = None;
+        let mut first_cwd: Option<String> = None;
 
         // Track pending tool_use blocks: tool_use_id -> (name, input)
         let mut pending_tools: HashMap<String, PendingTool> = HashMap::new();
@@ -282,6 +343,14 @@ impl AgentAdapter for ClaudeAdapter {
                 Some(e) => e,
                 None => continue,
             };
+
+            if first_cwd.is_none() {
+                if let Some(cwd) = &event.cwd {
+                    if !cwd.trim().is_empty() {
+                        first_cwd = Some(cwd.clone());
+                    }
+                }
+            }
 
             // Skip sidechain messages
             if event.is_sidechain {
@@ -560,6 +629,8 @@ impl AgentAdapter for ClaudeAdapter {
             }
         }
 
+        let project_dir = first_cwd.unwrap_or(project_dir);
+
         let now = Utc::now();
         Ok(Conversation {
             id: id.to_string(),
@@ -576,9 +647,10 @@ impl AgentAdapter for ClaudeAdapter {
     fn write_conversation(&self, conv: &Conversation) -> Result<String> {
         // Generate a new session UUID for this conversation
         let session_id = Uuid::new_v4().to_string();
+        let project_cwd = project_cwd_for_claude(&conv.project_dir);
 
         // Determine the project subdirectory using path encoding
-        let encoded_project = encode_project_path(&conv.project_dir);
+        let encoded_project = encode_project_path(&project_cwd);
         let project_dir = self.projects_dir.join(&encoded_project);
         fs::create_dir_all(&project_dir).with_context(|| {
             format!(
@@ -631,6 +703,7 @@ impl AgentAdapter for ClaudeAdapter {
                         "uuid": event_uuid,
                         "timestamp": ts,
                         "sessionId": session_id,
+                        "cwd": &project_cwd,
                         "isSidechain": false,
                         "message": {
                             "role": "user",
@@ -698,6 +771,7 @@ impl AgentAdapter for ClaudeAdapter {
                                 "uuid": result_uuid,
                                 "timestamp": ts,
                                 "sessionId": session_id,
+                                "cwd": &project_cwd,
                                 "isSidechain": false,
                                 "message": {
                                     "role": "user",
@@ -725,6 +799,7 @@ impl AgentAdapter for ClaudeAdapter {
                         "uuid": event_uuid,
                         "timestamp": ts,
                         "sessionId": session_id,
+                        "cwd": &project_cwd,
                         "isSidechain": false,
                         "message": {
                             "role": "assistant",
@@ -871,8 +946,7 @@ impl AgentAdapter for ClaudeAdapter {
 
     fn delete_conversation(&self, id: &str) -> Result<()> {
         let path = self.find_session_file(id)?;
-        fs::remove_file(&path)
-            .with_context(|| format!("Failed to delete session file: {}", path.display()))?;
+        move_path_to_trash(&path)?;
         Ok(())
     }
 }
@@ -1333,7 +1407,135 @@ mod tests {
     fn test_encode_project_path() {
         assert_eq!(encode_project_path("/Users/foo/bar"), "-Users-foo-bar");
         assert_eq!(encode_project_path("/tmp"), "-tmp");
+        assert_eq!(encode_project_path("D:\\VSP"), "D--VSP");
+        assert_eq!(encode_project_path("D:/VSP"), "D--VSP");
+        assert_eq!(encode_project_path(r"\\?\D:\VSP"), "D--VSP");
+        assert_eq!(
+            encode_project_path(r"\\?\UNC\server\share\repo"),
+            "--server-share-repo"
+        );
+        assert_eq!(
+            encode_project_path("C:\\Users\\Liang\\Documents\\Code\\demo"),
+            "C--Users-Liang-Documents-Code-demo"
+        );
         assert_eq!(encode_project_path(""), "");
+    }
+
+    #[test]
+    fn test_write_windows_project_path_stays_under_claude_projects() {
+        let tmp = TempDir::new().unwrap();
+        let adapter = ClaudeAdapter::with_projects_dir(tmp.path().to_path_buf());
+        let now = Utc::now();
+        let project_dir = "C:\\Users\\Liang\\Documents\\Code\\demo".to_string();
+        let conv = Conversation {
+            id: "windows-project".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir: project_dir.clone(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("Windows path migration".to_string()),
+            messages: vec![Message {
+                id: Uuid::new_v4(),
+                timestamp: now,
+                role: Role::User,
+                content: "Hello from a Windows project".to_string(),
+                tool_calls: Vec::new(),
+                metadata: HashMap::new(),
+            }],
+            file_changes: Vec::new(),
+        };
+
+        let session_id = adapter.write_conversation(&conv).unwrap();
+        let encoded = encode_project_path(&project_dir);
+        let session_file = tmp
+            .path()
+            .join(&encoded)
+            .join(format!("{}.jsonl", session_id));
+        assert!(session_file.exists());
+
+        let read_conv = adapter.read_conversation(&session_id).unwrap();
+        assert_eq!(read_conv.project_dir, project_dir);
+        assert_eq!(read_conv.messages.len(), 1);
+        assert_eq!(
+            read_conv.messages[0].content,
+            "Hello from a Windows project"
+        );
+    }
+
+    #[test]
+    fn test_write_windows_extended_project_path_strips_verbatim_prefix() {
+        let tmp = TempDir::new().unwrap();
+        let adapter = ClaudeAdapter::with_projects_dir(tmp.path().to_path_buf());
+        let now = Utc::now();
+        let conv = Conversation {
+            id: "windows-extended-project".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir: r"\\?\D:\VSP".to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("Windows extended path migration".to_string()),
+            messages: vec![Message {
+                id: Uuid::new_v4(),
+                timestamp: now,
+                role: Role::User,
+                content: "Hello from an extended Windows path".to_string(),
+                tool_calls: Vec::new(),
+                metadata: HashMap::new(),
+            }],
+            file_changes: Vec::new(),
+        };
+
+        let session_id = adapter.write_conversation(&conv).unwrap();
+        let session_file = tmp
+            .path()
+            .join("D--VSP")
+            .join(format!("{}.jsonl", session_id));
+        assert!(session_file.exists());
+
+        let read_conv = adapter.read_conversation(&session_id).unwrap();
+        assert_eq!(read_conv.project_dir, r"D:\VSP");
+        assert_eq!(
+            read_conv.messages[0].content,
+            "Hello from an extended Windows path"
+        );
+    }
+
+    #[test]
+    fn test_write_empty_project_path_uses_import_fallback_directory() {
+        let tmp = TempDir::new().unwrap();
+        let adapter = ClaudeAdapter::with_projects_dir(tmp.path().to_path_buf());
+        let now = Utc::now();
+        let conv = Conversation {
+            id: "opencode-no-project".to_string(),
+            source_agent: AgentKind::OpenCode,
+            project_dir: String::new(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("OpenCode no project migration".to_string()),
+            messages: vec![Message {
+                id: Uuid::new_v4(),
+                timestamp: now,
+                role: Role::User,
+                content: "Hello from OpenCode without a project".to_string(),
+                tool_calls: Vec::new(),
+                metadata: HashMap::new(),
+            }],
+            file_changes: Vec::new(),
+        };
+
+        let session_id = adapter.write_conversation(&conv).unwrap();
+        let root_level_file = tmp.path().join(format!("{session_id}.jsonl"));
+        assert!(!root_level_file.exists());
+
+        let read_conv = adapter.read_conversation(&session_id).unwrap();
+        assert_eq!(read_conv.messages.len(), 1);
+        assert_eq!(
+            read_conv.messages[0].content,
+            "Hello from OpenCode without a project"
+        );
+
+        let listed = adapter.list_conversations().unwrap();
+        assert!(listed.iter().any(|summary| summary.id == session_id));
     }
 
     #[test]

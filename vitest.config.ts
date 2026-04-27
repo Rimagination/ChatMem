@@ -6,5 +6,13 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'jsdom',
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/.git/**',
+      '**/.worktrees/**',
+      '**/.tauri-target-build/**',
+      '**/src-tauri/target/**',
+    ],
   },
 });

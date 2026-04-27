@@ -71,6 +71,28 @@ describe("ConversationDetail", () => {
     expect(container.querySelector(".message-content.is-collapsed")).toBeTruthy();
   });
 
+  it("renders only a preview for collapsed assistant messages", () => {
+    const longContent = `${"Long assistant reply. ".repeat(40)}UNIQUE_TAIL_TOKEN`;
+    const conversation = buildConversation({
+      messages: [
+        {
+          id: "a1",
+          timestamp: "2026-04-08T08:31:00Z",
+          role: "assistant",
+          content: longContent,
+          tool_calls: [],
+          metadata: {},
+        },
+      ],
+    });
+
+    render(<ConversationDetail conversation={conversation} />);
+
+    expect(screen.queryByText(/UNIQUE_TAIL_TOKEN/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /展开全文/ }));
+    expect(screen.getByText(/UNIQUE_TAIL_TOKEN/)).toBeTruthy();
+  });
+
   it("does not collapse user messages by default", () => {
     const conversation = buildConversation({
       messages: [

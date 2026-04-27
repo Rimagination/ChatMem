@@ -50,25 +50,29 @@ npm run tauri build
 
 工作流产物：
 
-- NSIS 安装包
-- MSI 安装包
+- Windows NSIS 安装包
+- Windows MSI 安装包
 - updater `latest.json`
 - updater 签名文件
-- 便携版 `ChatMem-v<version>-portable.zip`
+- Windows 便携版 `ChatMem-v<version>-portable.zip`
+- macOS dmg
+- macOS app updater 包
+
+当前 macOS 发布包未做 Apple Developer ID 签名和 notarization。正式分发前如需减少 Gatekeeper 提示，需要在仓库 Secrets 中补充 Apple Developer 证书和 notarization 凭据，并扩展 `.github/workflows/release.yml`。
 
 ## Portable Package
 
 本地构建便携版命令：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build-portable.ps1 -Version 0.1.0
+powershell -ExecutionPolicy Bypass -File .\scripts\build-portable.ps1 -Version 0.1.5
 ```
 
 默认读取：
 
 - `src-tauri\target\release\ChatMem.exe`
-- `启动说明.md`
+- `README.md`
 
 输出到：
 
-- `dist-portable\ChatMem-v0.1.0-portable.zip`
+- `dist-portable\ChatMem-v0.1.5-portable.zip`

@@ -7,11 +7,14 @@
   },
   "package": {
     "productName": "ChatMem",
-    "version": "0.1.0"
+    "version": "1.0.31"
   },
   "tauri": {
     "allowlist": {
       "all": false,
+      "window": {
+        "all": true
+      },
       "shell": {
         "all": false,
         "open": true
@@ -28,8 +31,8 @@
         "icons/icon.icns",
         "icons/icon.ico"
       ],
-      "shortDescription": "Your AI conversations, forever remembered",
-      "longDescription": "ChatMem helps you manage and migrate conversations from AI coding agents like Claude, Codex, and Gemini."
+      "shortDescription": "Local-first memory for AI coding agents",
+      "longDescription": "ChatMem indexes local Claude, Codex, Gemini, and OpenCode conversations, then turns them into searchable history, startup rules, wiki context, handoff packets, and cross-agent migration flows."
     },
     "security": {
       "csp": null
@@ -54,8 +57,8 @@
         "height": 800,
         "minWidth": 900,
         "minHeight": 600,
-        "decorations": true,
-        "transparent": false
+        "decorations": false,
+        "transparent": true
       }
     ]
   }

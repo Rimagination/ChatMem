@@ -11,6 +11,7 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 
 use agentswap_core::adapter::AgentAdapter;
+use agentswap_core::files::move_path_to_trash;
 use agentswap_core::tool_mapping::map_tool;
 use agentswap_core::types::*;
 
@@ -41,6 +42,12 @@ impl GeminiAdapter {
     #[allow(dead_code)]
     pub fn with_tmp_dir(tmp_dir: PathBuf) -> Self {
         Self { tmp_dir }
+    }
+
+    pub fn project_hash_for_path(project_dir: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(project_dir.as_bytes());
+        hex::encode(hasher.finalize())
     }
 
     /// Find the JSON session file for a given session ID.
@@ -97,7 +104,11 @@ impl GeminiAdapter {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let project_dir = format!("gemini:{}", project_hash);
+        let project_dir = session
+            .project_path
+            .clone()
+            .or_else(|| session.cwd.clone())
+            .unwrap_or_else(|| format!("gemini:{}", project_hash));
 
         let start_time = session
             .start_time
@@ -401,7 +412,11 @@ impl AgentAdapter for GeminiAdapter {
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        let project_dir = format!("gemini:{}", project_hash);
+        let project_dir = session
+            .project_path
+            .clone()
+            .or_else(|| session.cwd.clone())
+            .unwrap_or_else(|| format!("gemini:{}", project_hash));
 
         convert_session(&session, &project_dir)
     }
@@ -416,9 +431,7 @@ impl AgentAdapter for GeminiAdapter {
         let project_hash = if let Some(stripped) = conv.project_dir.strip_prefix("gemini:") {
             stripped.to_string()
         } else {
-            let mut hasher = Sha256::new();
-            hasher.update(conv.project_dir.as_bytes());
-            hex::encode(hasher.finalize())
+            Self::project_hash_for_path(&conv.project_dir)
         };
 
         // Create the chats directory
@@ -551,6 +564,7 @@ impl AgentAdapter for GeminiAdapter {
         let session_json = json!({
             "sessionId": session_id,
             "projectHash": project_hash,
+            "projectPath": conv.project_dir,
             "startTime": start_time,
             "lastUpdated": last_updated,
             "summary": conv.summary,
@@ -664,8 +678,7 @@ impl AgentAdapter for GeminiAdapter {
 
     fn delete_conversation(&self, id: &str) -> Result<()> {
         let path = self.find_session_file(id)?;
-        fs::remove_file(&path)
-            .with_context(|| format!("Failed to delete session file: {}", path.display()))?;
+        move_path_to_trash(&path)?;
         Ok(())
     }
 }
@@ -1559,6 +1572,47 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let adapter = GeminiAdapter::with_tmp_dir(tmp.path().to_path_buf());
         assert_eq!(adapter.data_dir(), tmp.path().to_path_buf());
+    }
+
+    #[test]
+    fn test_project_hash_for_path_is_stable_sha256_hex() {
+        assert_eq!(
+            GeminiAdapter::project_hash_for_path("D:/VSP/agentswap-gui"),
+            "2ee9a276c7ae3654802d757aaaf39773e31ae1f98f66fd26a211a4f20e8c58a8"
+        );
+    }
+
+    #[test]
+    fn test_project_path_metadata_restores_real_project_dir() {
+        let tmp = TempDir::new().unwrap();
+        let session = json!({
+            "sessionId": "session-real-path",
+            "projectHash": "projhash-real-path",
+            "projectPath": "D:/VSP/agentswap-gui",
+            "startTime": "2026-03-04T10:00:00.000Z",
+            "lastUpdated": "2026-03-04T10:05:00.000Z",
+            "messages": [
+                {
+                    "id": "11111111-1111-1111-1111-111111111111",
+                    "timestamp": "2026-03-04T10:00:01.000Z",
+                    "type": "user",
+                    "content": "Remember: use ChatMem here"
+                }
+            ]
+        });
+        create_test_session(tmp.path(), "projhash-real-path", "session-real-path", &session);
+
+        let adapter = GeminiAdapter::with_tmp_dir(tmp.path().to_path_buf());
+        let summary = adapter
+            .list_conversations()
+            .unwrap()
+            .into_iter()
+            .find(|item| item.id == "session-real-path")
+            .unwrap();
+        let conv = adapter.read_conversation("session-real-path").unwrap();
+
+        assert_eq!(summary.project_dir, "D:/VSP/agentswap-gui");
+        assert_eq!(conv.project_dir, "D:/VSP/agentswap-gui");
     }
 
     /// Integration test: skip if Gemini CLI is not installed.

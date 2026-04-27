@@ -1,0 +1,13 @@
+interface:
+  display_name: "ChatMem"
+  short_description: "Resume repository work with local history search, approved startup rules, entity graph, and handoffs"
+  default_prompt: "Use $chatmem to search indexed local history for recall questions and to load approved startup rules for compact startup context. Never infer that something did not happen just because it is absent from approved rules. If local history hits exist, name the source agent/conversation and ask whether to read_history_conversation before asking the user to redescribe the topic; if that tool is unavailable, explain that the installed ChatMem MCP is older and offer to list/expand search evidence instead. If local history looks empty or a recall miss is suspicious, run import_all_local_history once; if scan diagnostics show related unmatched project roots, use merge_repo_alias, scan_repo_conversations, and retry. Use hybrid keyword/vector history search for targeted gaps, call rebuild_repo_embeddings after embedding provider changes, consult entity graph and generated wiki projections when useful, check rule conflicts before approval, submit agent-authored merge rewrites with propose_memory_merge for human review, continue from the latest checkpoint or handoff, and avoid replaying raw transcripts. When writing startup rules, merge proposals, checkpoints, or handoffs for a Chinese-speaking user, use Chinese prose while preserving exact commands, paths, function names, config keys, model names, and API/tool names."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "chatmem"
+      description: "Local ChatMem MCP server for full local-history import, repo scans, alias repair, approved startup rules, provider-backed hybrid keyword/vector search, focused conversation reading, entity graph, conflict review, agent-authored merge proposals, generated wiki projections, embedding rebuilds, checkpoints, and handoffs"
+
+policy:
+  allow_implicit_invocation: true

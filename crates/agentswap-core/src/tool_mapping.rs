@@ -76,6 +76,13 @@ fn to_canonical(agent: &AgentKind, name: &str) -> Canonical {
             "apply_patch" => Canonical::EditFile,
             _ => Canonical::Unknown(name.to_string()),
         },
+        AgentKind::OpenCode => match name {
+            "bash" | "shell" => Canonical::Shell,
+            "patch" | "apply_patch" | "edit" => Canonical::EditFile,
+            "grep" => Canonical::Grep,
+            "glob" => Canonical::Glob,
+            _ => Canonical::Unknown(name.to_string()),
+        },
     }
 }
 
@@ -114,6 +121,14 @@ fn from_canonical(agent: &AgentKind, canonical: &Canonical) -> String {
             // Codex doesn't have these tools — pass through the original name
             _ => from_canonical(&AgentKind::Claude, canonical),
         },
+        AgentKind::OpenCode => match canonical {
+            Canonical::Shell => "bash".to_string(),
+            Canonical::EditFile => "patch".to_string(),
+            Canonical::Grep => "grep".to_string(),
+            Canonical::Glob => "glob".to_string(),
+            Canonical::Unknown(n) => n.clone(),
+            _ => from_canonical(&AgentKind::Claude, canonical),
+        },
     }
 }
 
@@ -142,6 +157,7 @@ fn remap_input(
                     (AgentKind::Claude, "command"),
                     (AgentKind::Gemini, "command"),
                     (AgentKind::Codex, "cmd"),
+                    (AgentKind::OpenCode, "command"),
                 ],
             );
         }
@@ -160,6 +176,7 @@ fn remap_input(
                     (AgentKind::Claude, "path"),
                     (AgentKind::Gemini, "file_path"),
                     (AgentKind::Codex, "path"),
+                    (AgentKind::OpenCode, "path"),
                 ],
             );
         }
@@ -173,6 +190,7 @@ fn remap_input(
                     (AgentKind::Claude, "path"),
                     (AgentKind::Gemini, "dir_path"),
                     (AgentKind::Codex, "path"),
+                    (AgentKind::OpenCode, "path"),
                 ],
             );
         }
@@ -186,6 +204,7 @@ fn remap_input(
                     (AgentKind::Claude, "path"),
                     (AgentKind::Gemini, "dir_path"),
                     (AgentKind::Codex, "path"),
+                    (AgentKind::OpenCode, "path"),
                 ],
             );
         }

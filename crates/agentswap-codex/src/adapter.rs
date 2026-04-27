@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use agentswap_core::adapter::AgentAdapter;
+use agentswap_core::files::move_path_to_trash;
 use agentswap_core::tool_mapping::map_tool;
 use agentswap_core::types::*;
 
@@ -22,6 +23,33 @@ use crate::parser::*;
 pub struct CodexAdapter {
     /// Path to the Codex home directory, typically `~/.codex`.
     codex_dir: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct CodexThreadDefaults {
+    source: String,
+    model_provider: String,
+    sandbox_policy: String,
+    approval_mode: String,
+    cli_version: String,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+    has_user_event: i64,
+}
+
+impl Default for CodexThreadDefaults {
+    fn default() -> Self {
+        Self {
+            source: "vscode".to_string(),
+            model_provider: "openai".to_string(),
+            sandbox_policy: r#"{"type":"workspace-write"}"#.to_string(),
+            approval_mode: "on-request".to_string(),
+            cli_version: String::new(),
+            model: None,
+            reasoning_effort: None,
+            has_user_event: 0,
+        }
+    }
 }
 
 impl Default for CodexAdapter {
@@ -48,6 +76,128 @@ impl CodexAdapter {
     /// Path to the SQLite database.
     fn db_path(&self) -> PathBuf {
         self.codex_dir.join("state_5.sqlite")
+    }
+
+    fn normalize_rollout_cwd(project_dir: &str) -> String {
+        if project_dir.trim().is_empty() {
+            return String::new();
+        }
+
+        #[cfg(windows)]
+        {
+            if project_dir.starts_with('/') {
+                return project_dir.to_string();
+            }
+
+            let normalized = {
+                let replaced = project_dir.replace('/', "\\");
+                let mut chars = replaced.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(drive), Some('\\')) if drive.is_ascii_alphabetic() => {
+                        format!("{drive}:\\{}", replaced[2..].trim_start_matches('\\'))
+                    }
+                    _ => replaced,
+                }
+            };
+            let canonical = PathBuf::from(&normalized)
+                .canonicalize()
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or(normalized);
+            canonical
+                .strip_prefix(r"\\?\")
+                .unwrap_or(&canonical)
+                .to_string()
+        }
+
+        #[cfg(not(windows))]
+        {
+            project_dir.to_string()
+        }
+    }
+
+    fn normalize_thread_cwd(project_dir: &str) -> String {
+        if project_dir.trim().is_empty() {
+            return String::new();
+        }
+
+        #[cfg(windows)]
+        {
+            if project_dir.starts_with('/') {
+                return project_dir.to_string();
+            }
+
+            let normalized = {
+                let replaced = project_dir.replace('/', "\\");
+                let mut chars = replaced.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(drive), Some('\\')) if drive.is_ascii_alphabetic() => {
+                        format!("{drive}:\\{}", replaced[2..].trim_start_matches('\\'))
+                    }
+                    _ => replaced,
+                }
+            };
+            PathBuf::from(&normalized)
+                .canonicalize()
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or(normalized)
+        }
+
+        #[cfg(not(windows))]
+        {
+            project_dir.to_string()
+        }
+    }
+
+    fn thread_columns(conn: &Connection) -> Result<HashSet<String>> {
+        let mut stmt = conn.prepare("PRAGMA table_info(threads)")?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<std::result::Result<HashSet<_>, _>>()?;
+        Ok(columns)
+    }
+
+    fn ensure_optional_thread_columns(conn: &Connection) -> Result<()> {
+        let columns = Self::thread_columns(conn)?;
+        for (name, definition) in [
+            ("model", "TEXT"),
+            ("reasoning_effort", "TEXT"),
+            ("agent_path", "TEXT"),
+            ("created_at_ms", "INTEGER"),
+            ("updated_at_ms", "INTEGER"),
+        ] {
+            if !columns.contains(name) {
+                conn.execute(
+                    &format!("ALTER TABLE threads ADD COLUMN {name} {definition}"),
+                    [],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn load_thread_defaults(conn: &Connection) -> Result<CodexThreadDefaults> {
+        let mut stmt = conn.prepare(
+            "SELECT source, model_provider, sandbox_policy, approval_mode, cli_version, \
+             model, reasoning_effort, has_user_event \
+             FROM threads WHERE source = 'vscode' ORDER BY updated_at DESC LIMIT 1",
+        )?;
+
+        match stmt.query_row([], |row| {
+            Ok(CodexThreadDefaults {
+                source: row.get(0)?,
+                model_provider: row.get(1)?,
+                sandbox_policy: row.get(2)?,
+                approval_mode: row.get(3)?,
+                cli_version: row.get(4)?,
+                model: row.get(5)?,
+                reasoning_effort: row.get(6)?,
+                has_user_event: row.get(7)?,
+            })
+        }) {
+            Ok(defaults) => Ok(defaults),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(CodexThreadDefaults::default()),
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// Open the SQLite database in read-only mode.
@@ -95,7 +245,12 @@ impl CodexAdapter {
                 first_user_message TEXT NOT NULL DEFAULT '',
                 agent_nickname TEXT,
                 agent_role TEXT,
-                memory_mode TEXT NOT NULL DEFAULT 'enabled'
+                memory_mode TEXT NOT NULL DEFAULT 'enabled',
+                model TEXT,
+                reasoning_effort TEXT,
+                agent_path TEXT,
+                created_at_ms INTEGER,
+                updated_at_ms INTEGER
             );
             CREATE INDEX IF NOT EXISTS idx_threads_created_at ON threads(created_at DESC, id DESC);
             CREATE INDEX IF NOT EXISTS idx_threads_updated_at ON threads(updated_at DESC, id DESC);
@@ -103,6 +258,8 @@ impl CodexAdapter {
             CREATE INDEX IF NOT EXISTS idx_threads_source ON threads(source);
             CREATE INDEX IF NOT EXISTS idx_threads_provider ON threads(model_provider);",
         )?;
+
+        Self::ensure_optional_thread_columns(&conn)?;
 
         Ok(conn)
     }
@@ -548,6 +705,10 @@ impl AgentAdapter for CodexAdapter {
     fn write_conversation(&self, conv: &Conversation) -> Result<String> {
         // Generate a new thread ID
         let thread_id = Uuid::new_v4().to_string();
+        let rollout_cwd = Self::normalize_rollout_cwd(&conv.project_dir);
+        let thread_cwd = Self::normalize_thread_cwd(&conv.project_dir);
+        let conn = self.open_db_rw()?;
+        let defaults = Self::load_thread_defaults(&conn)?;
 
         // Create the rollout file path: sessions/YYYY/MM/DD/rollout-<uuid>.jsonl
         let now = conv.created_at;
@@ -582,11 +743,11 @@ impl AgentAdapter for CodexAdapter {
             "payload": {
                 "id": thread_id,
                 "timestamp": session_meta_ts,
-                "cwd": conv.project_dir,
-                "originator": "agentswap",
-                "cli_version": "0.1.0",
-                "source": "cli",
-                "model_provider": "openai"
+                "cwd": rollout_cwd,
+                "originator": "ChatMem",
+                "cli_version": defaults.cli_version,
+                "source": defaults.source,
+                "model_provider": defaults.model_provider
             }
         });
         writeln!(file, "{}", serde_json::to_string(&session_meta)?)?;
@@ -602,12 +763,36 @@ impl AgentAdapter for CodexAdapter {
 
             match msg.role {
                 Role::User | Role::System => {
+                    let response_role = if msg.role == Role::System {
+                        "developer"
+                    } else {
+                        "user"
+                    };
+                    let response_message = json!({
+                        "timestamp": ts,
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": response_role,
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": msg.content.clone()
+                                }
+                            ]
+                        }
+                    });
+                    writeln!(file, "{}", serde_json::to_string(&response_message)?)?;
+
                     let event = json!({
                         "timestamp": ts,
                         "type": "event_msg",
                         "payload": {
                             "type": "user_message",
-                            "message": msg.content
+                            "message": msg.content,
+                            "images": [],
+                            "local_images": [],
+                            "text_elements": []
                         }
                     });
                     writeln!(file, "{}", serde_json::to_string(&event)?)?;
@@ -645,10 +830,28 @@ impl AgentAdapter for CodexAdapter {
                             "payload": {
                                 "type": "agent_message",
                                 "message": msg.content,
-                                "phase": "commentary"
+                                "phase": "commentary",
+                                "memory_citation": null
                             }
                         });
                         writeln!(file, "{}", serde_json::to_string(&event)?)?;
+
+                        let response_message = json!({
+                            "timestamp": ts,
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [
+                                    {
+                                        "type": "output_text",
+                                        "text": msg.content.clone()
+                                    }
+                                ],
+                                "phase": "commentary"
+                            }
+                        });
+                        writeln!(file, "{}", serde_json::to_string(&response_message)?)?;
                     }
 
                     // Emit tool calls as function_call + function_call_output pairs
@@ -721,40 +924,48 @@ impl AgentAdapter for CodexAdapter {
         }
 
         // Insert into the SQLite threads table
-        let title = conv.summary.clone().unwrap_or_default();
+        let title = conv
+            .summary
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| first_user_message.clone());
         let created_at = conv.created_at.timestamp();
         let updated_at = conv.updated_at.timestamp();
+        let created_at_ms = conv.created_at.timestamp_millis();
+        let updated_at_ms = conv.updated_at.timestamp_millis();
         let rollout_path_str = rollout_path.to_string_lossy().to_string();
 
-        let conn = self.open_db_rw()?;
         conn.execute(
             "INSERT INTO threads (id, rollout_path, created_at, updated_at, \
              source, model_provider, cwd, title, sandbox_policy, approval_mode, \
              tokens_used, has_user_event, archived, git_branch, cli_version, \
-             first_user_message, memory_mode) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+             first_user_message, memory_mode, model, reasoning_effort, agent_path, \
+             created_at_ms, updated_at_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
+             ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
             rusqlite::params![
                 thread_id,
                 rollout_path_str,
                 created_at,
                 updated_at,
-                "cli",
-                "openai",
-                conv.project_dir,
+                defaults.source,
+                defaults.model_provider,
+                thread_cwd,
                 title,
-                r#"{"type":"read-only"}"#,
-                "on-request",
+                defaults.sandbox_policy,
+                defaults.approval_mode,
                 0i64, // tokens_used
-                if first_user_message.is_empty() {
-                    0i64
-                } else {
-                    1i64
-                }, // has_user_event
+                defaults.has_user_event,
                 0i64, // archived
                 None::<String>, // git_branch
-                "",   // cli_version
+                defaults.cli_version,
                 first_user_message,
                 "enabled", // memory_mode
+                defaults.model,
+                defaults.reasoning_effort,
+                None::<String>, // agent_path
+                created_at_ms,
+                updated_at_ms,
             ],
         )?;
 
@@ -862,10 +1073,7 @@ impl AgentAdapter for CodexAdapter {
 
         // Delete the rollout file
         let rollout_path = PathBuf::from(&thread.rollout_path);
-        if rollout_path.exists() {
-            fs::remove_file(&rollout_path)
-                .with_context(|| format!("Failed to delete rollout file: {}", rollout_path.display()))?;
-        }
+        move_path_to_trash(&rollout_path)?;
 
         // Delete from database
         let conn = self.open_db_rw()?;
@@ -1604,6 +1812,26 @@ mod tests {
         let thread_id = adapter.write_conversation(&conv).unwrap();
         assert!(!thread_id.is_empty());
 
+        let thread = adapter.find_thread(&thread_id).unwrap();
+        let rollout = fs::read_to_string(&thread.rollout_path).unwrap();
+        let response_items: Vec<Value> = rollout
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|event| event["type"] == "response_item")
+            .collect();
+        assert!(response_items.iter().any(|event| {
+            event["payload"]["type"] == "message"
+                && event["payload"]["role"] == "user"
+                && event["payload"]["content"][0]["type"] == "input_text"
+                && event["payload"]["content"][0]["text"] == "Hello Codex!"
+        }));
+        assert!(response_items.iter().any(|event| {
+            event["payload"]["type"] == "message"
+                && event["payload"]["role"] == "assistant"
+                && event["payload"]["content"][0]["type"] == "output_text"
+                && event["payload"]["content"][0]["text"] == "Let me help you."
+        }));
+
         // Read back
         let read_conv = adapter.read_conversation(&thread_id).unwrap();
 
@@ -1831,6 +2059,139 @@ mod tests {
         assert_eq!(thread.first_user_message, "first message");
         assert_eq!(thread.created_at, now.timestamp());
         assert_eq!(thread.updated_at, now.timestamp());
+    }
+
+    #[test]
+    fn test_write_conversation_matches_codex_desktop_defaults() {
+        let tmp = TempDir::new().unwrap();
+        let adapter = CodexAdapter::with_codex_dir(tmp.path().to_path_buf());
+        let template_now = Utc::now();
+
+        let conn = adapter.open_db_rw().unwrap();
+        conn.execute(
+            "INSERT INTO threads (id, rollout_path, created_at, updated_at, \
+             source, model_provider, cwd, title, sandbox_policy, approval_mode, \
+             tokens_used, has_user_event, archived, git_branch, cli_version, \
+             first_user_message, memory_mode, model, reasoning_effort, agent_path, \
+             created_at_ms, updated_at_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, \
+             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+            rusqlite::params![
+                "desktop-template",
+                tmp.path()
+                    .join("sessions/template-rollout.jsonl")
+                    .to_string_lossy()
+                    .to_string(),
+                template_now.timestamp(),
+                template_now.timestamp(),
+                "vscode",
+                "openai",
+                if cfg!(windows) {
+                    r"\\?\D:\VSP"
+                } else {
+                    "/tmp/project"
+                },
+                "Desktop template",
+                r#"{"type":"danger-full-access"}"#,
+                "never",
+                0i64,
+                0i64,
+                0i64,
+                None::<String>,
+                "0.122.0-alpha.1",
+                "template prompt",
+                "enabled",
+                Some("gpt-5.4".to_string()),
+                Some("xhigh".to_string()),
+                None::<String>,
+                template_now.timestamp_millis(),
+                template_now.timestamp_millis(),
+            ],
+        )
+        .unwrap();
+
+        let created_at = Utc.timestamp_opt(1_776_653_543, 0).single().unwrap();
+        let updated_at = Utc.timestamp_opt(1_776_654_321, 0).single().unwrap();
+        let project_dir = if cfg!(windows) {
+            "D//VSP".to_string()
+        } else {
+            "/tmp/project".to_string()
+        };
+
+        let conv = Conversation {
+            id: "desktop-defaults".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir,
+            created_at,
+            updated_at,
+            summary: None,
+            messages: vec![Message {
+                id: Uuid::new_v4(),
+                timestamp: created_at,
+                role: Role::User,
+                content: "desktop-visible prompt".to_string(),
+                tool_calls: Vec::new(),
+                metadata: HashMap::new(),
+            }],
+            file_changes: Vec::new(),
+        };
+
+        let thread_id = adapter.write_conversation(&conv).unwrap();
+
+        let conn = adapter.open_db().unwrap();
+        let row = conn
+            .query_row(
+                "SELECT source, sandbox_policy, approval_mode, cli_version, model, \
+                 reasoning_effort, has_user_event, created_at_ms, updated_at_ms, cwd, \
+                 title FROM threads WHERE id = ?1",
+                [thread_id.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, Option<i64>>(7)?,
+                        row.get::<_, Option<i64>>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, String>(10)?,
+                    ))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(row.0, "vscode");
+        assert_eq!(row.1, r#"{"type":"danger-full-access"}"#);
+        assert_eq!(row.2, "never");
+        assert_eq!(row.3, "0.122.0-alpha.1");
+        assert_eq!(row.4.as_deref(), Some("gpt-5.4"));
+        assert_eq!(row.5.as_deref(), Some("xhigh"));
+        assert_eq!(row.6, 0);
+        assert_eq!(row.7, Some(created_at.timestamp_millis()));
+        assert_eq!(row.8, Some(updated_at.timestamp_millis()));
+        assert_eq!(row.10, "desktop-visible prompt");
+        if cfg!(windows) {
+            assert!(row.9.ends_with(r"D:\VSP"));
+            assert!(row.9.contains(':'));
+        } else {
+            assert_eq!(row.9, "/tmp/project");
+        }
+
+        let thread = adapter.find_thread(&thread_id).unwrap();
+        let rollout = fs::read_to_string(&thread.rollout_path).unwrap();
+        let session_meta: Value = serde_json::from_str(rollout.lines().next().unwrap()).unwrap();
+        assert_eq!(session_meta["payload"]["source"], "vscode");
+        assert_eq!(session_meta["payload"]["cli_version"], "0.122.0-alpha.1");
+        if cfg!(windows) {
+            let rollout_cwd = session_meta["payload"]["cwd"].as_str().unwrap();
+            assert!(rollout_cwd.ends_with(r"D:\VSP"));
+            assert!(!rollout_cwd.starts_with(r"\\?\"));
+        } else {
+            assert_eq!(session_meta["payload"]["cwd"], "/tmp/project");
+        }
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import { formatDistanceToNow } from "../utils/dateUtils";
+import { normalizeConversationTitle, truncateSidebarTitle } from "../utils/titleUtils";
 
 interface ConversationSummary {
   id: string;
@@ -38,7 +39,7 @@ function ConversationList({
     return (
       <div className="conversation-list">
         <div className="empty-state">
-          <div className="empty-state-icon">◎</div>
+          <div className="empty-state-icon">○</div>
           <div className="empty-state-text">未找到对话</div>
         </div>
       </div>
@@ -48,7 +49,8 @@ function ConversationList({
   return (
     <div className="conversation-list">
       {conversations.map((conversation) => {
-        const title = conversation.summary || "未命名对话";
+        const title = normalizeConversationTitle(conversation.summary) || "未命名对话";
+        const visibleTitle = truncateSidebarTitle(title);
         const isSelected = selectedId === conversation.id;
 
         return (
@@ -60,7 +62,7 @@ function ConversationList({
             <div className="conversation-item-row">
               <div className="conversation-item-main">
                 <div className="conversation-item-title" title={title}>
-                  {title}
+                  {visibleTitle}
                 </div>
                 <div className="conversation-item-path" title={conversation.project_dir}>
                   {conversation.project_dir}
