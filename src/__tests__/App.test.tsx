@@ -396,6 +396,79 @@ describe("App", () => {
     expect(window.confirm).not.toHaveBeenCalled();
   });
 
+  it("empties Trash only after an in-app confirmation card", async () => {
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+    );
+
+    let trashItems = [
+      {
+        trashId: "trash-001",
+        originalId: "conv-001",
+        sourceAgent: "claude",
+        projectDir: "D:/VSP/demo",
+        summary: "Debug session",
+        trashedAt: "2026-04-08T12:00:00Z",
+        expiresAt: "2026-04-22T12:00:00Z",
+        storagePath: null,
+        resumeCommand: null,
+        remoteBackupDeleted: false,
+        remoteBackupPath: null,
+        warnings: [],
+      },
+    ];
+
+    mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
+      if (command === "list_trashed_conversations") {
+        return trashItems;
+      }
+      if (command === "empty_trash") {
+        trashItems = [];
+        return { removedCount: 1, removedTrashIds: ["trash-001"] };
+      }
+      if (command === "list_conversations") {
+        return [];
+      }
+      if (command === "read_conversation") {
+        return null;
+      }
+      if (
+        command === "list_memory_candidates" ||
+        command === "list_handoffs" ||
+        command === "list_checkpoints" ||
+        command === "list_runs" ||
+        command === "list_artifacts" ||
+        command === "list_episodes" ||
+        command === "list_repo_memories"
+      ) {
+        return [];
+      }
+      return payload ? [] : [];
+    });
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Trash" }));
+    expect(await screen.findByText("Debug session")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Empty Trash" }));
+    const dialog = await screen.findByRole("dialog", { name: "Empty Trash?" });
+    expect(
+      within(dialog).getByText(
+        "This permanently removes 1 recovery snapshot. You will not be able to restore it from ChatMem.",
+      ),
+    ).toBeTruthy();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Empty Trash" }));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("empty_trash");
+      expect(screen.getByText("Trash is empty")).toBeTruthy();
+    });
+    expect(window.confirm).not.toHaveBeenCalled();
+  });
+
   it("merges equivalent project paths and does not repeat project conversations as chats", async () => {
     localStorage.setItem(
       "chatmem.settings",

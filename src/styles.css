@@ -958,6 +958,25 @@ button {
   max-width: 680px;
 }
 
+.trash-page-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.trash-empty-button {
+  color: var(--danger);
+  border-color: rgba(190, 67, 67, 0.22);
+}
+
+.trash-empty-button:hover:not(:disabled),
+.trash-empty-button:focus-visible:not(:disabled) {
+  background: rgba(255, 248, 247, 0.96);
+  border-color: rgba(190, 67, 67, 0.36);
+  outline: none;
+}
+
 .trash-retention-control {
   flex: 0 0 auto;
   display: inline-flex;
@@ -969,6 +988,12 @@ button {
   background: transparent;
   color: var(--text-secondary);
   font-size: 13px;
+}
+
+.trash-empty-button:disabled,
+.trash-retention-control input:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .trash-retention-control input {
@@ -4074,9 +4099,15 @@ button {
   .meta-strip,
   .conversation-toolbar,
   .task-panel-header,
+  .trash-page-header,
   .project-index-hero {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .trash-page-actions {
+    align-items: flex-start;
+    flex-wrap: wrap;
   }
 
   .conversation-toolbar,

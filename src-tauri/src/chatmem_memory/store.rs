@@ -2184,6 +2184,19 @@ impl MemoryStore {
             matches = merge_search_matches(matches, descendant_matches, limit);
         }
 
+        let global_repo_id =
+            repo_identity::fingerprint_repo(repo_identity::GLOBAL_LOCAL_HISTORY_ROOT, None, None);
+        if global_repo_id != repo_id && repo_exists_from_conn(&conn, &global_repo_id)? {
+            let global_matches = search_history_in_repo_id_with_embedding_config(
+                &conn,
+                &global_repo_id,
+                query,
+                limit,
+                config,
+            )?;
+            matches = merge_search_matches(matches, global_matches, limit);
+        }
+
         Ok(matches)
     }
 
@@ -2412,6 +2425,16 @@ fn repo_has_like_match_for_any_term(
     }
 
     Ok(false)
+}
+
+fn repo_exists_from_conn(conn: &Connection, repo_id: &str) -> Result<bool> {
+    let exists = conn
+        .query_row("SELECT 1 FROM repos WHERE repo_id = ?1", [repo_id], |row| {
+            row.get::<_, i64>(0)
+        })
+        .optional()?
+        .is_some();
+    Ok(exists)
 }
 
 fn count_table_rows(
@@ -4719,6 +4742,11 @@ fn evaluate_memory_freshness(
 fn repo_roots_are_related(left: &str, right: &str) -> bool {
     let left = repo_identity::normalize_repo_root(left);
     let right = repo_identity::normalize_repo_root(right);
+    if repo_identity::is_global_local_history_root(&left)
+        || repo_identity::is_global_local_history_root(&right)
+    {
+        return true;
+    }
     if left.is_empty() || right.is_empty() {
         return true;
     }
@@ -4800,6 +4828,7 @@ mod tests {
             AgentConversationCount, CreateMemoryCandidateInput, CreateMemoryMergeProposalInput,
             ObservedProjectRootCount, RepoScanReport,
         },
+        repo_identity,
     };
     use agentswap_core::types::{AgentKind, Conversation, Message, Role};
     use chrono::Utc;
@@ -4902,6 +4931,61 @@ mod tests {
         assert!(matches
             .iter()
             .any(|item| item.title == "EasyMD project location"));
+    }
+
+    #[test]
+    fn search_history_includes_global_local_history_matches() {
+        let store = new_store();
+        let now = Utc::now();
+        let conversation = Conversation {
+            id: "ses-qtx-sponge".to_string(),
+            source_agent: AgentKind::OpenCode,
+            project_dir: repo_identity::GLOBAL_LOCAL_HISTORY_ROOT.to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("光头强与海绵宝宝的对决故事讲解".to_string()),
+            messages: vec![
+                Message {
+                    id: Uuid::from_u128(0x8600_0000_0000_0000_0000_0000_0000_0001),
+                    timestamp: now,
+                    role: Role::User,
+                    content: "给我讲一个光头强打海绵宝宝的故事".to_string(),
+                    tool_calls: vec![],
+                    metadata: HashMap::new(),
+                },
+                Message {
+                    id: Uuid::from_u128(0x8600_0000_0000_0000_0000_0000_0000_0002),
+                    timestamp: now,
+                    role: Role::Assistant,
+                    content: "好的，我来讲光头强和海绵宝宝的冒险故事。".to_string(),
+                    tool_calls: vec![],
+                    metadata: HashMap::new(),
+                },
+            ],
+            file_changes: vec![],
+        };
+
+        store
+            .upsert_conversation_snapshot(
+                "opencode",
+                &conversation,
+                Some("C:/Users/Liang/.local/share/opencode/opencode.db".to_string()),
+            )
+            .unwrap();
+
+        let matches = store
+            .search_history("d:/vsp", "查找光头强和海绵宝宝有关的对话", 5)
+            .unwrap();
+        let hit = matches
+            .iter()
+            .find(|item| item.summary.contains("光头强") && item.summary.contains("海绵宝宝"))
+            .expect("expected repo search to include global local-history matches");
+
+        assert_eq!(hit.source_agent.as_deref(), Some("opencode"));
+        assert_eq!(
+            hit.conversation_id.as_deref(),
+            Some("opencode:ses-qtx-sponge")
+        );
     }
 
     #[test]

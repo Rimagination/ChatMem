@@ -1,6 +1,12 @@
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+pub const GLOBAL_LOCAL_HISTORY_ROOT: &str = "chatmem://local-history/global";
+
+pub fn is_global_local_history_root(input: &str) -> bool {
+    normalize_repo_root(input) == normalize_repo_root(GLOBAL_LOCAL_HISTORY_ROOT)
+}
+
 pub fn normalize_repo_root(input: &str) -> String {
     let mut normalized = input.trim().to_string();
     if let Some(stripped) = normalized.strip_prefix(r"\\?\UNC\") {
@@ -58,7 +64,10 @@ pub fn fingerprint_repo(repo_root: &str, git_remote: Option<&str>, branch: Optio
 
 #[cfg(test)]
 mod tests {
-    use super::{canonical_repo_root, fingerprint_repo, normalize_repo_root};
+    use super::{
+        canonical_repo_root, fingerprint_repo, is_global_local_history_root, normalize_repo_root,
+        GLOBAL_LOCAL_HISTORY_ROOT,
+    };
 
     #[test]
     fn normalizes_windows_repo_root() {
@@ -97,5 +106,14 @@ mod tests {
         assert_eq!(canonical, normalize_repo_root(&root.to_string_lossy()));
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recognizes_global_local_history_root() {
+        assert!(is_global_local_history_root(GLOBAL_LOCAL_HISTORY_ROOT));
+        assert!(is_global_local_history_root(
+            " ChatMem://Local-History/Global "
+        ));
+        assert!(!is_global_local_history_root("d:/vsp"));
     }
 }

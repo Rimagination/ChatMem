@@ -240,6 +240,27 @@ fn clean_project_path_for_claude(path: &str) -> String {
     trimmed.to_string()
 }
 
+fn default_import_project_cwd() -> String {
+    dirs::home_dir()
+        .or_else(|| std::env::current_dir().ok())
+        .map(|path| clean_project_path_for_claude(path.to_string_lossy().as_ref()))
+        .filter(|path| !is_empty_or_relative_project_cwd(path))
+        .unwrap_or_else(|| "/".to_string())
+}
+
+fn is_empty_or_relative_project_cwd(path: &str) -> bool {
+    matches!(path.trim(), "" | ".")
+}
+
+fn project_cwd_for_claude(path: &str) -> String {
+    let cleaned = clean_project_path_for_claude(path);
+    if is_empty_or_relative_project_cwd(&cleaned) {
+        default_import_project_cwd()
+    } else {
+        cleaned
+    }
+}
+
 /// Pending tool use info collected from assistant tool_use blocks.
 struct PendingTool {
     name: String,
@@ -626,7 +647,7 @@ impl AgentAdapter for ClaudeAdapter {
     fn write_conversation(&self, conv: &Conversation) -> Result<String> {
         // Generate a new session UUID for this conversation
         let session_id = Uuid::new_v4().to_string();
-        let project_cwd = clean_project_path_for_claude(&conv.project_dir);
+        let project_cwd = project_cwd_for_claude(&conv.project_dir);
 
         // Determine the project subdirectory using path encoding
         let encoded_project = encode_project_path(&project_cwd);
@@ -1477,6 +1498,44 @@ mod tests {
             read_conv.messages[0].content,
             "Hello from an extended Windows path"
         );
+    }
+
+    #[test]
+    fn test_write_empty_project_path_uses_import_fallback_directory() {
+        let tmp = TempDir::new().unwrap();
+        let adapter = ClaudeAdapter::with_projects_dir(tmp.path().to_path_buf());
+        let now = Utc::now();
+        let conv = Conversation {
+            id: "opencode-no-project".to_string(),
+            source_agent: AgentKind::OpenCode,
+            project_dir: String::new(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("OpenCode no project migration".to_string()),
+            messages: vec![Message {
+                id: Uuid::new_v4(),
+                timestamp: now,
+                role: Role::User,
+                content: "Hello from OpenCode without a project".to_string(),
+                tool_calls: Vec::new(),
+                metadata: HashMap::new(),
+            }],
+            file_changes: Vec::new(),
+        };
+
+        let session_id = adapter.write_conversation(&conv).unwrap();
+        let root_level_file = tmp.path().join(format!("{session_id}.jsonl"));
+        assert!(!root_level_file.exists());
+
+        let read_conv = adapter.read_conversation(&session_id).unwrap();
+        assert_eq!(read_conv.messages.len(), 1);
+        assert_eq!(
+            read_conv.messages[0].content,
+            "Hello from OpenCode without a project"
+        );
+
+        let listed = adapter.list_conversations().unwrap();
+        assert!(listed.iter().any(|summary| summary.id == session_id));
     }
 
     #[test]

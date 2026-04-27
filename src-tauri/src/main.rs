@@ -244,6 +244,13 @@ struct RestoreTrashResponse {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct EmptyTrashResponse {
+    removed_count: usize,
+    removed_trash_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct UpgradeReadinessCheck {
     key: String,
     label: String,
@@ -840,6 +847,40 @@ fn remove_expired_trash_records() -> Result<Vec<String>, String> {
     }
 
     Ok(removed)
+}
+
+fn remove_empty_trash_agent_dirs() -> Result<(), String> {
+    let root = trash_root_dir()?;
+    if !root.exists() {
+        return Ok(());
+    }
+
+    for agent_entry in fs::read_dir(&root)
+        .map_err(|error| format!("Cannot read Trash directory {}: {error}", root.display()))?
+    {
+        let agent_entry = agent_entry.map_err(|error| error.to_string())?;
+        let agent_path = agent_entry.path();
+        if !agent_path.is_dir() {
+            continue;
+        }
+
+        let mut entries = fs::read_dir(&agent_path).map_err(|error| {
+            format!(
+                "Cannot read Trash agent directory {}: {error}",
+                agent_path.display()
+            )
+        })?;
+        if entries.next().is_none() {
+            fs::remove_dir(&agent_path).map_err(|error| {
+                format!(
+                    "Cannot remove empty Trash agent directory {}: {error}",
+                    agent_path.display()
+                )
+            })?;
+        }
+    }
+
+    Ok(())
 }
 
 fn read_app_settings_from_disk() -> Result<Option<AppSettingsPayload>, String> {
@@ -1795,6 +1836,32 @@ async fn list_trashed_conversations() -> Result<Vec<TrashConversationResponse>, 
 }
 
 #[command]
+async fn empty_trash() -> Result<EmptyTrashResponse, String> {
+    let mut removed_trash_ids = Vec::new();
+
+    for path in list_trash_record_paths()? {
+        let trash_id = read_trash_record(&path)
+            .map(|record| record.trash_id)
+            .unwrap_or_else(|_| {
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or("unknown-trash-record")
+                    .to_string()
+            });
+        fs::remove_file(&path)
+            .map_err(|error| format!("Cannot remove Trash record {}: {error}", path.display()))?;
+        removed_trash_ids.push(trash_id);
+    }
+
+    remove_empty_trash_agent_dirs()?;
+
+    Ok(EmptyTrashResponse {
+        removed_count: removed_trash_ids.len(),
+        removed_trash_ids,
+    })
+}
+
+#[command]
 async fn restore_trashed_conversation(trash_id: String) -> Result<RestoreTrashResponse, String> {
     let path = find_trash_record_path(&trash_id)?;
     let record = read_trash_record(&path)?;
@@ -2129,6 +2196,7 @@ fn main() {
             delete_conversation,
             trash_conversation,
             list_trashed_conversations,
+            empty_trash,
             restore_trashed_conversation,
             check_agent_available,
             get_agent_card,

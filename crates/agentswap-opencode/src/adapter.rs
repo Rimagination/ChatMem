@@ -225,11 +225,16 @@ impl OpenCodeAdapter {
         .with_context(|| format!("OpenCode session not found: {id}"))
     }
 
+    fn is_global_worktree_placeholder(value: &str) -> bool {
+        matches!(value.trim(), "/" | "\\" | ".")
+    }
+
     fn project_dir(row: &OpenCodeSessionRow) -> String {
         row.worktree
             .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or(&row.directory)
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && !Self::is_global_worktree_placeholder(value))
+            .unwrap_or(row.directory.trim())
             .to_string()
     }
 
@@ -325,7 +330,7 @@ impl OpenCodeAdapter {
             "SELECT id, time_created, data \
              FROM part \
              WHERE session_id = ?1 AND message_id = ?2 \
-             ORDER BY time_created ASC, id ASC",
+             ORDER BY time_created ASC, rowid ASC",
         )?;
         let rows = stmt.query_map((session_id, message_id), |row| {
             Ok((
@@ -435,7 +440,7 @@ impl OpenCodeAdapter {
             "SELECT id, time_created, data \
              FROM message \
              WHERE session_id = ?1 \
-             ORDER BY time_created ASC, id ASC",
+             ORDER BY time_created ASC, rowid ASC",
         )?;
         let rows = stmt.query_map([session_id], |row| {
             Ok((
@@ -1118,6 +1123,37 @@ mod tests {
         assert_eq!(conversations[0].summary.as_deref(), Some("Improve ChatMem memory"));
         assert_eq!(conversations[0].message_count, 2);
         assert_eq!(conversations[0].file_count, 1);
+    }
+
+    #[test]
+    fn uses_session_directory_when_opencode_project_is_global_root() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = create_opencode_db(tmp.path());
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "INSERT INTO project (id, worktree, vcs, name, time_created, time_updated, sandboxes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (
+                "global",
+                "/",
+                "git",
+                "",
+                1_776_000_000_000i64,
+                1_776_000_200_000i64,
+                "[]",
+            ),
+        )
+        .unwrap();
+        conn.execute("UPDATE session SET project_id = 'global' WHERE id = 'ses_001'", [])
+            .unwrap();
+        drop(conn);
+        let adapter = OpenCodeAdapter::with_data_dir(tmp.path().to_path_buf());
+
+        let conversations = adapter.list_conversations().unwrap();
+        let conversation = adapter.read_conversation("ses_001").unwrap();
+
+        assert_eq!(conversations[0].project_dir, "D:/VSP");
+        assert_eq!(conversation.project_dir, "D:/VSP");
     }
 
     #[test]

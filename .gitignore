@@ -2,6 +2,7 @@ node_modules/
 dist/
 dist-portable/
 .tauri-target-build/
+.tauri-target-build-*/
 .tauri-target-local/
 .playwright-cli/
 output/

@@ -193,6 +193,25 @@ pub(crate) fn is_codex_generated_chat_project_dir(agent: &str, project_dir: &str
     }
 }
 
+fn is_standalone_history_project(agent: &str, project_dir: &str) -> bool {
+    is_root_project_placeholder(project_dir)
+        || is_codex_generated_chat_project_dir(agent, project_dir)
+}
+
+fn importable_history_project_root(agent: &str, project_dir: &str) -> Option<String> {
+    if is_standalone_history_project(agent, project_dir) {
+        return Some(crate::chatmem_memory::repo_identity::GLOBAL_LOCAL_HISTORY_ROOT.to_string());
+    }
+
+    let canonical_project_root =
+        crate::chatmem_memory::repo_identity::canonical_repo_root(project_dir);
+    if canonical_project_root.is_empty() {
+        None
+    } else {
+        Some(canonical_project_root)
+    }
+}
+
 pub fn sync_conversation_into_store(
     store: &MemoryStore,
     agent: &str,
@@ -256,24 +275,16 @@ pub(crate) fn import_local_history_from_adapters(
                 }
             };
 
-            if is_root_project_placeholder(&conversation.project_dir)
-                || is_codex_generated_chat_project_dir(agent, &conversation.project_dir)
-            {
-                skipped += 1;
-                continue;
-            }
-
-            let canonical_project_root = crate::chatmem_memory::repo_identity::canonical_repo_root(
-                &conversation.project_dir,
-            );
-            if canonical_project_root.is_empty() {
+            let Some(canonical_project_root) =
+                importable_history_project_root(agent, &conversation.project_dir)
+            else {
                 skipped += 1;
                 warnings.push(format!(
                     "Skipped {agent} conversation {} because it has no project path.",
                     summary.id
                 ));
                 continue;
-            }
+            };
 
             conversation.project_dir = canonical_project_root.clone();
             sync_conversation_into_store(store, agent, &conversation)?;
@@ -344,9 +355,11 @@ pub fn scan_repo_conversations(
         let summaries = adapter.list_conversations()?;
         for summary in summaries {
             scanned += 1;
-            if is_root_project_placeholder(&summary.project_dir)
-                || is_codex_generated_chat_project_dir(agent, &summary.project_dir)
-            {
+            if is_standalone_history_project(agent, &summary.project_dir) {
+                let mut conversation = adapter.read_conversation(&summary.id)?;
+                conversation.project_dir =
+                    crate::chatmem_memory::repo_identity::GLOBAL_LOCAL_HISTORY_ROOT.to_string();
+                sync_conversation_into_store(store, agent, &conversation)?;
                 skipped += 1;
                 continue;
             }
@@ -776,7 +789,7 @@ mod tests {
     }
 
     #[test]
-    fn full_local_history_import_skips_codex_desktop_standalone_chats() {
+    fn full_local_history_import_indexes_codex_desktop_standalone_chats_as_global_history() {
         let store = new_store();
         let standalone_chat = fake_conversation(
             "codex-standalone",
@@ -801,9 +814,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(report.scanned_conversation_count, 3);
-        assert_eq!(report.imported_conversation_count, 1);
-        assert_eq!(report.skipped_conversation_count, 2);
-        assert_eq!(report.indexed_repo_count, 1);
+        assert_eq!(report.imported_conversation_count, 3);
+        assert_eq!(report.skipped_conversation_count, 0);
+        assert_eq!(report.indexed_repo_count, 2);
+        assert!(report.imported_project_roots.iter().any(|root| {
+            root.project_root == crate::chatmem_memory::repo_identity::GLOBAL_LOCAL_HISTORY_ROOT
+                && root.conversation_count == 2
+        }));
         assert!(report
             .imported_project_roots
             .iter()
@@ -812,5 +829,40 @@ mod tests {
             .imported_project_roots
             .iter()
             .any(|root| root.project_root.contains("documents/codex")));
+    }
+
+    #[test]
+    fn full_local_history_import_indexes_standalone_opencode_chats() {
+        let store = new_store();
+        let standalone_chat = fake_conversation(
+            "opencode-qtx-sponge",
+            AgentKind::OpenCode,
+            "",
+            "光头强与海绵宝宝的对决故事讲解",
+        );
+
+        let report = import_local_history_from_adapters(
+            &store,
+            vec![(
+                "opencode",
+                Box::new(FakeAdapter::new(AgentKind::OpenCode, vec![standalone_chat])),
+            )],
+        )
+        .unwrap();
+
+        assert_eq!(report.scanned_conversation_count, 1);
+        assert_eq!(report.imported_conversation_count, 1);
+        assert_eq!(report.skipped_conversation_count, 0);
+        assert_eq!(report.indexed_repo_count, 1);
+
+        let matches = store
+            .search_history("d:/vsp", "光头强和海绵宝宝", 5)
+            .unwrap();
+        assert!(
+            matches
+                .iter()
+                .any(|item| item.conversation_id.as_deref() == Some("opencode:opencode-qtx-sponge")),
+            "expected standalone OpenCode history to be searchable from a repo, got {matches:#?}"
+        );
     }
 }

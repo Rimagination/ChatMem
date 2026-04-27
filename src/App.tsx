@@ -116,9 +116,19 @@ interface TrashedConversation {
   warnings: string[];
 }
 
+interface EmptyTrashResponse {
+  removedCount: number;
+  removedTrashIds: string[];
+}
+
 type TrashConfirmState = {
   targets: TrashTarget[];
   deleteRemoteBackup: boolean;
+  busy: boolean;
+  error: string | null;
+} | null;
+
+type EmptyTrashConfirmState = {
   busy: boolean;
   error: string | null;
 } | null;
@@ -326,6 +336,12 @@ type ShellCopy = {
   trashEmptyBody: string;
   trashRetentionDays: string;
   trashRetentionHint: string;
+  emptyTrash: string;
+  emptyingTrash: string;
+  confirmEmptyTrashTitle: string;
+  confirmEmptyTrashBody: (count: number) => string;
+  emptyTrashSuccess: (count: number) => string;
+  emptyTrashFailed: string;
   restore: string;
   restoring: string;
   restoreSuccess: string;
@@ -765,6 +781,16 @@ function getShellCopy(locale: Locale): ShellCopy {
       trashEmptyBody: "Deleted conversations will appear here with a restore action.",
       trashRetentionDays: "Retention days",
       trashRetentionHint: "Applies to new deletions. Existing items keep their current expiry.",
+      emptyTrash: "Empty Trash",
+      emptyingTrash: "Emptying...",
+      confirmEmptyTrashTitle: "Empty Trash?",
+      confirmEmptyTrashBody: (count) =>
+        `This permanently removes ${count} recovery snapshot${
+          count === 1 ? "" : "s"
+        }. You will not be able to restore ${count === 1 ? "it" : "them"} from ChatMem.`,
+      emptyTrashSuccess: (count) =>
+        count === 1 ? "Trash emptied. 1 snapshot removed." : `Trash emptied. ${count} snapshots removed.`,
+      emptyTrashFailed: "Could not empty Trash",
       restore: "Restore",
       restoring: "Restoring...",
       restoreSuccess: "Conversation restored.",
@@ -902,6 +928,13 @@ function getShellCopy(locale: Locale): ShellCopy {
     trashEmptyBody: "删除后的对话会出现在这里，并提供恢复操作。",
     trashRetentionDays: "保留天数",
     trashRetentionHint: "影响之后删除的对话；已有项目保留原到期时间。",
+    emptyTrash: "清空垃圾箱",
+    emptyingTrash: "正在清空...",
+    confirmEmptyTrashTitle: "清空垃圾箱？",
+    confirmEmptyTrashBody: (count) =>
+      `这会永久移除 ${count} 份恢复快照，之后不能再从 ChatMem 恢复。`,
+    emptyTrashSuccess: (count) => `垃圾箱已清空，移除了 ${count} 份恢复快照。`,
+    emptyTrashFailed: "清空垃圾箱失败",
     restore: "恢复",
     restoring: "正在恢复...",
     restoreSuccess: "对话已恢复。",
@@ -1122,6 +1155,7 @@ function App() {
   const [selectedConversationKeys, setSelectedConversationKeys] = useState<string[]>([]);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [trashConfirm, setTrashConfirm] = useState<TrashConfirmState>(null);
+  const [emptyTrashConfirm, setEmptyTrashConfirm] = useState<EmptyTrashConfirmState>(null);
   const [trashedConversations, setTrashedConversations] = useState<TrashedConversation[]>([]);
   const [trashLoading, setTrashLoading] = useState(false);
   const [restoringTrashId, setRestoringTrashId] = useState<string | null>(null);
@@ -2526,6 +2560,37 @@ function App() {
     conversation: Pick<ConversationSummary, "project_dir" | "source_agent">,
   ) => getConversationProjectDir(conversation) || (locale === "en" ? "No project" : "无项目");
 
+  const handleEmptyTrashClick = () => {
+    if (trashLoading || trashedConversations.length === 0) {
+      return;
+    }
+    setEmptyTrashConfirm({ busy: false, error: null });
+  };
+
+  const confirmEmptyTrash = async () => {
+    if (!emptyTrashConfirm) {
+      return;
+    }
+
+    setEmptyTrashConfirm({ busy: true, error: null });
+    try {
+      const result = await invoke<EmptyTrashResponse>("empty_trash");
+      setTrashedConversations([]);
+      setEmptyTrashConfirm(null);
+      await loadTrashConversations();
+      setAppNotice({
+        kind: "success",
+        message: shell.emptyTrashSuccess(result.removedCount),
+      });
+    } catch (error) {
+      console.error("Failed to empty Trash:", error);
+      setEmptyTrashConfirm({
+        busy: false,
+        error: `${shell.emptyTrashFailed}: ${String(error)}`,
+      });
+    }
+  };
+
   const handleRestoreTrashConversation = async (trashId: string) => {
     setRestoringTrashId(trashId);
     try {
@@ -3832,17 +3897,27 @@ function App() {
           <h1>{shell.trashWorkspaceTitle}</h1>
           <p>{shell.trashWorkspaceSubtitle}</p>
         </div>
-        <label className="trash-retention-control" htmlFor="trash-retention-days">
-          {shell.trashRetentionDays}
-          <input
-            id="trash-retention-days"
-            type="number"
-            min={1}
-            max={365}
-            value={appSettings.trashRetentionDays}
-            onChange={(event) => handleTrashRetentionDaysChange(Number(event.target.value))}
-          />
-        </label>
+        <div className="trash-page-actions">
+          <button
+            type="button"
+            className="btn btn-secondary trash-empty-button"
+            onClick={handleEmptyTrashClick}
+            disabled={trashLoading || trashedConversations.length === 0}
+          >
+            {shell.emptyTrash}
+          </button>
+          <label className="trash-retention-control" htmlFor="trash-retention-days">
+            {shell.trashRetentionDays}
+            <input
+              id="trash-retention-days"
+              type="number"
+              min={1}
+              max={365}
+              value={appSettings.trashRetentionDays}
+              onChange={(event) => handleTrashRetentionDaysChange(Number(event.target.value))}
+            />
+          </label>
+        </div>
       </header>
 
       <p className="trash-retention-hint">{shell.trashRetentionHint}</p>
@@ -3979,6 +4054,56 @@ function App() {
               disabled={trashConfirm.busy}
             >
               {trashConfirm.busy ? shell.movingToTrash : shell.moveToTrash}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderEmptyTrashConfirmModal = () => {
+    if (!emptyTrashConfirm) {
+      return null;
+    }
+
+    const count = trashedConversations.length;
+
+    return (
+      <div
+        className="modal-overlay"
+        onClick={() => !emptyTrashConfirm.busy && setEmptyTrashConfirm(null)}
+      >
+        <div
+          className="modal trash-confirm-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="empty-trash-confirm-title"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="modal-content">
+            <p className="page-eyebrow">{shell.trash}</p>
+            <h3 id="empty-trash-confirm-title">{shell.confirmEmptyTrashTitle}</h3>
+            <p>{shell.confirmEmptyTrashBody(count)}</p>
+            {emptyTrashConfirm.error ? (
+              <p className="settings-notice is-danger">{emptyTrashConfirm.error}</p>
+            ) : null}
+          </div>
+          <div className="modal-actions">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setEmptyTrashConfirm(null)}
+              disabled={emptyTrashConfirm.busy}
+            >
+              {shell.cancel}
+            </button>
+            <button
+              type="button"
+              className="btn btn-danger"
+              onClick={() => void confirmEmptyTrash()}
+              disabled={emptyTrashConfirm.busy}
+            >
+              {emptyTrashConfirm.busy ? shell.emptyingTrash : shell.emptyTrash}
             </button>
           </div>
         </div>
@@ -4618,6 +4743,7 @@ function App() {
 
       {renderMemoryDrawer()}
       {renderTrashConfirmModal()}
+      {renderEmptyTrashConfirmModal()}
 
       {appNotice ? (
         <div className={`app-notice-toast is-${appNotice.kind}`} role="status" aria-live="polite">
