@@ -19,13 +19,26 @@ pub fn map_tool(source: &AgentKind, target: &AgentKind, name: &str, input: &Valu
     }
 
     // Normalize to a canonical name, then convert to target.
-    let canonical = to_canonical(source, name);
-    let target_name = from_canonical(target, &canonical);
-    let target_input = remap_input(&canonical, source, target, input);
+    let source_family = agent_family(source);
+    let target_family = agent_family(target);
+    let canonical = to_canonical(&source_family, name);
+    let target_name = from_canonical(&target_family, &canonical);
+    let target_input = remap_input(&canonical, &source_family, &target_family, input);
 
     MappedTool {
         name: target_name,
         input: target_input,
+    }
+}
+
+fn agent_family(agent: &AgentKind) -> AgentKind {
+    match agent {
+        AgentKind::ZCode => AgentKind::Claude,
+        AgentKind::ZCodeClaude => AgentKind::Claude,
+        AgentKind::ZCodeCodex => AgentKind::Codex,
+        AgentKind::ZCodeGemini => AgentKind::Gemini,
+        AgentKind::ZCodeOpenCode => AgentKind::OpenCode,
+        other => other.clone(),
     }
 }
 
@@ -83,6 +96,11 @@ fn to_canonical(agent: &AgentKind, name: &str) -> Canonical {
             "glob" => Canonical::Glob,
             _ => Canonical::Unknown(name.to_string()),
         },
+        AgentKind::ZCode
+        | AgentKind::ZCodeClaude
+        | AgentKind::ZCodeCodex
+        | AgentKind::ZCodeGemini
+        | AgentKind::ZCodeOpenCode => to_canonical(&agent_family(agent), name),
     }
 }
 
@@ -129,6 +147,11 @@ fn from_canonical(agent: &AgentKind, canonical: &Canonical) -> String {
             Canonical::Unknown(n) => n.clone(),
             _ => from_canonical(&AgentKind::Claude, canonical),
         },
+        AgentKind::ZCode
+        | AgentKind::ZCodeClaude
+        | AgentKind::ZCodeCodex
+        | AgentKind::ZCodeGemini
+        | AgentKind::ZCodeOpenCode => from_canonical(&agent_family(agent), canonical),
     }
 }
 

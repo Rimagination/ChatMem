@@ -43,6 +43,7 @@ import { buildRepoLibraryRecords, type LibraryRecord } from "./library/model";
 import packageInfo from "../package.json";
 import brandIcon from "../src-tauri/icons/icon.png";
 import {
+  autoCaptureConversation,
   createCheckpoint,
   createHandoffPacket,
   getProjectContext,
@@ -161,7 +162,12 @@ interface FileChange {
   message_id: string;
 }
 
-type AgentType = "claude" | "codex" | "gemini" | "opencode";
+type AgentType =
+  | "claude"
+  | "codex"
+  | "gemini"
+  | "opencode"
+  | "zcode";
 type TopPage = "continue" | "review" | "history" | "help";
 type HistoryView = "conversations" | "recovery" | "transfers" | "outputs";
 type MemoryDrawerTab = "inbox" | "approved" | "wiki" | "continuation";
@@ -360,9 +366,26 @@ type ProjectGroup = {
   fullPath: string;
   latestAt: string;
   conversations: ConversationSummary[];
+  cliId?: string;
+  cliLabel?: string;
 };
 
 const COPY_RESET_DELAY_MS = 1800;
+const AGENT_OPTIONS: { value: AgentType; label: string }[] = [
+  { value: "claude", label: "Claude" },
+  { value: "codex", label: "Codex" },
+  { value: "gemini", label: "Gemini" },
+  { value: "opencode", label: "OpenCode" },
+  { value: "zcode", label: "ZCode" },
+];
+const ZCODE_CLI_LABELS: Record<string, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  gemini: "Gemini",
+  opencode: "OpenCode",
+  glm: "GLM",
+};
+const ZCODE_CLI_ORDER = ["claude", "codex", "gemini", "opencode", "glm", "unknown"];
 const TARGET_PROFILE_OPTIONS: Record<string, HandoffTargetProfileOption[]> = {
   claude: [
     {
@@ -416,7 +439,7 @@ const TARGET_PROFILE_OPTIONS: Record<string, HandoffTargetProfileOption[]> = {
 
 function getAgentHeading(agent: AgentType, locale: Locale) {
   if (locale === "en") {
-    return `${agent.toUpperCase()} Conversations`;
+    return `${getAgentLabel(agent)} Conversations`;
   }
 
   switch (agent) {
@@ -428,6 +451,8 @@ function getAgentHeading(agent: AgentType, locale: Locale) {
       return "GEMINI 对话";
     case "opencode":
       return "OPENCODE \u5bf9\u8bdd";
+    case "zcode":
+      return "ZCODE \u5bf9\u8bdd";
     default:
       return "对话";
   }
@@ -438,18 +463,29 @@ const AGENT_LABELS: Record<string, string> = {
   codex: "Codex",
   gemini: "Gemini",
   opencode: "OpenCode",
+  zcode: "ZCode",
+  "zcode-claude": "ZCode Claude",
+  "zcode-codex": "ZCode Codex",
+  "zcode-gemini": "ZCode Gemini",
+  "zcode-opencode": "ZCode OpenCode",
 };
 
 function getAgentLabel(agent: string) {
   return AGENT_LABELS[agent.toLowerCase()] ?? agent.charAt(0).toUpperCase() + agent.slice(1);
 }
 
-function getCurrentConversationLabel(agent: AgentType, locale: Locale) {
+function getCurrentConversationLabel(agent: string, locale: Locale) {
+  const normalized = agent.toLowerCase();
+  const label = normalized.startsWith("zcode-")
+    ? getAgentLabel(normalized)
+    : normalized === "zcode"
+      ? "ZCode"
+      : normalized.toUpperCase();
   if (locale === "en") {
-    return `Current ${agent.toUpperCase()} conversation`;
+    return `Current ${label} conversation`;
   }
 
-  return `${agent.toUpperCase()} \u5f53\u524d\u5bf9\u8bdd`;
+  return `${label} \u5f53\u524d\u5bf9\u8bdd`;
 }
 
 function getAgentConfigLocation(agent: AgentType) {
@@ -462,6 +498,8 @@ function getAgentConfigLocation(agent: AgentType) {
       return "~/.gemini";
     case "opencode":
       return "$XDG_DATA_HOME/opencode or ~/.local/share/opencode";
+    case "zcode":
+      return "~/.zcode/v2/acp-config";
     default:
       return "--";
   }
@@ -608,6 +646,23 @@ function isCodexGeneratedChatPath(projectDir: string) {
   );
 }
 
+function getZCodeConversationCli(
+  conversation: Pick<ConversationSummary, "id" | "source_agent"> | Pick<Conversation, "id" | "source_agent">,
+) {
+  const sourceAgent = conversation.source_agent.toLowerCase();
+  const fromAgent = sourceAgent.startsWith("zcode-") ? sourceAgent.replace("zcode-", "") : null;
+  const fromId = conversation.id.includes(":") ? conversation.id.split(":")[0].toLowerCase() : null;
+  const cliId =
+    (fromAgent && ZCODE_CLI_LABELS[fromAgent] ? fromAgent : null) ??
+    (fromId && ZCODE_CLI_LABELS[fromId] ? fromId : null) ??
+    "unknown";
+
+  return {
+    id: cliId,
+    label: ZCODE_CLI_LABELS[cliId] ?? "Other",
+  };
+}
+
 function isRootProjectPlaceholder(projectDir: string) {
   const normalized = normalizeProjectPath(projectDir);
   return normalized === "/" || /^[a-zA-Z]:\/?$/.test(normalized);
@@ -625,7 +680,10 @@ function getConversationProjectDir(
     return "";
   }
 
-  if (conversation.source_agent.toLowerCase() === "codex" && isCodexGeneratedChatPath(projectDir)) {
+  if (
+    ["codex", "zcode", "zcode-codex"].includes(conversation.source_agent.toLowerCase()) &&
+    isCodexGeneratedChatPath(projectDir)
+  ) {
     return "";
   }
 
@@ -1028,6 +1086,17 @@ function WindowButtonIcon({
     | "trash"
     | "settings"
     | "help"
+    | "source"
+    | "search"
+    | "project"
+    | "conversation"
+    | "migrate"
+    | "copy"
+    | "terminal"
+    | "memory"
+    | "wiki"
+    | "shield"
+    | "spark"
     | "chevron";
 }) {
   if (type === "minimize") {
@@ -1128,6 +1197,114 @@ function WindowButtonIcon({
     );
   }
 
+  if (type === "source") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M3.5 4.5h9" />
+        <path d="M5 8h6" />
+        <path d="M6.5 11.5h3" />
+      </svg>
+    );
+  }
+
+  if (type === "search") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="7" cy="7" r="3.6" />
+        <path d="M9.8 9.8 13 13" />
+      </svg>
+    );
+  }
+
+  if (type === "project") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M2.8 5.2h10.4v6.3a1.2 1.2 0 0 1-1.2 1.2H4a1.2 1.2 0 0 1-1.2-1.2Z" />
+        <path d="M2.8 5.2 4.2 3.4h3l1 1.8" />
+      </svg>
+    );
+  }
+
+  if (type === "conversation") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M3 4.2h10v6.4H8.1L5.4 13v-2.4H3Z" />
+        <path d="M5 6.5h6" />
+        <path d="M5 8.6h3.8" />
+      </svg>
+    );
+  }
+
+  if (type === "migrate") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M3 5h8" />
+        <path d="M9 3l2 2-2 2" />
+        <path d="M13 11H5" />
+        <path d="M7 9l-2 2 2 2" />
+      </svg>
+    );
+  }
+
+  if (type === "copy") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <rect x="5" y="4" width="7" height="8" rx="1.2" />
+        <path d="M3.5 9.8V3.2A1.2 1.2 0 0 1 4.7 2h5" />
+      </svg>
+    );
+  }
+
+  if (type === "terminal") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M3 4h10v8H3Z" />
+        <path d="m5 6.4 1.5 1.5L5 9.4" />
+        <path d="M8 9.5h3" />
+      </svg>
+    );
+  }
+
+  if (type === "memory") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M5 3.5h6a1.5 1.5 0 0 1 1.5 1.5v6A1.5 1.5 0 0 1 11 12.5H5A1.5 1.5 0 0 1 3.5 11V5A1.5 1.5 0 0 1 5 3.5Z" />
+        <path d="M6 6h4" />
+        <path d="M6 8h4" />
+        <path d="M6 10h2.5" />
+      </svg>
+    );
+  }
+
+  if (type === "wiki") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M4 3.5h5.2L12 6.3v6.2H4Z" />
+        <path d="M9.2 3.5v3h2.8" />
+        <path d="M5.8 8.2h4.4" />
+        <path d="M5.8 10.2h3" />
+      </svg>
+    );
+  }
+
+  if (type === "shield") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M8 2.8 12.2 4v3.4c0 2.7-1.5 4.6-4.2 5.8-2.7-1.2-4.2-3.1-4.2-5.8V4Z" />
+        <path d="m6.2 7.8 1.2 1.2 2.5-2.7" />
+      </svg>
+    );
+  }
+
+  if (type === "spark") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M8 2.8 9.1 6l3.1 1.1L9.1 8.2 8 11.4 6.9 8.2 3.8 7.1 6.9 6Z" />
+        <path d="M11.6 10.2 12.1 11.5l1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5Z" />
+      </svg>
+    );
+  }
+
   return (
     <svg viewBox="0 0 16 16" aria-hidden="true">
       <path d="M6 4l4 4-4 4" />
@@ -1209,6 +1386,8 @@ function App() {
   const repoScanActiveCountRef = useRef(0);
   const conversationDetailCacheRef = useRef<Record<string, Conversation>>({});
   const conversationDetailRequestIdRef = useRef(0);
+  const autoCaptureInFlightRef = useRef<string | null>(null);
+  const lastAutoCaptureKeyRef = useRef<string | null>(null);
   const autoBootstrapAttemptedReposRef = useRef<Record<string, true>>({});
   const globalHistoryImportAttemptedRef = useRef(false);
   const selectedFontOption =
@@ -1217,7 +1396,7 @@ function App() {
     "--font-sans": selectedFontOption.cssFamily,
     fontFamily: selectedFontOption.cssFamily,
   } as CSSProperties & Record<"--font-sans", string>;
-  const availableHandoffTargets = ["claude", "codex", "gemini", "opencode"].filter(
+  const availableHandoffTargets = AGENT_OPTIONS.map((agent) => agent.value).filter(
     (agent) => agent !== selectedAgent,
   );
 
@@ -1531,6 +1710,83 @@ function App() {
     };
   }, [activeRepoRoot, runRepoScan]);
 
+  useEffect(() => {
+    if (!appSettings.autoCaptureMemory || !selectedConversation || !activeRepoRoot) {
+      if (!appSettings.autoCaptureMemory || !selectedConversation) {
+        lastAutoCaptureKeyRef.current = null;
+      }
+      return;
+    }
+
+    const sourceAgent = selectedConversation.source_agent || selectedAgent;
+    const conversationId = selectedConversation.id;
+    const repoRoot = activeRepoRoot;
+    const captureKey = `${sourceAgent}:${conversationId}:${repoRoot}`;
+    let cancelled = false;
+    let initialTimer: number | null = null;
+
+    const capture = async () => {
+      if (autoCaptureInFlightRef.current === captureKey) {
+        return;
+      }
+
+      autoCaptureInFlightRef.current = captureKey;
+      try {
+        const report = await autoCaptureConversation({
+          agent: sourceAgent,
+          id: conversationId,
+          repoRoot,
+        });
+        if (
+          cancelled ||
+          activeConversationIdRef.current !== conversationId ||
+          activeRepoRootRef.current !== repoRoot ||
+          !report?.checkpoint?.checkpoint_id
+        ) {
+          return;
+        }
+
+        setCheckpoints((current) => [
+          report.checkpoint,
+          ...current.filter(
+            (checkpoint) => checkpoint.checkpoint_id !== report.checkpoint.checkpoint_id,
+          ),
+        ]);
+      } catch (error) {
+        console.debug("Silent ChatMem auto capture skipped:", error);
+      } finally {
+        if (autoCaptureInFlightRef.current === captureKey) {
+          autoCaptureInFlightRef.current = null;
+        }
+      }
+    };
+
+    if (lastAutoCaptureKeyRef.current !== captureKey) {
+      lastAutoCaptureKeyRef.current = captureKey;
+      initialTimer = window.setTimeout(() => {
+        void capture();
+      }, 350);
+    }
+
+    const interval = window.setInterval(() => {
+      void capture();
+    }, 120000);
+
+    return () => {
+      cancelled = true;
+      if (initialTimer !== null) {
+        window.clearTimeout(initialTimer);
+      }
+      window.clearInterval(interval);
+    };
+  }, [
+    activeRepoRoot,
+    appSettings.autoCaptureMemory,
+    selectedAgent,
+    selectedConversation?.id,
+    selectedConversation?.source_agent,
+  ]);
+
   const handleScanRepoConversations = async () => {
     if (!activeRepoRoot) {
       return;
@@ -1706,7 +1962,7 @@ function App() {
     setTrashConfirm({
       targets: targets.map((target) => ({
         id: target.id,
-        source_agent: target.source_agent || selectedAgent,
+        source_agent: selectedAgent === "zcode" ? "zcode" : target.source_agent || selectedAgent,
         summary: target.summary ?? null,
       })),
       deleteRemoteBackup: false,
@@ -2298,7 +2554,9 @@ function App() {
       if (!projectDir) {
         return;
       }
-      const groupKey = projectPathKey(projectDir);
+      const zcodeCli = selectedAgent === "zcode" ? getZCodeConversationCli(conversation) : null;
+      const projectKey = projectPathKey(projectDir);
+      const groupKey = zcodeCli ? `${zcodeCli.id}:${projectKey}` : projectKey;
       const normalizedConversation = normalizeConversationProject(conversation);
       const existing = groups.get(groupKey);
       if (existing) {
@@ -2315,13 +2573,94 @@ function App() {
         fullPath: projectDir,
         latestAt: conversation.updated_at,
         conversations: [normalizedConversation],
+        cliId: zcodeCli?.id,
+        cliLabel: zcodeCli?.label,
       });
     });
 
     return Array.from(groups.values()).sort((left, right) =>
       right.latestAt.localeCompare(left.latestAt),
     );
-  }, [projectConversations]);
+  }, [projectConversations, selectedAgent]);
+
+  const zcodeProjectCliGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      { id: string; label: string; latestAt: string; conversationCount: number; projects: ProjectGroup[] }
+    >();
+
+    projectGroups.forEach((projectGroup) => {
+      const cliId = projectGroup.cliId ?? "unknown";
+      const cliLabel = projectGroup.cliLabel ?? "Other";
+      const existing = groups.get(cliId);
+      if (existing) {
+        existing.projects.push(projectGroup);
+        existing.conversationCount += projectGroup.conversations.length;
+        if (projectGroup.latestAt > existing.latestAt) {
+          existing.latestAt = projectGroup.latestAt;
+        }
+        return;
+      }
+
+      groups.set(cliId, {
+        id: cliId,
+        label: cliLabel,
+        latestAt: projectGroup.latestAt,
+        conversationCount: projectGroup.conversations.length,
+        projects: [projectGroup],
+      });
+    });
+
+    return Array.from(groups.values()).sort((left, right) => {
+      const leftOrder = ZCODE_CLI_ORDER.indexOf(left.id);
+      const rightOrder = ZCODE_CLI_ORDER.indexOf(right.id);
+      const normalizedLeftOrder = leftOrder < 0 ? ZCODE_CLI_ORDER.length : leftOrder;
+      const normalizedRightOrder = rightOrder < 0 ? ZCODE_CLI_ORDER.length : rightOrder;
+      if (normalizedLeftOrder !== normalizedRightOrder) {
+        return normalizedLeftOrder - normalizedRightOrder;
+      }
+      return right.latestAt.localeCompare(left.latestAt);
+    });
+  }, [projectGroups]);
+
+  const zcodeChatCliGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      { id: string; label: string; latestAt: string; conversations: ConversationSummary[] }
+    >();
+
+    chatConversations.forEach((conversation) => {
+      const cli = selectedAgent === "zcode" ? getZCodeConversationCli(conversation) : null;
+      const cliId = cli?.id ?? "unknown";
+      const cliLabel = cli?.label ?? "Other";
+      const existing = groups.get(cliId);
+      if (existing) {
+        existing.conversations.push(conversation);
+        if (conversation.updated_at > existing.latestAt) {
+          existing.latestAt = conversation.updated_at;
+        }
+        return;
+      }
+
+      groups.set(cliId, {
+        id: cliId,
+        label: cliLabel,
+        latestAt: conversation.updated_at,
+        conversations: [conversation],
+      });
+    });
+
+    return Array.from(groups.values()).sort((left, right) => {
+      const leftOrder = ZCODE_CLI_ORDER.indexOf(left.id);
+      const rightOrder = ZCODE_CLI_ORDER.indexOf(right.id);
+      const normalizedLeftOrder = leftOrder < 0 ? ZCODE_CLI_ORDER.length : leftOrder;
+      const normalizedRightOrder = rightOrder < 0 ? ZCODE_CLI_ORDER.length : rightOrder;
+      if (normalizedLeftOrder !== normalizedRightOrder) {
+        return normalizedLeftOrder - normalizedRightOrder;
+      }
+      return right.latestAt.localeCompare(left.latestAt);
+    });
+  }, [chatConversations, selectedAgent]);
 
   useEffect(() => {
     setExpandedProjects((current) => {
@@ -2670,6 +3009,42 @@ function App() {
           >
             {shell.delete}
           </button>
+        ) : null}
+      </div>
+    );
+  };
+
+  const renderProjectGroup = (group: ProjectGroup) => {
+    const isExpanded = expandedProjects[group.id] ?? true;
+    return (
+      <div key={group.id} className="project-group">
+        <button
+          type="button"
+          className="project-group-header"
+          onClick={() =>
+            setExpandedProjects((current) => ({
+              ...current,
+              [group.id]: !isExpanded,
+            }))
+          }
+        >
+          <div className="project-group-title-wrap">
+            <span className={`project-group-chevron ${isExpanded ? "expanded" : ""}`}>
+              <WindowButtonIcon type="chevron" />
+            </span>
+            <div className="project-group-copy">
+              <span className="project-group-title">{group.label}</span>
+              <span className="project-group-path" title={group.fullPath}>
+                {group.fullPath}
+              </span>
+            </div>
+          </div>
+          <span className="library-count-pill">{group.conversations.length}</span>
+        </button>
+        {isExpanded ? (
+          <div className="project-group-items">
+            {group.conversations.map((conversation) => renderConversationRow(conversation))}
+          </div>
         ) : null}
       </div>
     );
@@ -3776,119 +4151,203 @@ function App() {
     );
   };
 
-  const renderAboutWorkspace = () => (
-    <section className="about-workspace-page" aria-labelledby="about-chatmem-title">
-      <header className="settings-panel-header about-page-header">
-        <div className="about-title-cluster">
-          <div className="about-brand-mark" aria-hidden="true">
-            <img src={brandIcon} alt="" />
-          </div>
-          <div>
-            <p className="page-eyebrow">{shell.aboutChatMem}</p>
-            <h1 id="about-chatmem-title">{locale === "en" ? "About ChatMem" : "关于 ChatMem"}</h1>
-          </div>
-        </div>
-        <button type="button" className="toolbar-button" onClick={() => setShowAbout(false)}>
-          {locale === "en" ? "Back" : "返回"}
-        </button>
-      </header>
+  const renderAboutWorkspace = () => {
+    const releaseItems = [
+      {
+        icon: "conversation" as const,
+        title: locale === "en" ? "ZCode task history" : "ZCode 任务历史",
+        body:
+          locale === "en"
+            ? "ZCode is now a top-level source, with CLI groups underneath it and project groups underneath each CLI."
+            : "ZCode 现在作为顶层来源展示，下一级按 CLI 分组，再往下才按项目组织对话。",
+      },
+      {
+        icon: "memory" as const,
+        title: locale === "en" ? "Smarter conversation names" : "更聪明的对话命名",
+        body:
+          locale === "en"
+            ? "Conversation titles prioritize the task you actually typed, instead of raw IDs, command caveats, or tool strings."
+            : "对话标题优先使用你真正输入的任务内容，而不是原始 ID、命令提示或工具字符串。",
+      },
+      {
+        icon: "wiki" as const,
+        title: locale === "en" ? "Markdown conversation reading" : "Markdown 对话阅读",
+        body:
+          locale === "en"
+            ? "Full conversation views render Markdown so long answers, lists, code blocks, and links are easier to scan."
+            : "完整对话会渲染 Markdown，长回答、列表、代码块和链接会更容易阅读。",
+      },
+      {
+        icon: "shield" as const,
+        title: locale === "en" ? "Quieter tool history" : "更安静的工具历史",
+        body:
+          locale === "en"
+            ? "Tool-call groups are folded into a smaller gray layer so user intent and agent replies stay visually dominant."
+            : "工具调用会折叠成更小的灰色信息层，让你的输入和 Agent 回答成为阅读重点。",
+      },
+    ];
 
-      <section className="about-summary-section">
-        <p>
-          {locale === "en"
-            ? "ChatMem is a local-first memory layer for people who work with AI coding agents every day."
-            : "ChatMem 是给长期使用 AI 编程 Agent 的人准备的本地优先记忆层。"}
-        </p>
-        <p>
-          {locale === "en"
-            ? "It indexes local Claude, Codex, Gemini, and OpenCode history, keeps the original evidence traceable, and turns stable project knowledge into startup rules and Wiki context."
-            : "它索引本机 Claude、Codex、Gemini 和 OpenCode 历史，保留可追溯的原始证据，并把稳定的项目知识整理成启动规则和 Wiki 上下文。"}
-        </p>
-      </section>
+    const principleItems = [
+      {
+        icon: "source" as const,
+        title: locale === "en" ? "Local evidence first" : "本地证据优先",
+        body:
+          locale === "en"
+            ? "History, startup rules, Wiki context, trash recovery, and handoffs stay anchored to local files you can inspect."
+            : "历史、启动规则、Wiki 上下文、垃圾箱恢复和交接都锚定在可检查的本地文件上。",
+      },
+      {
+        icon: "migrate" as const,
+        title: locale === "en" ? "Agent migration" : "Agent 迁移",
+        body:
+          locale === "en"
+            ? "ChatMem is designed for moving work between Claude, Codex, Gemini, OpenCode, and ZCode without losing context."
+            : "ChatMem 面向 Claude、Codex、Gemini、OpenCode 和 ZCode 之间的工作迁移，不让上下文散掉。",
+      },
+      {
+        icon: "spark" as const,
+        title: locale === "en" ? "Memory without ceremony" : "无感知保留记忆",
+        body:
+          locale === "en"
+            ? "The product direction is to preserve useful continuity automatically, then expose only the evidence you need."
+            : "产品方向是自动保留有用的连续性，并只在需要时展开可追溯证据。",
+      },
+    ];
 
-      <section className="about-detail-grid" aria-label={locale === "en" ? "Product details" : "产品说明"}>
-        <article className="about-detail-card">
-          <span>{locale === "en" ? "Version" : "版本"}</span>
-          <strong>v{packageInfo.version}</strong>
-        </article>
-        <article className="about-detail-card">
-          <span>{locale === "en" ? "Agent layer" : "Agent 层"}</span>
-          <strong>{locale === "en" ? "MCP + Native Guidance" : "MCP + 原生引导"}</strong>
-        </article>
-        <article className="about-detail-card">
-          <span>{locale === "en" ? "Data posture" : "数据方式"}</span>
-          <strong>{locale === "en" ? "Local-first" : "本地优先"}</strong>
-        </article>
-        <article className="about-detail-card">
-          <span>GitHub</span>
-          <a
-            className="about-github-link"
-            href="https://github.com/Rimagination/ChatMem"
-            target="_blank"
-            rel="noreferrer"
+    return (
+      <section className="about-workspace-page" aria-labelledby="about-chatmem-title">
+        <header className="settings-panel-header about-page-header">
+          <div className="about-title-cluster">
+            <div className="about-brand-mark" aria-hidden="true">
+              <img src={brandIcon} alt="" />
+            </div>
+            <div>
+              <p className="page-eyebrow">{shell.aboutChatMem}</p>
+              <h1 id="about-chatmem-title">{locale === "en" ? "About ChatMem" : "关于 ChatMem"}</h1>
+            </div>
+          </div>
+          <button type="button" className="toolbar-button" onClick={() => setShowAbout(false)}>
+            {locale === "en" ? "Back" : "返回"}
+          </button>
+        </header>
+
+        <section className="about-hero-section" aria-label={locale === "en" ? "Overview" : "概览"}>
+          <div className="about-hero-copy">
+            <p>
+              {locale === "en"
+                ? "ChatMem is a local-first memory and migration layer for people who work with AI coding agents every day."
+                : "ChatMem 是给长期使用 AI 编程 Agent 的人准备的本地优先记忆与迁移层。"}
+            </p>
+            <p>
+              {locale === "en"
+                ? "It keeps the original conversation evidence traceable, extracts stable project knowledge, and helps a new agent continue from the right file without reading an entire giant transcript."
+                : "它保留可追溯的原始对话证据，沉淀稳定的项目知识，并帮助新 Agent 从正确文件继续，而不是重新吞下一整段超长记录。"}
+            </p>
+          </div>
+          <aside className="about-release-panel" aria-label={locale === "en" ? "Current release" : "当前版本"}>
+            <span>{locale === "en" ? "Current release" : "当前版本"}</span>
+            <strong>v{packageInfo.version}</strong>
+            <p>
+              {locale === "en"
+                ? "A UI and history-quality release focused on ZCode, readable transcripts, and quieter tool-call evidence."
+                : "这一版重点优化 ZCode、可读对话全文，以及更克制的工具调用证据展示。"}
+            </p>
+          </aside>
+        </section>
+
+        <section className="about-detail-grid" aria-label={locale === "en" ? "Product details" : "产品说明"}>
+          <article className="about-detail-card">
+            <WindowButtonIcon type="memory" />
+            <span>{locale === "en" ? "Memory layer" : "记忆层"}</span>
+            <strong>{locale === "en" ? "Local-first" : "本地优先"}</strong>
+          </article>
+          <article className="about-detail-card">
+            <WindowButtonIcon type="migrate" />
+            <span>{locale === "en" ? "Agent scope" : "Agent 范围"}</span>
+            <strong>Claude / Codex / Gemini / OpenCode / ZCode</strong>
+          </article>
+          <article className="about-detail-card">
+            <WindowButtonIcon type="shield" />
+            <span>{locale === "en" ? "Evidence" : "证据方式"}</span>
+            <strong>{locale === "en" ? "Traceable files" : "可追溯文件"}</strong>
+          </article>
+          <article className="about-detail-card">
+            <WindowButtonIcon type="source" />
+            <span>GitHub</span>
+            <a
+              className="about-github-link"
+              href="https://github.com/Rimagination/ChatMem"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Rimagination/ChatMem
+            </a>
+          </article>
+        </section>
+
+        <section className="about-feature-section" aria-labelledby="about-release-title">
+          <div className="about-section-heading">
+            <h2 id="about-release-title">
+              {locale === "en" ? "What changed in 1.1.0" : "1.1.0 更新内容"}
+            </h2>
+            <p className="settings-helper">
+              {locale === "en"
+                ? "This release separates interface hierarchy from raw history evidence, so the app reads more like a working tool and less like a log viewer."
+                : "这一版把功能层级和原始历史证据区分开，让软件更像一个工作台，而不是单纯的日志查看器。"}
+            </p>
+          </div>
+          <div className="about-feature-list">
+            {releaseItems.map((item) => (
+              <article key={item.title} className="about-feature-item">
+                <span className="about-feature-icon" aria-hidden="true">
+                  <WindowButtonIcon type={item.icon} />
+                </span>
+                <div>
+                  <h3>{item.title}</h3>
+                  <p>{item.body}</p>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="about-principle-grid" aria-label={locale === "en" ? "Product principles" : "产品原则"}>
+          {principleItems.map((item) => (
+            <article key={item.title} className="about-principle-card">
+              <span className="about-feature-icon" aria-hidden="true">
+                <WindowButtonIcon type={item.icon} />
+              </span>
+              <h2>{item.title}</h2>
+              <p>{item.body}</p>
+            </article>
+          ))}
+        </section>
+
+        <section className="settings-section settings-about" aria-labelledby="about-acknowledgements-title">
+          <div className="about-section-heading">
+            <h2 id="about-acknowledgements-title">
+              {locale === "en" ? "Design references and acknowledgements" : "设计参考与致谢"}
+            </h2>
+            <p className="settings-helper">
+              {locale === "en"
+                ? "ChatMem learns from several memory, agent-state, and code-wiki directions, but it is not a clone of any single project. These references are acknowledgements, not dependencies or endorsements."
+                : "ChatMem 参考了多个记忆、Agent 状态管理和代码知识库方向，但它不是某一个项目的复刻。下面是设计灵感与致谢，不表示依赖、复刻或由相关项目背书。"}
+            </p>
+          </div>
+          <ul
+            className="acknowledgement-list"
+            aria-label={locale === "en" ? "Acknowledged projects" : "致谢项目"}
           >
-            Rimagination/ChatMem
-          </a>
-        </article>
-      </section>
-
-      <section className="about-prose-section" aria-label={locale === "en" ? "Product positioning" : "产品定位"}>
-        <article className="about-prose-block">
-          <h2>{locale === "en" ? "Why it exists" : "项目简介"}</h2>
-          <p>
-            {locale === "en"
-              ? "Model-native memory is useful, but it is usually tied to one product account. ChatMem treats local conversations as the durable source of truth, so past decisions, project paths, tool calls, and recovery commands can be found again without waiting for a model to remember them."
-              : "模型自带记忆很有用，但通常绑定在某一个产品账号里。ChatMem 把本地对话当成长期可信的来源，让过去的决策、项目路径、工具调用和恢复命令可以被重新找到，而不是只能寄希望于模型自己想起来。"}
-          </p>
-        </article>
-
-        <article className="about-prose-block">
-          <h2>{locale === "en" ? "Positioning and advantages" : "优势与生态位"}</h2>
-          <ul className="about-text-list">
-            {(locale === "en"
-              ? [
-                  "More portable than native memory: one local layer works across Claude, Codex, Gemini, and OpenCode.",
-                  "More auditable than pure vector memory: answers can point back to original conversations and files.",
-                  "Closer to coding work than generic memory stores: history search, startup rules, Wiki context, trash recovery, and agent installation are built around real project workflows.",
-                  "Local-first by default: WebDAV is optional backup, not a requirement for daily recall.",
-                ]
-              : [
-                  "比模型自带记忆更可迁移：同一层本地记忆可以跨 Claude、Codex、Gemini 和 OpenCode 使用。",
-                  "比单纯向量记忆更可审计：检索结果可以回到原始对话和文件证据。",
-                  "比通用记忆库更贴近编程工作流：历史检索、启动规则、Wiki 上下文、垃圾箱恢复和 Agent 安装都围绕真实项目展开。",
-                  "默认本地优先：WebDAV 只是可选备份，不是日常回忆能力的前提。",
-                ]
-            ).map((item) => (
-              <li key={item}>{item}</li>
+            {ACKNOWLEDGED_SYSTEMS.map((system) => (
+              <li key={system} className="acknowledgement-item">
+                {system}
+              </li>
             ))}
           </ul>
-        </article>
+        </section>
       </section>
-
-      <section className="settings-section settings-about" aria-labelledby="about-acknowledgements-title">
-        <div className="about-section-heading">
-          <h2 id="about-acknowledgements-title">
-            {locale === "en" ? "Design references and acknowledgements" : "设计参考与致谢"}
-          </h2>
-          <p className="settings-helper">
-            {locale === "en"
-              ? "ChatMem learns from several memory, agent-state, and code-wiki directions, but it is not a clone of any single project. These references are acknowledgements, not dependencies or endorsements."
-              : "ChatMem 参考了多个记忆、Agent 状态管理和代码知识库方向，但它不是某一个项目的复刻。下面是设计灵感与致谢，不表示依赖、复刻或由相关项目背书。"}
-          </p>
-        </div>
-        <ul
-          className="acknowledgement-list"
-          aria-label={locale === "en" ? "Acknowledged projects" : "致谢项目"}
-        >
-          {ACKNOWLEDGED_SYSTEMS.map((system) => (
-            <li key={system} className="acknowledgement-item">
-              {system}
-            </li>
-          ))}
-        </ul>
-      </section>
-    </section>
-  );
+    );
+  };
 
   const renderTrashWorkspace = () => (
     <div className="trash-workspace-page">
@@ -4208,7 +4667,9 @@ function App() {
           >
             <header className="conversation-toolbar">
               <div className="conversation-title-block">
-                <p className="page-eyebrow">{getCurrentConversationLabel(selectedAgent, locale)}</p>
+                <p className="page-eyebrow">
+                  {getCurrentConversationLabel(selectedConversation.source_agent || selectedAgent, locale)}
+                </p>
                 <h1 title={conversationTitle}>{visibleConversationTitle}</h1>
                 <span title={selectedConversation.project_dir || selectedConversationProjectDisplay}>
                   {selectedConversationProjectDisplay}
@@ -4221,7 +4682,8 @@ function App() {
                   onClick={() => setShowMigrateModal(true)}
                   disabled={detailLoading}
                 >
-                  {shell.migrate}
+                  <WindowButtonIcon type="migrate" />
+                  <span>{shell.migrate}</span>
                 </button>
                 <button
                   type="button"
@@ -4229,7 +4691,8 @@ function App() {
                   onClick={() => void handleCopy("location", selectedConversation.storage_path)}
                   disabled={!selectedConversation.storage_path}
                 >
-                  {locationButtonLabel}
+                  <WindowButtonIcon type="copy" />
+                  <span>{locationButtonLabel}</span>
                 </button>
                 <button
                   type="button"
@@ -4237,7 +4700,8 @@ function App() {
                   onClick={() => void handleCopy("resume", selectedConversation.resume_command)}
                   disabled={!selectedConversation.resume_command}
                 >
-                  {resumeButtonLabel}
+                  <WindowButtonIcon type="terminal" />
+                  <span>{resumeButtonLabel}</span>
                 </button>
               </div>
             </header>
@@ -4307,7 +4771,16 @@ function App() {
       locale={appSettings.locale}
       fontFamily={appSettings.fontFamily}
       autoCheckUpdates={appSettings.autoCheckUpdates}
+      autoCaptureMemory={appSettings.autoCaptureMemory}
       autoCheckLabel={t("settings.autoCheck")}
+      autoCaptureLabel={
+        locale === "en" ? "Auto-save recovery checkpoints" : "\u81ea\u52a8\u4fdd\u7559\u6062\u590d\u70b9"
+      }
+      autoCaptureHint={
+        locale === "en"
+          ? "Silently indexes the active local conversation so a new agent can resume without rereading the full transcript."
+          : "\u9759\u9ed8\u7d22\u5f15\u5f53\u524d\u672c\u5730\u5bf9\u8bdd\uff0c\u65b0 Agent \u7eed\u63a5\u65f6\u4e0d\u7528\u91cd\u8bfb\u6574\u6bb5\u957f\u5bf9\u8bdd\u3002"
+      }
       checkUpdatesLabel={t("settings.checkUpdates")}
       checkingLabel={t("settings.checking")}
       upToDateLabel={t("settings.upToDate")}
@@ -4326,6 +4799,10 @@ function App() {
       onFontFamilyChange={handleFontFamilyChange}
       onAutoCheckChange={(autoCheckUpdates: boolean) => {
         const nextSettings = updateSettings({ autoCheckUpdates });
+        setAppSettings(nextSettings);
+      }}
+      onAutoCaptureChange={(autoCaptureMemory: boolean) => {
+        const nextSettings = updateSettings({ autoCaptureMemory });
         setAppSettings(nextSettings);
       }}
       onSyncSettingsChange={(patch) => {
@@ -4416,50 +4893,46 @@ function App() {
         <aside className="sidebar">
           <div className="sidebar-scroll">
             <div className="sidebar-controls">
-              <div className="agent-tabs">
-                <button
-                  type="button"
-                  className={`agent-tab ${selectedAgent === "claude" ? "active" : ""}`}
-                  onClick={() => setSelectedAgent("claude")}
-                >
-                  Claude
-                </button>
-                <button
-                  type="button"
-                  className={`agent-tab ${selectedAgent === "codex" ? "active" : ""}`}
-                  onClick={() => setSelectedAgent("codex")}
-                >
-                  Codex
-                </button>
-                <button
-                  type="button"
-                  className={`agent-tab ${selectedAgent === "gemini" ? "active" : ""}`}
-                  onClick={() => setSelectedAgent("gemini")}
-                >
-                  Gemini
-                </button>
-                <button
-                  type="button"
-                  className={`agent-tab ${selectedAgent === "opencode" ? "active" : ""}`}
-                  onClick={() => setSelectedAgent("opencode")}
-                >
-                  OpenCode
-                </button>
+              <div className="agent-source-select">
+                <label className="agent-source-label" htmlFor="agent-source-select">
+                  <WindowButtonIcon type="source" />
+                  <span>{locale === "en" ? "Source" : "来源"}</span>
+                </label>
+                <div className="agent-select-capsule">
+                  <select
+                    id="agent-source-select"
+                    value={selectedAgent}
+                    aria-label={locale === "en" ? "Conversation source" : "对话来源"}
+                    onChange={(event) => setSelectedAgent(event.target.value as AgentType)}
+                  >
+                    {AGENT_OPTIONS.map((agent) => (
+                      <option key={agent.value} value={agent.value}>
+                        {agent.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
-              <input
-                type="text"
-                className="search-box"
-                placeholder={t("search.placeholder")}
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-              />
+              <div className="search-shell">
+                <WindowButtonIcon type="search" />
+                <input
+                  type="text"
+                  className="search-box"
+                  placeholder={t("search.placeholder")}
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                />
+              </div>
             </div>
 
             <section className="library-section">
               <div className="library-section-header">
                 <div className="library-section-title-row">
-                  <h2>{shell.projectSection}</h2>
+                  <h2>
+                    <WindowButtonIcon type="project" />
+                    <span>{shell.projectSection}</span>
+                  </h2>
                   <span className="library-count-pill">{projectGroups.length}</span>
                 </div>
                 <div className="library-section-actions" ref={organizeMenuRef}>
@@ -4618,43 +5091,23 @@ function App() {
                 <div className="inline-empty-state sidebar-empty">
                   <div className="inline-empty-body">{shell.noProgressBody}</div>
                 </div>
+              ) : selectedAgent === "zcode" ? (
+                <div className="zcode-cli-group-list">
+                  {zcodeProjectCliGroups.map((cliGroup) => (
+                    <div key={cliGroup.id} className="zcode-cli-group">
+                      <div className="zcode-cli-header">
+                        <span>{cliGroup.label}</span>
+                        <span className="library-count-pill">{cliGroup.conversationCount}</span>
+                      </div>
+                      <div className="project-group-list zcode-project-group-list">
+                        {cliGroup.projects.map((group) => renderProjectGroup(group))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               ) : (
                 <div className="project-group-list">
-                  {projectGroups.map((group) => {
-                    const isExpanded = expandedProjects[group.id] ?? true;
-                    return (
-                      <div key={group.id} className="project-group">
-                        <button
-                          type="button"
-                          className="project-group-header"
-                          onClick={() =>
-                            setExpandedProjects((current) => ({
-                              ...current,
-                              [group.id]: !isExpanded,
-                            }))
-                          }
-                        >
-                          <div className="project-group-title-wrap">
-                            <span className={`project-group-chevron ${isExpanded ? "expanded" : ""}`}>
-                              <WindowButtonIcon type="chevron" />
-                            </span>
-                            <div className="project-group-copy">
-                              <span className="project-group-title">{group.label}</span>
-                              <span className="project-group-path" title={group.fullPath}>
-                                {group.fullPath}
-                              </span>
-                            </div>
-                          </div>
-                          <span className="library-count-pill">{group.conversations.length}</span>
-                        </button>
-                        {isExpanded ? (
-                          <div className="project-group-items">
-                            {group.conversations.map((conversation) => renderConversationRow(conversation))}
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })}
+                  {projectGroups.map((group) => renderProjectGroup(group))}
                 </div>
               )}
             </section>
@@ -4663,11 +5116,28 @@ function App() {
               <section className="library-section chats-section">
                 <div className="library-section-header">
                   <div className="library-section-title-row">
-                    <h2>{shell.chatSection}</h2>
+                    <h2>
+                      <WindowButtonIcon type="conversation" />
+                      <span>{shell.chatSection}</span>
+                    </h2>
                     <span className="library-count-pill">{chatConversations.length}</span>
                   </div>
                 </div>
-                {listLoading ? null : (
+                {listLoading ? null : selectedAgent === "zcode" ? (
+                  <div className="zcode-cli-group-list zcode-chat-group-list">
+                    {zcodeChatCliGroups.map((cliGroup) => (
+                      <div key={cliGroup.id} className="zcode-cli-group">
+                        <div className="zcode-cli-header">
+                          <span>{cliGroup.label}</span>
+                          <span className="library-count-pill">{cliGroup.conversations.length}</span>
+                        </div>
+                        <div className="chat-list">
+                          {cliGroup.conversations.map((conversation) => renderConversationRow(conversation))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
                   <div className="chat-list">
                     {chatConversations.map((conversation) => renderConversationRow(conversation))}
                   </div>

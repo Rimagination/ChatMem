@@ -2,5 +2,6 @@
 
 pub mod adapter;
 pub mod files;
+pub mod titles;
 pub mod tool_mapping;
 pub mod types;

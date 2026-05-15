@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+﻿import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import { I18nProvider } from "../i18n/I18nProvider";
@@ -40,7 +40,7 @@ describe("Sync settings", () => {
     localStorage.clear();
     localStorage.setItem(
       SETTINGS_STORAGE_KEY,
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     mockInvoke.mockReset();
@@ -52,8 +52,10 @@ describe("Sync settings", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "About us" }));
     expect(await screen.findByRole("heading", { name: "About ChatMem" })).toBeTruthy();
-    expect(screen.getByText(/local-first memory layer/i)).toBeTruthy();
-    expect(screen.getByText("Positioning and advantages")).toBeTruthy();
+    expect(screen.getByText(/local-first memory and migration layer/i)).toBeTruthy();
+    expect(screen.getByText("What changed in 1.1.0")).toBeTruthy();
+    expect(screen.getByText("ZCode task history")).toBeTruthy();
+    expect(screen.getByText("Markdown conversation reading")).toBeTruthy();
     expect(screen.getByText("Rimagination/ChatMem")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Acknowledgements" })).toBeNull();
     expect(screen.getByText("Design references and acknowledgements")).toBeTruthy();
@@ -299,7 +301,7 @@ describe("Sync settings", () => {
             instructionsInstalled: false,
             configExists: true,
             status: "not_installed",
-            statusLabel: "未安装",
+            statusLabel: "Not installed",
             commandPreview: '"C:/Program Files/ChatMem/ChatMem.exe" --mcp',
             details: [],
           },
@@ -324,7 +326,7 @@ describe("Sync settings", () => {
               instructionsInstalled: true,
               configExists: true,
               status: "ready",
-              statusLabel: "已就绪",
+              statusLabel: "Ready",
               commandPreview: '"C:/Program Files/ChatMem/ChatMem.exe" --mcp',
               details: [],
             },

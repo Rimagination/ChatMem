@@ -24,9 +24,10 @@ use chatmem::chatmem_memory::{
     runs::{list_artifacts as load_artifacts, list_runs as load_runs, ArtifactRecord, RunRecord},
     store::{MemoryStore, ReviewAction},
     sync::{
-        build_resume_command, import_all_local_history as sync_import_all_local_history,
-        resolve_storage_path, scan_repo_conversations as sync_scan_repo_conversations,
-        sync_conversation_into_store,
+        auto_capture_conversation as sync_auto_capture_conversation, build_resume_command,
+        import_all_local_history as sync_import_all_local_history, resolve_storage_path,
+        scan_repo_conversations as sync_scan_repo_conversations, sync_conversation_into_store,
+        AutoCaptureReport,
     },
 };
 use rmcp::{transport::stdio, ServiceExt};
@@ -40,8 +41,12 @@ use agentswap_core::adapter::AgentAdapter;
 use agentswap_core::types::{AgentKind, Conversation, ConversationSummary};
 use agentswap_gemini::GeminiAdapter;
 use agentswap_opencode::OpenCodeAdapter;
+use agentswap_zcode::{
+    ZCodeAdapter, ZCodeClaudeAdapter, ZCodeCodexAdapter, ZCodeGeminiAdapter, ZCodeOpenCodeAdapter,
+};
 
 const DEFAULT_TRASH_RETENTION_DAYS: i64 = 14;
+const AGENT_KEYS: &[&str] = &["claude", "codex", "gemini", "opencode", "zcode"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ConversationSummaryResponse {
@@ -184,6 +189,8 @@ struct AppSettingsPayload {
     #[serde(default = "default_font_family")]
     font_family: String,
     auto_check_updates: bool,
+    #[serde(default = "default_auto_capture_memory")]
+    auto_capture_memory: bool,
     #[serde(default = "default_trash_retention_days")]
     trash_retention_days: i64,
     sync: SyncSettingsPayload,
@@ -191,6 +198,10 @@ struct AppSettingsPayload {
 
 fn default_font_family() -> String {
     "system".to_string()
+}
+
+fn default_auto_capture_memory() -> bool {
+    true
 }
 
 fn default_trash_retention_days() -> i64 {
@@ -281,6 +292,11 @@ fn get_adapter(agent: &str) -> Result<Box<dyn AgentAdapter>, String> {
         "codex" => Ok(Box::new(CodexAdapter::new())),
         "gemini" => Ok(Box::new(GeminiAdapter::new())),
         "opencode" => Ok(Box::new(OpenCodeAdapter::new())),
+        "zcode" => Ok(Box::new(ZCodeAdapter::new())),
+        "zcode-claude" => Ok(Box::new(ZCodeClaudeAdapter::new())),
+        "zcode-codex" => Ok(Box::new(ZCodeCodexAdapter::new())),
+        "zcode-gemini" => Ok(Box::new(ZCodeGeminiAdapter::new())),
+        "zcode-opencode" => Ok(Box::new(ZCodeOpenCodeAdapter::new())),
         _ => Err(format!("Unknown agent: {}", agent)),
     }
 }
@@ -291,6 +307,11 @@ fn agent_key(agent: &AgentKind) -> &'static str {
         AgentKind::Codex => "codex",
         AgentKind::Gemini => "gemini",
         AgentKind::OpenCode => "opencode",
+        AgentKind::ZCode => "zcode",
+        AgentKind::ZCodeClaude => "zcode-claude",
+        AgentKind::ZCodeCodex => "zcode-codex",
+        AgentKind::ZCodeGemini => "zcode-gemini",
+        AgentKind::ZCodeOpenCode => "zcode-opencode",
     }
 }
 
@@ -1259,7 +1280,7 @@ async fn put_webdav_json(
 fn collect_webdav_conversation_uploads() -> Result<Vec<WebDavConversationUpload>, String> {
     let mut uploads = Vec::new();
 
-    for agent in ["claude", "codex", "gemini", "opencode"] {
+    for agent in AGENT_KEYS {
         let adapter = get_adapter(agent)?;
         if !adapter.is_available() {
             continue;
@@ -1284,7 +1305,7 @@ fn collect_webdav_conversation_uploads() -> Result<Vec<WebDavConversationUpload>
             let body = serde_json::to_vec_pretty(&payload).map_err(|error| error.to_string())?;
 
             uploads.push(WebDavConversationUpload {
-                agent: agent.to_string(),
+                agent: (*agent).to_string(),
                 id,
                 project_dir,
                 updated_at,
@@ -1562,11 +1583,11 @@ async fn sync_webdav_now(
 
     let mut uploaded_count = 0usize;
 
-    for agent in ["claude", "codex", "gemini", "opencode"] {
+    for agent in AGENT_KEYS {
         let agent_url = build_webdav_child_url(&conversations_url, &[agent.to_string()], true)?;
         ensure_webdav_collection(&client, &agent_url, &username, &password).await?;
 
-        for upload in uploads.iter().filter(|upload| upload.agent == agent) {
+        for upload in uploads.iter().filter(|upload| upload.agent == *agent) {
             let file_url = build_webdav_child_url(&agent_url, &[upload.file_name.clone()], false)?;
             put_webdav_json(
                 &client,
@@ -2164,6 +2185,17 @@ async fn create_checkpoint(
         .map_err(|e| e.to_string())
 }
 
+#[command]
+async fn auto_capture_conversation(
+    agent: String,
+    id: String,
+    repo_root: Option<String>,
+) -> Result<AutoCaptureReport, String> {
+    let store = open_memory_store()?;
+    sync_auto_capture_conversation(&store, &agent, &id, repo_root.as_deref())
+        .map_err(|e| e.to_string())
+}
+
 fn run_mcp_stdio() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
@@ -2228,6 +2260,7 @@ fn main() {
             list_runs,
             list_artifacts,
             create_checkpoint,
+            auto_capture_conversation,
             create_handoff_packet,
             mark_handoff_consumed,
         ])
@@ -2399,6 +2432,7 @@ mod tests {
                 locale: "zh-CN".to_string(),
                 font_family: "system".to_string(),
                 auto_check_updates: true,
+                auto_capture_memory: true,
                 trash_retention_days: super::DEFAULT_TRASH_RETENTION_DAYS,
                 sync: super::SyncSettingsPayload {
                     provider: "webdav".to_string(),

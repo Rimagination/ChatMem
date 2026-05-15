@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use agentswap_core::adapter::AgentAdapter;
 use agentswap_core::files::move_path_to_trash;
+use agentswap_core::titles::{choose_title, is_meaningful_task_text, is_visible_assistant_text};
 use agentswap_core::tool_mapping::map_tool;
 use agentswap_core::types::*;
 
@@ -267,12 +268,20 @@ impl CodexAdapter {
     /// Query all threads from the database.
     fn query_threads(&self) -> Result<Vec<CodexThread>> {
         let conn = self.open_db()?;
-        let mut stmt = conn.prepare(
+        let columns = Self::thread_columns(&conn).unwrap_or_default();
+        let source_filter = if columns.contains("source") {
+            "WHERE source IS NULL OR substr(ltrim(source), 1, 12) != '{\"subagent\":'"
+        } else {
+            ""
+        };
+        let sql = format!(
             "SELECT id, rollout_path, cwd, title, created_at, updated_at, \
              tokens_used, git_branch, first_user_message \
              FROM threads \
-             ORDER BY updated_at DESC, id DESC",
-        )?;
+             {source_filter} \
+             ORDER BY updated_at DESC, id DESC"
+        );
+        let mut stmt = conn.prepare(&sql)?;
 
         let threads = stmt
             .query_map([], |row| {
@@ -396,6 +405,9 @@ fn handle_event_msg(
     match ptype {
         "user_message" => {
             let text = payload_str(event, "message").unwrap_or("").to_string();
+            if !is_meaningful_task_text(&text) {
+                return;
+            }
             messages.push(Message {
                 id: Uuid::new_v4(),
                 timestamp: ts,
@@ -407,7 +419,7 @@ fn handle_event_msg(
         }
         "agent_message" => {
             let text = payload_str(event, "message").unwrap_or("").to_string();
-            if !text.is_empty() {
+            if is_visible_assistant_text(&text) {
                 messages.push(Message {
                     id: Uuid::new_v4(),
                     timestamp: ts,
@@ -585,17 +597,6 @@ fn handle_response_item(
     }
 }
 
-/// Truncate a string to at most `max_chars` characters, appending "..." if truncated.
-fn truncate_str(s: &str, max_chars: usize) -> String {
-    let mut chars = s.chars();
-    let truncated: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{}...", truncated)
-    } else {
-        truncated
-    }
-}
-
 /// Attach a completed tool call to the last assistant message,
 /// or create a new assistant message if needed.
 fn attach_tool_call(messages: &mut Vec<Message>, ts: DateTime<Utc>, tool_call: ToolCall) {
@@ -634,15 +635,7 @@ impl AgentAdapter for CodexAdapter {
             .map(|t| {
                 let created = Self::unix_to_datetime(t.created_at);
                 let updated = Self::unix_to_datetime(t.updated_at);
-
-                // Use title if non-empty, otherwise first user message
-                let summary = if !t.title.is_empty() {
-                    Some(t.title.clone())
-                } else if !t.first_user_message.is_empty() {
-                    Some(truncate_str(&t.first_user_message, 100))
-                } else {
-                    None
-                };
+                let summary = choose_title(Some(&t.title), Some(&t.first_user_message), 100);
 
                 // We don't know message/file counts without parsing the rollout,
                 // so we set them to 0 in the summary (they are cheap metadata).
@@ -682,13 +675,11 @@ impl AgentAdapter for CodexAdapter {
         let created = Self::unix_to_datetime(thread.created_at);
         let updated = Self::unix_to_datetime(thread.updated_at);
 
-        let summary = if !thread.title.is_empty() {
-            Some(thread.title)
-        } else if !thread.first_user_message.is_empty() {
-            Some(thread.first_user_message)
-        } else {
-            None
-        };
+        let summary = choose_title(
+            Some(thread.title.as_str()),
+            Some(thread.first_user_message.as_str()),
+            100,
+        );
 
         Ok(Conversation {
             id: thread.id,
@@ -799,7 +790,7 @@ impl AgentAdapter for CodexAdapter {
 
                     if first_user_message.is_empty()
                         && msg.role == Role::User
-                        && !msg.content.is_empty()
+                        && is_meaningful_task_text(&msg.content)
                     {
                         first_user_message = msg.content.clone();
                     }
@@ -927,7 +918,7 @@ impl AgentAdapter for CodexAdapter {
         let title = conv
             .summary
             .clone()
-            .filter(|value| !value.trim().is_empty())
+            .filter(|value| is_meaningful_task_text(value))
             .unwrap_or_else(|| first_user_message.clone());
         let created_at = conv.created_at.timestamp();
         let updated_at = conv.updated_at.timestamp();
@@ -956,7 +947,7 @@ impl AgentAdapter for CodexAdapter {
                 defaults.approval_mode,
                 0i64, // tokens_used
                 defaults.has_user_event,
-                0i64, // archived
+                0i64,           // archived
                 None::<String>, // git_branch
                 defaults.cli_version,
                 first_user_message,
@@ -1099,6 +1090,7 @@ mod tests {
                 id TEXT PRIMARY KEY,
                 rollout_path TEXT NOT NULL,
                 cwd TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'vscode',
                 title TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
@@ -1387,6 +1379,88 @@ mod tests {
     }
 
     #[test]
+    fn test_list_conversations_uses_first_task_message_if_title_is_control_text() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = create_test_db(tmp.path());
+        let rollout_path = create_rollout_file(tmp.path(), "rollout-control-title.jsonl", &[]);
+
+        insert_thread(
+            &db_path,
+            &CodexThread {
+                id: "thread-control-title".to_string(),
+                rollout_path: rollout_path.to_string_lossy().to_string(),
+                cwd: "/tmp".to_string(),
+                title: "<command-name>/model</command-name>".to_string(),
+                created_at: 1770798002,
+                updated_at: 1770798114,
+                tokens_used: 0,
+                git_branch: None,
+                first_user_message: "Implement task-based conversation titles".to_string(),
+            },
+        );
+
+        let adapter = CodexAdapter::with_codex_dir(tmp.path().to_path_buf());
+        let convos = adapter.list_conversations().unwrap();
+
+        assert_eq!(convos.len(), 1);
+        assert_eq!(
+            convos[0].summary.as_deref(),
+            Some("Implement task-based conversation titles")
+        );
+    }
+
+    #[test]
+    fn test_list_conversations_filters_subagent_threads() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = create_test_db(tmp.path());
+        let main_rollout = create_rollout_file(tmp.path(), "rollout-main.jsonl", &[]);
+        let subagent_rollout = create_rollout_file(tmp.path(), "rollout-subagent.jsonl", &[]);
+
+        insert_thread(
+            &db_path,
+            &CodexThread {
+                id: "thread-main".to_string(),
+                rollout_path: main_rollout.to_string_lossy().to_string(),
+                cwd: "/tmp".to_string(),
+                title: "Main task".to_string(),
+                created_at: 1770798002,
+                updated_at: 1770798114,
+                tokens_used: 0,
+                git_branch: None,
+                first_user_message: "Main task".to_string(),
+            },
+        );
+        insert_thread(
+            &db_path,
+            &CodexThread {
+                id: "thread-subagent".to_string(),
+                rollout_path: subagent_rollout.to_string_lossy().to_string(),
+                cwd: "/tmp".to_string(),
+                title: "Explore delegated task".to_string(),
+                created_at: 1770798002,
+                updated_at: 1770798115,
+                tokens_used: 0,
+                git_branch: None,
+                first_user_message: "Explore delegated task".to_string(),
+            },
+        );
+
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "UPDATE threads SET source = ?1 WHERE id = 'thread-subagent'",
+            [r#"{"subagent":{"thread_spawn":{"parent_thread_id":"thread-main","depth":1,"agent_role":"explorer"}}}"#],
+        )
+        .unwrap();
+        drop(conn);
+
+        let adapter = CodexAdapter::with_codex_dir(tmp.path().to_path_buf());
+        let convos = adapter.list_conversations().unwrap();
+
+        assert_eq!(convos.len(), 1);
+        assert_eq!(convos[0].id, "thread-main");
+    }
+
+    #[test]
     fn test_read_conversation_full() {
         let tmp = TempDir::new().unwrap();
         let db_path = create_test_db(tmp.path());
@@ -1431,6 +1505,70 @@ mod tests {
         assert!(!conv.file_changes.is_empty(), "Should have file changes");
         assert_eq!(conv.file_changes[0].path, "/tmp/test.rs");
         assert_eq!(conv.file_changes[0].change_type, ChangeType::Modified);
+    }
+
+    #[test]
+    fn test_read_conversation_filters_local_command_noise() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = create_test_db(tmp.path());
+
+        let lines = vec![
+            json!({
+                "timestamp": "2026-03-01T10:00:00.000Z",
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": "<local-command-caveat>Caveat: generated by local command.</local-command-caveat>"}
+            })
+            .to_string(),
+            json!({
+                "timestamp": "2026-03-01T10:00:01.000Z",
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": "Implement task-based conversation titles"}
+            })
+            .to_string(),
+            json!({
+                "timestamp": "2026-03-01T10:00:02.000Z",
+                "type": "event_msg",
+                "payload": {"type": "agent_message", "message": "No response requested.", "phase": "commentary"}
+            })
+            .to_string(),
+            json!({
+                "timestamp": "2026-03-01T10:00:03.000Z",
+                "type": "event_msg",
+                "payload": {"type": "agent_message", "message": "Done.", "phase": "commentary"}
+            })
+            .to_string(),
+        ];
+        let line_refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let rollout_path =
+            create_rollout_file(tmp.path(), "rollout-command-noise.jsonl", &line_refs);
+
+        insert_thread(
+            &db_path,
+            &CodexThread {
+                id: "thread-command-noise".to_string(),
+                rollout_path: rollout_path.to_string_lossy().to_string(),
+                cwd: "/tmp".to_string(),
+                title: "".to_string(),
+                created_at: 1770798002,
+                updated_at: 1770798114,
+                tokens_used: 0,
+                git_branch: None,
+                first_user_message: "Implement task-based conversation titles".to_string(),
+            },
+        );
+
+        let adapter = CodexAdapter::with_codex_dir(tmp.path().to_path_buf());
+        let conv = adapter.read_conversation("thread-command-noise").unwrap();
+        let contents = conv
+            .messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            contents,
+            vec!["Implement task-based conversation titles", "Done."]
+        );
     }
 
     #[test]

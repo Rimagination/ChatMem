@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 
-type AgentType = "claude" | "codex" | "gemini" | "opencode";
+type AgentType =
+  | "claude"
+  | "codex"
+  | "gemini"
+  | "opencode"
+  | "zcode";
 type MigrateMode = "copy" | "cut";
 
 interface MigrateModalProps {
@@ -14,6 +19,7 @@ const agents: { value: AgentType; label: string }[] = [
   { value: "codex", label: "Codex" },
   { value: "gemini", label: "Gemini" },
   { value: "opencode", label: "OpenCode" },
+  { value: "zcode", label: "ZCode" },
 ];
 
 function firstTargetFor(sourceAgent: AgentType) {

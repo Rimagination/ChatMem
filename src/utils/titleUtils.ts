@@ -1,6 +1,23 @@
 const SIDEBAR_TITLE_MAX_WIDTH = 44;
 const WORKSPACE_TITLE_MAX_WIDTH = 97;
 const ELLIPSIS = "...";
+const CONTROL_TITLE_PREFIXES = [
+  "<local-command-caveat",
+  "<local-command-stdout",
+  "<local-command-stderr",
+  "<local-command-error",
+  "<command-name",
+  "<command-message",
+  "<command-args",
+  "<system-reminder",
+  "<permissions instructions",
+  "<app-context",
+  "<collaboration_mode",
+  "<apps_instructions",
+  "<skills_instructions",
+  "<plugins_instructions",
+  "<environment_context",
+];
 
 function isFullWidthCodePoint(codePoint: number) {
   if (codePoint >= 0x1100 &&
@@ -46,7 +63,15 @@ function displayWidthOf(char: string) {
 }
 
 export function normalizeConversationTitle(text: string | null | undefined) {
-  return (text ?? "").replace(/\s+/g, " ").trim();
+  const normalized = (text ?? "").replace(/\s+/g, " ").trim();
+  const lower = normalized.toLowerCase();
+  if (lower === "no response requested.") {
+    return "";
+  }
+  if (CONTROL_TITLE_PREFIXES.some((prefix) => lower.startsWith(prefix))) {
+    return "";
+  }
+  return normalized;
 }
 
 export function measureDisplayWidth(text: string) {

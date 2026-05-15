@@ -249,6 +249,23 @@ export type CheckpointCreateInput = {
   metadataJson?: string;
 };
 
+export type AutoCaptureInput = {
+  agent: string;
+  id: string;
+  repoRoot?: string | null;
+};
+
+export type AutoCaptureReport = {
+  conversationId: string;
+  sourceAgent: string;
+  repoRoot: string;
+  checkpoint: CheckpointRecord;
+  messageCount: number;
+  fileCount: number;
+  storagePath: string | null;
+  capturedAt: string;
+};
+
 export type HandoffCreateInput = {
   repoRoot: string;
   fromAgent: string;

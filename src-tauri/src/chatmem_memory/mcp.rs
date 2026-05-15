@@ -240,7 +240,7 @@ impl ChatMemMcpService {
 
     #[tool(
         name = "import_all_local_history",
-        description = "Import all available Claude, Codex, Gemini, and OpenCode local conversations into the local history index. Use this after first install, after changing history locations, or when recall misses because history has not been imported."
+        description = "Import all available Claude, Codex, Gemini, OpenCode, and top-level ZCode conversation-capable local history into the local history index. ZCode groups its Claude/Codex/Gemini/OpenCode CLI stores beneath one source; Gemini/OpenCode profiles are discovered but skipped when they only contain config/runtime files. Use this after first install, after changing history locations, or when recall misses because history has not been imported."
     )]
     async fn import_all_local_history(&self) -> Result<Json<LocalHistoryImportReport>, McpError> {
         sync::import_all_local_history(&self.store)

@@ -3,9 +3,12 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use agentswap_core::adapter::AgentAdapter;
+use agentswap_core::titles::{
+    choose_title, is_visible_assistant_text, title_candidate, truncate_title,
+};
 use agentswap_core::types::{
-    AgentKind, ChangeType, Conversation, ConversationSummary, FileChange, Message, Role,
-    ToolCall, ToolStatus,
+    AgentKind, ChangeType, Conversation, ConversationSummary, FileChange, Message, Role, ToolCall,
+    ToolStatus,
 };
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, TimeZone, Utc};
@@ -112,7 +115,10 @@ impl OpenCodeAdapter {
                 if !name.starts_with("opencode-") || !name.ends_with(".db") {
                     return None;
                 }
-                let modified = entry.metadata().ok().and_then(|metadata| metadata.modified().ok());
+                let modified = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|metadata| metadata.modified().ok());
                 Some((modified, path))
             })
             .collect::<Vec<_>>();
@@ -247,7 +253,11 @@ impl OpenCodeAdapter {
         Ok(count.max(0) as usize)
     }
 
-    fn file_count(conn: &Connection, session_id: &str, summary_files: Option<i64>) -> Result<usize> {
+    fn file_count(
+        conn: &Connection,
+        session_id: &str,
+        summary_files: Option<i64>,
+    ) -> Result<usize> {
         if let Some(count) = summary_files {
             return Ok(count.max(0) as usize);
         }
@@ -273,8 +283,71 @@ impl OpenCodeAdapter {
         Ok(files.len())
     }
 
+    fn first_task_title_for_session(conn: &Connection, session_id: &str) -> Result<Option<String>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, data \
+             FROM message \
+             WHERE session_id = ?1 \
+             ORDER BY time_created ASC, rowid ASC",
+        )?;
+        let rows = stmt.query_map([session_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        for row in rows {
+            let (message_id, raw_data) = row?;
+            let data = serde_json::from_str::<Value>(&raw_data).unwrap_or_else(|_| json!({}));
+            if Self::role_from_value(&data) != Role::User {
+                continue;
+            }
+
+            let mut parts = conn.prepare(
+                "SELECT data \
+                 FROM part \
+                 WHERE session_id = ?1 AND message_id = ?2 \
+                 ORDER BY time_created ASC, rowid ASC",
+            )?;
+            let part_rows = parts.query_map((session_id, message_id.as_str()), |row| {
+                row.get::<_, String>(0)
+            })?;
+            for part in part_rows {
+                let raw_part = part?;
+                let part_data =
+                    serde_json::from_str::<Value>(&raw_part).unwrap_or_else(|_| json!({}));
+                if part_data.get("type").and_then(|value| value.as_str()) != Some("text") {
+                    continue;
+                }
+                if part_data
+                    .get("ignored")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                if let Some(text) = part_data.get("text").and_then(|value| value.as_str()) {
+                    if let Some(title) = title_candidate(text, 100) {
+                        return Ok(Some(title));
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn summary_for_session(conn: &Connection, row: &OpenCodeSessionRow) -> Result<Option<String>> {
+        let first_task_title = Self::first_task_title_for_session(conn, &row.id)?;
+        Ok(choose_title(
+            Some(row.title.as_str()),
+            first_task_title.as_deref(),
+            100,
+        ))
+    }
+
     fn ms_to_datetime(ms: i64) -> DateTime<Utc> {
-        Utc.timestamp_millis_opt(ms).single().unwrap_or_else(Utc::now)
+        Utc.timestamp_millis_opt(ms)
+            .single()
+            .unwrap_or_else(Utc::now)
     }
 
     fn stable_uuid(source: &str) -> Uuid {
@@ -362,7 +435,7 @@ impl OpenCodeAdapter {
                         continue;
                     }
                     if let Some(text) = data.get("text").and_then(|value| value.as_str()) {
-                        if !text.trim().is_empty() {
+                        if is_visible_assistant_text(text) {
                             content.push(text.to_string());
                         }
                     }
@@ -435,7 +508,11 @@ impl OpenCodeAdapter {
         Ok((content.join("\n\n"), tool_calls, file_changes, metadata))
     }
 
-    fn messages_for_session(&self, conn: &Connection, session_id: &str) -> Result<(Vec<Message>, Vec<FileChange>)> {
+    fn messages_for_session(
+        &self,
+        conn: &Connection,
+        session_id: &str,
+    ) -> Result<(Vec<Message>, Vec<FileChange>)> {
         let mut stmt = conn.prepare(
             "SELECT id, time_created, data \
              FROM message \
@@ -496,26 +573,19 @@ impl OpenCodeAdapter {
     }
 
     fn conversation_title(conv: &Conversation) -> String {
+        let first_user_title = conv.messages.iter().find_map(|message| {
+            if message.role == Role::User {
+                title_candidate(&message.content, 80)
+            } else {
+                None
+            }
+        });
+
         conv.summary
             .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToString::to_string)
-            .or_else(|| {
-                conv.messages
-                    .iter()
-                    .find(|message| {
-                        message.role == Role::User && !message.content.trim().is_empty()
-                    })
-                    .map(|message| message.content.trim().to_string())
-            })
-            .map(|title| {
-                if title.chars().count() > 80 {
-                    format!("{}...", title.chars().take(80).collect::<String>())
-                } else {
-                    title
-                }
-            })
+            .and_then(|value| title_candidate(value, 80))
+            .or(first_user_title)
+            .map(|title| truncate_title(&title, 80))
             .unwrap_or_else(|| "ChatMem imported conversation".to_string())
     }
 
@@ -625,17 +695,14 @@ impl AgentAdapter for OpenCodeAdapter {
         for row in self.query_sessions()? {
             let message_count = Self::message_count(&conn, &row.id)?;
             let file_count = Self::file_count(&conn, &row.id, row.summary_files)?;
+            let summary = Self::summary_for_session(&conn, &row)?;
             conversations.push(ConversationSummary {
                 id: row.id.clone(),
                 source_agent: AgentKind::OpenCode,
                 project_dir: Self::project_dir(&row),
                 created_at: Self::ms_to_datetime(row.created_at_ms),
                 updated_at: Self::ms_to_datetime(row.updated_at_ms),
-                summary: if row.title.trim().is_empty() {
-                    None
-                } else {
-                    Some(row.title)
-                },
+                summary,
                 message_count,
                 file_count,
             });
@@ -648,6 +715,7 @@ impl AgentAdapter for OpenCodeAdapter {
         let session = self.find_session(id)?;
         let conn = self.open_db()?;
         let (messages, file_changes) = self.messages_for_session(&conn, id)?;
+        let summary = Self::summary_for_session(&conn, &session)?;
 
         Ok(Conversation {
             id: session.id.clone(),
@@ -655,11 +723,7 @@ impl AgentAdapter for OpenCodeAdapter {
             project_dir: Self::project_dir(&session),
             created_at: Self::ms_to_datetime(session.created_at_ms),
             updated_at: Self::ms_to_datetime(session.updated_at_ms),
-            summary: if session.title.trim().is_empty() {
-                None
-            } else {
-                Some(session.title)
-            },
+            summary,
             messages,
             file_changes,
         })
@@ -671,7 +735,11 @@ impl AgentAdapter for OpenCodeAdapter {
         let created_ms = conv.created_at.timestamp_millis();
         let updated_ms = conv.updated_at.timestamp_millis();
         let project_dir = conv.project_dir.trim();
-        let project_dir = if project_dir.is_empty() { "." } else { project_dir };
+        let project_dir = if project_dir.is_empty() {
+            "."
+        } else {
+            project_dir
+        };
         let project_id = Self::find_or_create_project(&tx, project_dir, created_ms)?;
         let session_id = Self::compact_id("ses");
         let title = Self::conversation_title(conv);
@@ -975,7 +1043,12 @@ mod tests {
         conn.execute(
             "INSERT INTO project (id, worktree, vcs, name, time_created, time_updated, sandboxes)
              VALUES (?1, ?2, 'git', 'ChatMem', ?3, ?4, '[]')",
-            ("project-001", "D:/VSP", 1_776_000_000_000i64, 1_776_000_100_000i64),
+            (
+                "project-001",
+                "D:/VSP",
+                1_776_000_000_000i64,
+                1_776_000_100_000i64,
+            ),
         )
         .unwrap();
         conn.execute(
@@ -1120,9 +1193,47 @@ mod tests {
         assert_eq!(conversations[0].id, "ses_001");
         assert_eq!(conversations[0].source_agent, AgentKind::OpenCode);
         assert_eq!(conversations[0].project_dir, "D:/VSP");
-        assert_eq!(conversations[0].summary.as_deref(), Some("Improve ChatMem memory"));
+        assert_eq!(
+            conversations[0].summary.as_deref(),
+            Some("Improve ChatMem memory")
+        );
         assert_eq!(conversations[0].message_count, 2);
         assert_eq!(conversations[0].file_count, 1);
+    }
+
+    #[test]
+    fn uses_first_task_message_when_open_code_title_is_control_text() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = create_opencode_db(tmp.path());
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "UPDATE session SET title = ?1 WHERE id = 'ses_001'",
+            ["<command-name>/model</command-name>"],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE part SET data = ?1 WHERE id = 'part_user_text'",
+            [json!({
+                "type": "text",
+                "text": "Implement task-based conversation titles"
+            })
+            .to_string()],
+        )
+        .unwrap();
+        drop(conn);
+
+        let adapter = OpenCodeAdapter::with_data_dir(tmp.path().to_path_buf());
+        let conversations = adapter.list_conversations().unwrap();
+        let conversation = adapter.read_conversation("ses_001").unwrap();
+
+        assert_eq!(
+            conversations[0].summary.as_deref(),
+            Some("Implement task-based conversation titles")
+        );
+        assert_eq!(
+            conversation.summary.as_deref(),
+            Some("Implement task-based conversation titles")
+        );
     }
 
     #[test]
@@ -1144,8 +1255,11 @@ mod tests {
             ),
         )
         .unwrap();
-        conn.execute("UPDATE session SET project_id = 'global' WHERE id = 'ses_001'", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE session SET project_id = 'global' WHERE id = 'ses_001'",
+            [],
+        )
+        .unwrap();
         drop(conn);
         let adapter = OpenCodeAdapter::with_data_dir(tmp.path().to_path_buf());
 
@@ -1203,12 +1317,24 @@ mod tests {
         assert!(conversation.messages[1].content.contains("opencode.db"));
         assert_eq!(conversation.messages[1].tool_calls.len(), 1);
         assert_eq!(conversation.messages[1].tool_calls[0].name, "bash");
-        assert_eq!(conversation.messages[1].tool_calls[0].input["command"], "ls");
-        assert_eq!(conversation.messages[1].tool_calls[0].output.as_deref(), Some("adapter.rs"));
-        assert_eq!(conversation.messages[1].tool_calls[0].status, ToolStatus::Success);
+        assert_eq!(
+            conversation.messages[1].tool_calls[0].input["command"],
+            "ls"
+        );
+        assert_eq!(
+            conversation.messages[1].tool_calls[0].output.as_deref(),
+            Some("adapter.rs")
+        );
+        assert_eq!(
+            conversation.messages[1].tool_calls[0].status,
+            ToolStatus::Success
+        );
         assert_eq!(conversation.file_changes.len(), 1);
         assert_eq!(conversation.file_changes[0].path, "src/App.tsx");
-        assert_eq!(conversation.file_changes[0].change_type, ChangeType::Modified);
+        assert_eq!(
+            conversation.file_changes[0].change_type,
+            ChangeType::Modified
+        );
     }
 
     #[test]

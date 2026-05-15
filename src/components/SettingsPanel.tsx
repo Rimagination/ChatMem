@@ -88,7 +88,10 @@ type SettingsPanelProps = {
   locale: Locale;
   fontFamily: AppFontFamily;
   autoCheckUpdates: boolean;
+  autoCaptureMemory: boolean;
   autoCheckLabel: string;
+  autoCaptureLabel: string;
+  autoCaptureHint: string;
   checkUpdatesLabel: string;
   checkingLabel: string;
   upToDateLabel: string;
@@ -102,6 +105,7 @@ type SettingsPanelProps = {
   onLocaleChange: (locale: Locale) => void;
   onFontFamilyChange: (fontFamily: AppFontFamily) => void;
   onAutoCheckChange: (nextValue: boolean) => void;
+  onAutoCaptureChange: (nextValue: boolean) => void;
   onSyncSettingsChange: (patch: Partial<SyncSettings>) => void;
   onVerifyWebDavServer: (input: WebDavVerificationInput) => Promise<void>;
   onSyncWebDavNow: (input: WebDavVerificationInput) => Promise<WebDavSyncResult>;
@@ -164,7 +168,10 @@ export default function SettingsPanel({
   locale,
   fontFamily,
   autoCheckUpdates,
+  autoCaptureMemory,
   autoCheckLabel,
+  autoCaptureLabel,
+  autoCaptureHint,
   checkUpdatesLabel,
   checkingLabel,
   upToDateLabel,
@@ -178,6 +185,7 @@ export default function SettingsPanel({
   onLocaleChange,
   onFontFamilyChange,
   onAutoCheckChange,
+  onAutoCaptureChange,
   onSyncSettingsChange,
   onVerifyWebDavServer,
   onSyncWebDavNow,
@@ -482,6 +490,17 @@ export default function SettingsPanel({
                 </select>
               </label>
             </div>
+            <label className="settings-toggle-row memory-autocapture-toggle">
+              <div className="settings-toggle-copy">
+                <span className="settings-label">{autoCaptureLabel}</span>
+                <span className="settings-helper">{autoCaptureHint}</span>
+              </div>
+              <input
+                type="checkbox"
+                checked={autoCaptureMemory}
+                onChange={(event) => onAutoCaptureChange(event.target.checked)}
+              />
+            </label>
             <p className="settings-helper settings-field-hint">{generalCopy.fontHint}</p>
           </section>
         </div>

@@ -80,6 +80,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentswap-zcode"
+version = "0.1.0"
+dependencies = [
+ "agentswap-claude",
+ "agentswap-codex",
+ "agentswap-core",
+ "anyhow",
+ "chrono",
+ "dirs",
+ "rusqlite",
+ "serde_json",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -362,13 +378,14 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "chatmem"
-version = "1.0.31"
+version = "1.1.0"
 dependencies = [
  "agentswap-claude",
  "agentswap-codex",
  "agentswap-core",
  "agentswap-gemini",
  "agentswap-opencode",
+ "agentswap-zcode",
  "anyhow",
  "chrono",
  "dirs",

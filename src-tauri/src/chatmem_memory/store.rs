@@ -49,6 +49,39 @@ pub enum ReviewAction {
     Snooze,
 }
 
+fn is_auto_checkpoint_metadata(metadata_json: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(metadata_json)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("capture")
+                .or_else(|| value.get("kind"))
+                .and_then(|field| field.as_str())
+                .map(|field| field.eq_ignore_ascii_case("auto"))
+        })
+        .unwrap_or(false)
+}
+
+fn normalize_auto_checkpoint_metadata(metadata_json: Option<&str>) -> Result<String> {
+    let mut value = metadata_json
+        .filter(|value| !value.trim().is_empty())
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    if !value.is_object() {
+        value = serde_json::json!({});
+    }
+
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "capture".to_string(),
+            serde_json::Value::String("auto".to_string()),
+        );
+    }
+
+    Ok(serde_json::to_string(&value)?)
+}
+
 impl MemoryStore {
     pub fn open_app() -> Result<Self> {
         let path = db::default_db_path()?;
@@ -1550,6 +1583,109 @@ impl MemoryStore {
             created_at: chrono::Utc::now().to_rfc3339(),
         };
         let conn = self.conn()?;
+
+        conn.execute(
+            "INSERT INTO checkpoints (
+                checkpoint_id, repo_id, conversation_id, source_agent, status, summary,
+                resume_command, metadata_json, handoff_id, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                checkpoint.checkpoint_id,
+                repo_id,
+                checkpoint.conversation_id,
+                checkpoint.source_agent,
+                checkpoint.status,
+                checkpoint.summary,
+                checkpoint.resume_command,
+                checkpoint.metadata_json,
+                checkpoint.handoff_id,
+                checkpoint.created_at,
+            ],
+        )?;
+
+        Ok(checkpoint)
+    }
+
+    pub fn upsert_auto_checkpoint(
+        &self,
+        input: &CreateCheckpointInput,
+    ) -> Result<CheckpointRecord> {
+        let repo_id = self.ensure_repo(&input.repo_root)?;
+        let repo_root = self.repo_root_for_id(&repo_id)?;
+        let metadata_json = normalize_auto_checkpoint_metadata(input.metadata_json.as_deref())?;
+        let now = chrono::Utc::now().to_rfc3339();
+        let conn = self.conn()?;
+
+        let existing_checkpoint_id = {
+            let mut stmt = conn.prepare(
+                "SELECT checkpoint_id, metadata_json
+                 FROM checkpoints
+                 WHERE repo_id = ?1
+                   AND conversation_id = ?2
+                   AND source_agent = ?3
+                   AND status = 'active'
+                   AND handoff_id IS NULL
+                 ORDER BY created_at DESC",
+            )?;
+            let rows = stmt.query_map(
+                params![repo_id.clone(), input.conversation_id, input.source_agent],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?;
+
+            let mut found = None;
+            for row in rows {
+                let (checkpoint_id, metadata_json) = row?;
+                if is_auto_checkpoint_metadata(&metadata_json) {
+                    found = Some(checkpoint_id);
+                    break;
+                }
+            }
+            found
+        };
+
+        if let Some(checkpoint_id) = existing_checkpoint_id {
+            conn.execute(
+                "UPDATE checkpoints
+                 SET summary = ?1,
+                     resume_command = ?2,
+                     metadata_json = ?3,
+                     created_at = ?4
+                 WHERE checkpoint_id = ?5",
+                params![
+                    input.summary,
+                    input.resume_command,
+                    metadata_json,
+                    now,
+                    checkpoint_id
+                ],
+            )?;
+
+            return Ok(CheckpointRecord {
+                checkpoint_id,
+                repo_root,
+                conversation_id: input.conversation_id.clone(),
+                source_agent: input.source_agent.clone(),
+                status: "active".to_string(),
+                summary: input.summary.clone(),
+                resume_command: input.resume_command.clone(),
+                metadata_json,
+                handoff_id: None,
+                created_at: now,
+            });
+        }
+
+        let checkpoint = CheckpointRecord {
+            checkpoint_id: uuid::Uuid::new_v4().to_string(),
+            repo_root,
+            conversation_id: input.conversation_id.clone(),
+            source_agent: input.source_agent.clone(),
+            status: "active".to_string(),
+            summary: input.summary.clone(),
+            resume_command: input.resume_command.clone(),
+            metadata_json,
+            handoff_id: None,
+            created_at: now,
+        };
 
         conn.execute(
             "INSERT INTO checkpoints (
@@ -7393,6 +7529,49 @@ mod tests {
             Some("claude --resume conv-001")
         );
         assert_eq!(checkpoints[0].status, "active");
+    }
+
+    #[test]
+    fn upsert_auto_checkpoint_keeps_one_recovery_snapshot_per_conversation() {
+        let store = new_store();
+        let repo_root = "d:/vsp/agentswap-gui";
+
+        let first = store
+            .upsert_auto_checkpoint(&CreateCheckpointInput {
+                repo_root: repo_root.to_string(),
+                conversation_id: "codex:conv-001".to_string(),
+                source_agent: "codex".to_string(),
+                summary: "Initial task title".to_string(),
+                resume_command: Some("codex resume conv-001".to_string()),
+                metadata_json: Some(
+                    r#"{"capture":"auto","message_count":4,"storage_path":"rollout-a.jsonl"}"#
+                        .to_string(),
+                ),
+            })
+            .unwrap();
+
+        let second = store
+            .upsert_auto_checkpoint(&CreateCheckpointInput {
+                repo_root: repo_root.to_string(),
+                conversation_id: "codex:conv-001".to_string(),
+                source_agent: "codex".to_string(),
+                summary: "Updated task title".to_string(),
+                resume_command: Some("codex resume conv-001".to_string()),
+                metadata_json: Some(
+                    r#"{"capture":"auto","message_count":12,"storage_path":"rollout-a.jsonl"}"#
+                        .to_string(),
+                ),
+            })
+            .unwrap();
+
+        assert_eq!(second.checkpoint_id, first.checkpoint_id);
+
+        let checkpoints = store.list_checkpoints(repo_root).unwrap();
+        assert_eq!(checkpoints.len(), 1);
+        assert_eq!(checkpoints[0].summary, "Updated task title");
+        assert!(checkpoints[0]
+            .metadata_json
+            .contains(r#""message_count":12"#));
     }
 
     #[test]

@@ -39,8 +39,8 @@ function ConversationList({
     return (
       <div className="conversation-list">
         <div className="empty-state">
-          <div className="empty-state-icon">○</div>
-          <div className="empty-state-text">未找到对话</div>
+          <div className="empty-state-icon">{"\u25cc"}</div>
+          <div className="empty-state-text">{"\u672a\u627e\u5230\u5bf9\u8bdd"}</div>
         </div>
       </div>
     );
@@ -49,7 +49,8 @@ function ConversationList({
   return (
     <div className="conversation-list">
       {conversations.map((conversation) => {
-        const title = normalizeConversationTitle(conversation.summary) || "未命名对话";
+        const title =
+          normalizeConversationTitle(conversation.summary) || "\u672a\u547d\u540d\u5bf9\u8bdd";
         const visibleTitle = truncateSidebarTitle(title);
         const isSelected = selectedId === conversation.id;
 

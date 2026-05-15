@@ -1,4 +1,4 @@
-import React from "react";
+﻿import React from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import RepoMemoryPanel from "../components/RepoMemoryPanel";
@@ -238,8 +238,8 @@ describe("RepoMemoryPanel autofocus", () => {
       />,
     );
 
-    expect(screen.getByText(/旧版自动抽取/)).toBeTruthy();
-    expect(screen.getByText(/确认后才会作为启动规则使用/)).toBeTruthy();
+    expect(screen.getByText(/\u65e7\u7248\u81ea\u52a8\u62bd\u53d6/)).toBeTruthy();
+    expect(screen.getByText(/\u786e\u8ba4\u540e\u624d\u4f1a\u4f5c\u4e3a\u542f\u52a8\u89c4\u5219\u4f7f\u7528/)).toBeTruthy();
     expect(screen.queryByText(/auto_quarantine/)).toBeNull();
     expect(screen.getByText("\u542f\u7528")).toBeTruthy();
     expect(screen.queryByText(/^active$/)).toBeNull();

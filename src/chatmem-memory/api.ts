@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/tauri";
 import type {
   ApprovedMemory,
   ArtifactRecord,
+  AutoCaptureInput,
+  AutoCaptureReport,
   CheckpointCreateInput,
   CheckpointRecord,
   EmbeddingRebuildReport,
@@ -119,6 +121,10 @@ export function createHandoffPacket(payload: HandoffCreateInput) {
 
 export function createCheckpoint(payload: CheckpointCreateInput) {
   return invoke<CheckpointRecord>("create_checkpoint", payload);
+}
+
+export function autoCaptureConversation(payload: AutoCaptureInput) {
+  return invoke<AutoCaptureReport>("auto_capture_conversation", payload);
 }
 
 export function markHandoffConsumed(payload: HandoffConsumeInput) {

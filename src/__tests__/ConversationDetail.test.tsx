@@ -32,6 +32,35 @@ function buildConversation(overrides?: { messages?: Message[] }) {
 }
 
 describe("ConversationDetail", () => {
+  it("renders message markdown as structured readable content", () => {
+    const conversation = buildConversation({
+      messages: [
+        {
+          id: "a1",
+          timestamp: "2026-04-08T08:31:00Z",
+          role: "assistant",
+          content: [
+            "## \u65b9\u6848",
+            "",
+            "- **\u5bfc\u5165** ZCode \u4f1a\u8bdd",
+            "",
+            "```ts",
+            "const ok = true;",
+            "```",
+          ].join("\n"),
+          tool_calls: [],
+          metadata: {},
+        },
+      ],
+    });
+
+    const { container } = render(<ConversationDetail conversation={conversation} />);
+
+    expect(screen.getByRole("heading", { name: "\u65b9\u6848" })).toBeTruthy();
+    expect(container.querySelector(".message-content strong")?.textContent).toBe("\u5bfc\u5165");
+    expect(container.querySelector(".message-content pre code")?.textContent).toContain("const ok = true;");
+  });
+
   it("renders user messages with a dedicated bubble element", () => {
     const conversation = buildConversation({
       messages: [
@@ -162,5 +191,50 @@ describe("ConversationDetail", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "展开工具详情" }));
     expect(screen.getByText(/demo\.txt/)).toBeTruthy();
+  });
+  it("groups multiple tool calls behind one collapsed control", () => {
+    const conversation = buildConversation({
+      messages: [
+        {
+          id: "a1",
+          timestamp: "2026-04-08T08:31:00Z",
+          role: "assistant",
+          content: "I checked it.",
+          tool_calls: [
+            {
+              name: "read_file",
+              input: { path: "a.txt" },
+              output: "A",
+              status: "success",
+            },
+            {
+              name: "list_dir",
+              input: { path: "D:/VSP" },
+              output: "chatmem",
+              status: "success",
+            },
+            {
+              name: "shell",
+              input: { command: "git status" },
+              output: "clean",
+              status: "success",
+            },
+          ],
+          metadata: {},
+        },
+      ],
+    });
+
+    const { container } = render(<ConversationDetail conversation={conversation} />);
+
+    const expandToolsLabel = "\u5c55\u5f00\u5de5\u5177\u8be6\u60c5";
+    expect(container.querySelector(".tool-call-kicker")?.textContent).toBe("\u5de5\u5177\u8c03\u7528");
+    expect(screen.getByText("3 \u4e2a\u8c03\u7528")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: expandToolsLabel })).toHaveLength(1);
+    expect(screen.queryByText(/git status/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: expandToolsLabel }));
+    expect(screen.getByText(/git status/)).toBeTruthy();
+    expect(screen.getByText(/chatmem/)).toBeTruthy();
   });
 });

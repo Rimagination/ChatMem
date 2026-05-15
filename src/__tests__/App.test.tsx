@@ -56,6 +56,12 @@ function getMemoryButton(label = "Manage Rules") {
   return screen.getByRole("button", { name: label });
 }
 
+async function selectConversationSource(value: string) {
+  const sourceSelect = await screen.findByRole("combobox", { name: "Conversation source" });
+  fireEvent.change(sourceSelect, { target: { value } });
+  return sourceSelect as HTMLSelectElement;
+}
+
 async function openLocalHistoryView() {
   const historyTab = await screen.findByRole("tab", { name: "Local history" });
   fireEvent.click(historyTab);
@@ -274,7 +280,7 @@ describe("App", () => {
   it("renders a simple conversation manager shell without dashboard navigation", async () => {
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     renderApp();
@@ -290,10 +296,60 @@ describe("App", () => {
     expect(document.querySelector(".conversation-empty-state .brand-empty-icon img")).toBeTruthy();
   });
 
+  it("silently auto-captures the selected conversation when memory capture is enabled", async () => {
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: true }),
+    );
+    const baseImplementation = mockInvoke.getMockImplementation();
+    mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
+      if (command === "auto_capture_conversation") {
+        return {
+          conversationId: `${payload?.agent}:${
+            payload?.id
+          }`,
+          sourceAgent: payload?.agent,
+          repoRoot: payload?.repoRoot,
+          messageCount: 1,
+          fileCount: 0,
+          storagePath: "C:/Users/demo/.codex/sessions/2026/04/08/rollout-conv-001.jsonl",
+          capturedAt: "2026-04-08T09:01:00Z",
+          checkpoint: {
+            checkpoint_id: "auto-checkpoint-001",
+            repo_root: payload?.repoRoot,
+            conversation_id: `${payload?.agent}:${payload?.id}`,
+            source_agent: payload?.agent,
+            status: "active",
+            summary: "Debug session",
+            resume_command: "codex resume conv-001",
+            metadata_json: "{\"capture\":\"auto\"}",
+            handoff_id: null,
+            created_at: "2026-04-08T09:01:00Z",
+          },
+        };
+      }
+      return baseImplementation?.(command, payload) ?? [];
+    });
+
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("Debug session"))[0]);
+    await screen.findByRole("heading", { name: "Debug session" });
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("auto_capture_conversation", {
+        agent: "claude",
+        id: "conv-001",
+        repoRoot: "D:/VSP/demo",
+      });
+    });
+    expect(screen.queryByText(/auto-capture/i)).toBeNull();
+  });
+
   it("opens settings as a full workspace page instead of a floating panel", async () => {
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     renderApp();
@@ -310,10 +366,28 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "Choose a conversation" })).toBeTruthy();
   });
 
+  it("renders the 1.1.0 version and updated About page structure", async () => {
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
+    );
+
+    renderApp();
+
+    expect(await screen.findByText("ChatMem v1.1.0")).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole("button", { name: "About us" }));
+
+    expect(await screen.findByRole("heading", { name: "About ChatMem" })).toBeTruthy();
+    expect(screen.getByText("What changed in 1.1.0")).toBeTruthy();
+    expect(screen.getByText(/ZCode task history/)).toBeTruthy();
+    expect(screen.getByText(/Markdown conversation reading/)).toBeTruthy();
+  });
+
   it("opens an in-app card before moving one sidebar conversation to trash", async () => {
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     renderApp();
@@ -350,7 +424,7 @@ describe("App", () => {
   it("moves selected sidebar conversations to trash after one bulk confirmation card", async () => {
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     renderApp();
@@ -399,7 +473,7 @@ describe("App", () => {
   it("empties Trash only after an in-app confirmation card", async () => {
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     let trashItems = [
@@ -472,7 +546,7 @@ describe("App", () => {
   it("merges equivalent project paths and does not repeat project conversations as chats", async () => {
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
     mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
       if (command === "list_conversations") {
@@ -543,7 +617,7 @@ describe("App", () => {
   it("classifies Codex generated chat folders as chats instead of projects", async () => {
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
     mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
       if (command === "list_conversations") {
@@ -628,7 +702,7 @@ describe("App", () => {
 
     renderApp();
 
-    fireEvent.click(screen.getByRole("button", { name: "Codex" }));
+    await selectConversationSource("codex");
     await screen.findByText("Where are our conversation files?");
 
     await waitFor(() => {
@@ -659,7 +733,7 @@ describe("App", () => {
   it("switches the conversation source to OpenCode", async () => {
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
     mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
       if (command === "list_conversations") {
@@ -713,7 +787,7 @@ describe("App", () => {
 
     renderApp();
 
-    fireEvent.click(screen.getByRole("button", { name: "OpenCode" }));
+    await selectConversationSource("opencode");
     await screen.findByText("OpenCode project memory");
 
     expect(mockInvoke).toHaveBeenCalledWith("list_conversations", { agent: "opencode" });
@@ -721,10 +795,131 @@ describe("App", () => {
     expect(await screen.findByText("Current OPENCODE conversation")).toBeTruthy();
   });
 
+  it("uses one compact source selector with five top-level sources", async () => {
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
+    );
+    mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
+      if (command === "list_conversations") {
+        return [
+          {
+            id: "conv-001",
+            source_agent: payload?.agent ?? "claude",
+            project_dir: "D:/VSP/demo",
+            created_at: "2026-05-10T08:00:00Z",
+            updated_at: "2026-05-10T09:00:00Z",
+            summary: "Source selector check",
+            message_count: 1,
+            file_count: 0,
+          },
+        ];
+      }
+
+      if (
+        command === "list_memory_candidates" ||
+        command === "list_handoffs" ||
+        command === "list_checkpoints" ||
+        command === "list_runs" ||
+        command === "list_artifacts" ||
+        command === "list_episodes" ||
+        command === "list_repo_memories"
+      ) {
+        return [];
+      }
+
+      return [];
+    });
+
+    renderApp();
+
+    const sourceSelect = (await screen.findByRole("combobox", {
+      name: "Conversation source",
+    })) as HTMLSelectElement;
+    expect(Array.from(sourceSelect.options).map((option) => option.textContent)).toEqual([
+      "Claude",
+      "Codex",
+      "Gemini",
+      "OpenCode",
+      "ZCode",
+    ]);
+    expect(screen.queryByRole("button", { name: "ZCode Claude" })).toBeNull();
+
+    fireEvent.change(sourceSelect, { target: { value: "zcode" } });
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("list_conversations", { agent: "zcode" });
+    });
+  });
+
+  it("groups ZCode conversations by CLI before project", async () => {
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
+    );
+    mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
+      if (command === "list_conversations") {
+        if (payload?.agent === "zcode") {
+          return [
+            {
+              id: "claude:p1:session-1",
+              source_agent: "zcode",
+              project_dir: "D:/VSP/chatmem",
+              created_at: "2026-05-10T08:00:00Z",
+              updated_at: "2026-05-10T09:00:00Z",
+              summary: "ZCode Claude project work",
+              message_count: 2,
+              file_count: 0,
+            },
+            {
+              id: "codex:p1:thread-1",
+              source_agent: "zcode",
+              project_dir: "D:/VSP/chatmem",
+              created_at: "2026-05-10T07:00:00Z",
+              updated_at: "2026-05-10T08:30:00Z",
+              summary: "ZCode Codex project work",
+              message_count: 3,
+              file_count: 0,
+            },
+          ];
+        }
+
+        return [];
+      }
+
+      if (
+        command === "list_memory_candidates" ||
+        command === "list_handoffs" ||
+        command === "list_checkpoints" ||
+        command === "list_runs" ||
+        command === "list_artifacts" ||
+        command === "list_episodes" ||
+        command === "list_repo_memories"
+      ) {
+        return [];
+      }
+
+      return [];
+    });
+
+    renderApp();
+    await selectConversationSource("zcode");
+    await screen.findByText("ZCode Claude project work");
+
+    const cliGroups = Array.from(document.querySelectorAll(".zcode-cli-group"));
+    expect(cliGroups).toHaveLength(2);
+    expect(cliGroups[0].textContent).toContain("Claude");
+    expect(cliGroups[0].textContent).toContain("chatmem");
+    expect(cliGroups[0].textContent).toContain("ZCode Claude project work");
+    expect(cliGroups[1].textContent).toContain("Codex");
+    expect(cliGroups[1].textContent).toContain("chatmem");
+    expect(cliGroups[1].textContent).toContain("ZCode Codex project work");
+  });
+
   it("switches local history into an independent workspace view", async () => {
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     renderApp();
@@ -759,7 +954,7 @@ describe("App", () => {
   it("uses readable hover labels for project section controls", async () => {
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     renderApp();
@@ -788,7 +983,7 @@ describe("App", () => {
   it("starts native window dragging from the top bar without hijacking controls", async () => {
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     renderApp();
@@ -808,7 +1003,7 @@ describe("App", () => {
     mockIsMaximized.mockResolvedValue(true);
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     const { container } = renderApp();
@@ -825,7 +1020,7 @@ describe("App", () => {
   it("shows conversation details, migration, copy actions, and startup rules drawer in one workspace", async () => {
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     renderApp();
@@ -976,7 +1171,7 @@ describe("App", () => {
 
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     renderApp();
@@ -1150,7 +1345,7 @@ describe("App", () => {
 
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     renderApp();
@@ -1307,7 +1502,7 @@ describe("App", () => {
 
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     renderApp();
@@ -1439,7 +1634,7 @@ describe("App", () => {
 
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     renderApp();
@@ -1561,7 +1756,7 @@ describe("App", () => {
 
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     renderApp();
@@ -1692,7 +1887,7 @@ describe("App", () => {
 
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     renderApp();
@@ -1853,7 +2048,7 @@ describe("App", () => {
 
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     renderApp();
@@ -1889,7 +2084,7 @@ describe("App", () => {
   it("truncates very long workspace titles while keeping the full title available", async () => {
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     renderApp();
@@ -1980,7 +2175,7 @@ describe("App", () => {
 
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     renderApp();
@@ -2011,7 +2206,7 @@ describe("App", () => {
   it("searches conversations by message body content", async () => {
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     renderApp();
@@ -2031,7 +2226,7 @@ describe("App", () => {
   it("keeps migration working from the selected conversation detail", async () => {
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     renderApp();
@@ -2066,7 +2261,7 @@ describe("App", () => {
   it("runs a manual update check from settings", async () => {
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     renderApp();
@@ -2083,7 +2278,7 @@ describe("App", () => {
     vi.useFakeTimers();
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: true }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: true, autoCaptureMemory: false }),
     );
     mockCheckUpdate.mockResolvedValue({
       shouldUpdate: true,

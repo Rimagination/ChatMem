@@ -11,6 +11,9 @@ use walkdir::WalkDir;
 
 use agentswap_core::adapter::AgentAdapter;
 use agentswap_core::files::move_path_to_trash;
+use agentswap_core::titles::{
+    choose_title, is_meaningful_task_text, is_visible_assistant_text, title_candidate,
+};
 use agentswap_core::tool_mapping::map_tool;
 use agentswap_core::types::*;
 
@@ -119,9 +122,11 @@ impl ClaudeAdapter {
                     if let Some(msg) = &event.message {
                         match &msg.content {
                             ClaudeContent::Text(text) => {
-                                message_count += 1;
-                                if first_user_message.is_none() && !text.is_empty() {
-                                    first_user_message = Some(truncate_str(text, 100));
+                                if is_meaningful_task_text(text) {
+                                    message_count += 1;
+                                    if first_user_message.is_none() {
+                                        first_user_message = title_candidate(text, 100);
+                                    }
                                 }
                             }
                             ClaudeContent::Blocks(_) => {
@@ -136,8 +141,10 @@ impl ClaudeAdapter {
                     if let Some(msg) = &event.message {
                         if let ClaudeContent::Blocks(blocks) = &msg.content {
                             for block in blocks {
-                                if matches!(block, ClaudeContentBlock::Text { .. }) {
-                                    message_count += 1;
+                                if let ClaudeContentBlock::Text { text } = block {
+                                    if is_visible_assistant_text(text) {
+                                        message_count += 1;
+                                    }
                                 }
                                 // Track file changes from tool_use
                                 if let ClaudeContentBlock::ToolUse { name, input, .. } = block {
@@ -178,21 +185,10 @@ impl ClaudeAdapter {
             project_dir,
             created_at: first_timestamp.unwrap_or(now),
             updated_at: last_timestamp.unwrap_or(now),
-            summary: summary.or(first_user_message),
+            summary: choose_title(summary.as_deref(), first_user_message.as_deref(), 100),
             message_count,
             file_count: file_paths.len(),
         })
-    }
-}
-
-/// Truncate a string to at most `max_chars` characters, appending "..." if truncated.
-fn truncate_str(s: &str, max_chars: usize) -> String {
-    let mut chars = s.chars();
-    let truncated: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{}...", truncated)
-    } else {
-        truncated
     }
 }
 
@@ -252,6 +248,15 @@ fn is_empty_or_relative_project_cwd(path: &str) -> bool {
     matches!(path.trim(), "" | ".")
 }
 
+fn is_listable_claude_summary(summary: &ConversationSummary) -> bool {
+    summary
+        .summary
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+        && summary.message_count > 0
+}
+
 fn project_cwd_for_claude(path: &str) -> String {
     let cleaned = clean_project_path_for_claude(path);
     if is_empty_or_relative_project_cwd(&cleaned) {
@@ -291,7 +296,11 @@ impl AgentAdapter for ClaudeAdapter {
             }
 
             match self.quick_parse_metadata(path) {
-                Ok(summary) => summaries.push(summary),
+                Ok(summary) => {
+                    if is_listable_claude_summary(&summary) {
+                        summaries.push(summary);
+                    }
+                }
                 Err(e) => {
                     eprintln!(
                         "Warning: failed to parse session file {}: {}",
@@ -326,6 +335,7 @@ impl AgentAdapter for ClaudeAdapter {
         let mut file_paths_seen: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         let mut summary: Option<String> = None;
+        let mut first_user_message: Option<String> = None;
         let mut first_timestamp: Option<DateTime<Utc>> = None;
         let mut last_timestamp: Option<DateTime<Utc>> = None;
         let mut first_cwd: Option<String> = None;
@@ -381,6 +391,9 @@ impl AgentAdapter for ClaudeAdapter {
 
                     match &msg.content {
                         ClaudeContent::Text(text) => {
+                            if !is_meaningful_task_text(text) {
+                                continue;
+                            }
                             // Plain user message
                             let msg_id = event
                                 .uuid
@@ -395,6 +408,9 @@ impl AgentAdapter for ClaudeAdapter {
                                 tool_calls: Vec::new(),
                                 metadata: HashMap::new(),
                             });
+                            if first_user_message.is_none() {
+                                first_user_message = title_candidate(text, 100);
+                            }
                             // Reset assistant tracking since we have a new user turn
                             current_assistant_msg_api_id = None;
                         }
@@ -468,6 +484,9 @@ impl AgentAdapter for ClaudeAdapter {
                         for block in blocks {
                             match block {
                                 ClaudeContentBlock::Text { text } => {
+                                    if !is_visible_assistant_text(text) {
+                                        continue;
+                                    }
                                     // Check if this is the same API response as the current
                                     // assistant message (same message.id)
                                     let is_same_api_response = api_id.is_some()
@@ -638,7 +657,7 @@ impl AgentAdapter for ClaudeAdapter {
             project_dir,
             created_at: first_timestamp.unwrap_or(now),
             updated_at: last_timestamp.unwrap_or(now),
-            summary,
+            summary: choose_title(summary.as_deref(), first_user_message.as_deref(), 100),
             messages,
             file_changes,
         })
@@ -1080,6 +1099,60 @@ mod tests {
         assert_eq!(conv.messages.len(), 2);
         assert_eq!(conv.messages[0].content, "Hello");
         assert_eq!(conv.messages[1].content, "Response");
+    }
+
+    #[test]
+    fn test_filters_local_command_noise_from_titles_and_messages() {
+        let tmp = TempDir::new().unwrap();
+        let session_id = "test-session-command-noise";
+        let lines = &[
+            r#"{"type":"user","uuid":"11111111-1111-1111-1111-111111111111","timestamp":"2026-03-04T15:00:00.000Z","isSidechain":false,"message":{"role":"user","content":"<local-command-caveat>Caveat: generated by local command.</local-command-caveat>"}}"#,
+            r#"{"type":"user","uuid":"22222222-2222-2222-2222-222222222222","timestamp":"2026-03-04T15:00:01.000Z","isSidechain":false,"message":{"role":"user","content":"<command-name>/model</command-name>\n<command-args>mimo-v2.5-pro</command-args>"}}"#,
+            r#"{"type":"assistant","uuid":"33333333-3333-3333-3333-333333333333","timestamp":"2026-03-04T15:00:02.000Z","isSidechain":false,"message":{"role":"assistant","id":"msg_001","content":[{"type":"text","text":"No response requested."}]}}"#,
+            r#"{"type":"user","uuid":"44444444-4444-4444-4444-444444444444","timestamp":"2026-03-04T15:00:03.000Z","isSidechain":false,"message":{"role":"user","content":"Implement task-based conversation titles"}}"#,
+            r#"{"type":"assistant","uuid":"55555555-5555-5555-5555-555555555555","timestamp":"2026-03-04T15:00:04.000Z","isSidechain":false,"message":{"role":"assistant","id":"msg_002","content":[{"type":"text","text":"Done."}]}}"#,
+        ];
+        create_test_session(tmp.path(), "-Users-test-project", session_id, lines);
+
+        let adapter = ClaudeAdapter::with_projects_dir(tmp.path().to_path_buf());
+        let summaries = adapter.list_conversations().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(
+            summaries[0].summary.as_deref(),
+            Some("Implement task-based conversation titles")
+        );
+        assert_eq!(summaries[0].message_count, 2);
+
+        let conv = adapter.read_conversation(session_id).unwrap();
+        let contents = conv
+            .messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            contents,
+            vec!["Implement task-based conversation titles", "Done."]
+        );
+    }
+
+    #[test]
+    fn test_hides_command_only_claude_sessions_from_list() {
+        let tmp = TempDir::new().unwrap();
+        let lines = &[
+            r#"{"type":"user","uuid":"11111111-1111-1111-1111-111111111111","timestamp":"2026-03-04T15:00:00.000Z","isSidechain":false,"message":{"role":"user","content":"<local-command-caveat>Caveat: generated by local command.</local-command-caveat>"}}"#,
+            r#"{"type":"assistant","uuid":"22222222-2222-2222-2222-222222222222","timestamp":"2026-03-04T15:00:01.000Z","isSidechain":false,"message":{"role":"assistant","id":"msg_001","content":[{"type":"text","text":"No response requested."}]}}"#,
+        ];
+        create_test_session(
+            tmp.path(),
+            "-Users-test-project",
+            "test-session-command-only",
+            lines,
+        );
+
+        let adapter = ClaudeAdapter::with_projects_dir(tmp.path().to_path_buf());
+        let summaries = adapter.list_conversations().unwrap();
+
+        assert!(summaries.is_empty());
     }
 
     #[test]

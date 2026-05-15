@@ -1,0 +1,19 @@
+[package]
+name = "agentswap-zcode"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+agentswap-core = { path = "../agentswap-core" }
+agentswap-claude = { path = "../agentswap-claude" }
+agentswap-codex = { path = "../agentswap-codex" }
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"

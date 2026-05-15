@@ -62,6 +62,7 @@ export type AppSettings = {
   locale: Locale;
   fontFamily: AppFontFamily;
   autoCheckUpdates: boolean;
+  autoCaptureMemory: boolean;
   trashRetentionDays: number;
   sync: SyncSettings;
 };
@@ -82,6 +83,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   locale: "zh-CN",
   fontFamily: "system",
   autoCheckUpdates: true,
+  autoCaptureMemory: true,
   trashRetentionDays: 14,
   sync: DEFAULT_SYNC_SETTINGS,
 };
@@ -161,6 +163,7 @@ export function normalizeAppSettings(value: unknown): AppSettings {
     locale: parsed.locale === "en" ? "en" : "zh-CN",
     fontFamily,
     autoCheckUpdates: parsed.autoCheckUpdates !== false,
+    autoCaptureMemory: parsed.autoCaptureMemory !== false,
     trashRetentionDays: Math.min(365, Math.max(1, parsedRetention)),
     sync: normalizeSyncSettings(parsed.sync),
   };

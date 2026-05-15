@@ -1,6 +1,7 @@
-import { render, screen } from "@testing-library/react";
+﻿import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import ConversationList from "../components/ConversationList";
+import { truncateSidebarTitle } from "../utils/titleUtils";
 
 describe("ConversationList", () => {
   it("renders empty state when no conversations", () => {
@@ -13,7 +14,7 @@ describe("ConversationList", () => {
       />,
     );
 
-    expect(screen.getByText("未找到对话")).toBeTruthy();
+    expect(screen.getByText("\u672a\u627e\u5230\u5bf9\u8bdd")).toBeTruthy();
   });
 
   it("renders loading state", () => {
@@ -30,7 +31,7 @@ describe("ConversationList", () => {
   });
 
   it("renders a compact list row without the old metadata pills", () => {
-    const longTitle = "我本地的chatmem项目，现在点击对话迁移为啥没反应？？";
+    const longTitle = "鎴戞湰鍦扮殑chatmem椤圭洰锛岀幇鍦ㄧ偣鍑诲璇濊縼绉讳负鍟ユ病鍙嶅簲锛燂紵";
     const conversations = [
       {
         id: "test-id-1",
@@ -54,7 +55,7 @@ describe("ConversationList", () => {
     );
 
     const title = container.querySelector(".conversation-item-title");
-    expect(title?.textContent).toBe("我本地的chatmem项目，现在点击对话迁移为啥...");
+    expect(title?.textContent).toBe(truncateSidebarTitle(longTitle));
     expect(title?.getAttribute("title")).toBe(longTitle);
     expect(screen.getByText("/test/project")).toBeTruthy();
     expect(container.querySelector(".conversation-item-row")).toBeTruthy();

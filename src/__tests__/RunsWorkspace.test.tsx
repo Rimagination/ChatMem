@@ -40,7 +40,7 @@ describe("Runs workspace", () => {
     localStorage.clear();
     localStorage.setItem(
       "chatmem.settings",
-      JSON.stringify({ locale: "en", autoCheckUpdates: false }),
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
     );
 
     mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {

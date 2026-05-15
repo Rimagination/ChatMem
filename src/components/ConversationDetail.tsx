@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { formatDateTime } from "../utils/dateUtils";
 
 interface Message {
@@ -79,6 +81,23 @@ function getCollapsedPreview(content: string) {
   return `${trimmed.slice(0, COLLAPSIBLE_MESSAGE_LENGTH)}...`;
 }
 
+function MessageMarkdown({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        a: ({ children, ...props }) => (
+          <a {...props} target="_blank" rel="noreferrer">
+            {children}
+          </a>
+        ),
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+}
+
 function ConversationDetail({ conversation }: ConversationDetailProps) {
   const [expandedMessages, setExpandedMessages] = useState<Record<string, boolean>>({});
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
@@ -134,7 +153,7 @@ function ConversationDetail({ conversation }: ConversationDetailProps) {
                         collapsible ? (isExpanded ? "is-expanded" : "is-collapsed") : ""
                       }`.trim()}
                     >
-                      {visibleContent}
+                      <MessageMarkdown content={visibleContent} />
                     </div>
 
                     {collapsible && (
@@ -154,52 +173,69 @@ function ConversationDetail({ conversation }: ConversationDetailProps) {
                   </div>
                 )}
 
-                {message.tool_calls.length > 0 && (
-                  <div className="tool-calls">
-                    {message.tool_calls.map((toolCall, index) => {
-                      const toolKey = `${message.id}-${index}`;
-                      const toolExpanded = expandedTools[toolKey] ?? false;
+                {message.tool_calls.length > 0 && (() => {
+                  const toolKey = `${message.id}-tools`;
+                  const toolExpanded = expandedTools[toolKey] ?? false;
+                  const hasError = message.tool_calls.some((toolCall) => toolCall.status !== "success");
 
-                      return (
-                        <div key={`${message.id}-${toolCall.name}-${index}`} className="tool-call">
-                          <div className="tool-call-topline">
-                            <span className="tool-call-name">{toolCall.name}</span>
-                            <div className="tool-call-actions">
-                              <span className={`tool-call-status tool-call-status-${toolCall.status}`}>
-                                {toolCall.status === "success" ? "\u6210\u529f" : "\u5f02\u5e38"}
-                              </span>
-                              <button
-                                type="button"
-                                className="tool-call-toggle"
-                                onClick={() =>
-                                  setExpandedTools((current) => ({
-                                    ...current,
-                                    [toolKey]: !toolExpanded,
-                                  }))
-                                }
-                              >
-                                {toolExpanded
-                                  ? "\u6536\u8d77\u5de5\u5177\u8be6\u60c5"
-                                  : "\u5c55\u5f00\u5de5\u5177\u8be6\u60c5"}
-                              </button>
-                            </div>
+                  return (
+                    <div className="tool-calls">
+                      <div className="tool-call tool-call-group">
+                        <div className="tool-call-topline">
+                          <span className="tool-call-title-block">
+                            <span className="tool-call-kicker">{"\u5de5\u5177\u8c03\u7528"}</span>
+                            <span className="tool-call-summary">
+                              {message.tool_calls.length} {"\u4e2a\u8c03\u7528"}
+                            </span>
+                          </span>
+                          <div className="tool-call-actions">
+                            <span className={`tool-call-status tool-call-status-${hasError ? "error" : "success"}`}>
+                              {hasError ? "\u5f02\u5e38" : "\u6210\u529f"}
+                            </span>
+                            <button
+                              type="button"
+                              className="tool-call-toggle"
+                              onClick={() =>
+                                setExpandedTools((current) => ({
+                                  ...current,
+                                  [toolKey]: !toolExpanded,
+                                }))
+                              }
+                            >
+                              {toolExpanded
+                                ? "\u6536\u8d77\u5de5\u5177\u8be6\u60c5"
+                                : "\u5c55\u5f00\u5de5\u5177\u8be6\u60c5"}
+                            </button>
                           </div>
-
-                          {toolExpanded && (
-                            <div className="tool-call-details">
-                              <pre className="tool-call-input">
-                                {JSON.stringify(toolCall.input, null, 2)}
-                              </pre>
-                              {toolCall.output && (
-                                <div className="tool-call-output">{toolCall.output}</div>
-                              )}
-                            </div>
-                          )}
                         </div>
-                      );
-                    })}
-                  </div>
-                )}
+
+                        {toolExpanded && (
+                          <div className="tool-call-details">
+                            {message.tool_calls.map((toolCall, index) => (
+                              <div
+                                key={`${message.id}-${toolCall.name}-${index}`}
+                                className="tool-call-detail-item"
+                              >
+                                <div className="tool-call-detail-title">
+                                  <span className="tool-call-detail-name">{toolCall.name}</span>
+                                  <span className={`tool-call-status tool-call-status-${toolCall.status}`}>
+                                    {toolCall.status === "success" ? "\u6210\u529f" : "\u5f02\u5e38"}
+                                  </span>
+                                </div>
+                                <pre className="tool-call-input">
+                                  {JSON.stringify(toolCall.input, null, 2)}
+                                </pre>
+                                {toolCall.output && (
+                                  <div className="tool-call-output">{toolCall.output}</div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             </article>
           );

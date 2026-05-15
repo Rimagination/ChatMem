@@ -12,6 +12,10 @@ use walkdir::WalkDir;
 
 use agentswap_core::adapter::AgentAdapter;
 use agentswap_core::files::move_path_to_trash;
+use agentswap_core::titles::{
+    choose_title, is_meaningful_task_text, is_visible_assistant_text, title_candidate,
+    truncate_title,
+};
 use agentswap_core::tool_mapping::map_tool;
 use agentswap_core::types::*;
 
@@ -125,16 +129,29 @@ impl GeminiAdapter {
         // Count unique file paths from tool calls
         let mut file_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
         for msg in &session.messages {
-            if msg.message_type == "user" || msg.message_type == "gemini" {
-                message_count += 1;
-            }
-            if msg.message_type == "user" && first_user_message.is_none() {
-                if let Some(content) = &msg.content {
-                    if !content.is_empty() {
-                        let truncated = truncate_str(content, 100);
-                        first_user_message = Some(truncated);
+            match msg.message_type.as_str() {
+                "user" => {
+                    if let Some(content) = &msg.content {
+                        if is_meaningful_task_text(content) {
+                            message_count += 1;
+                            if first_user_message.is_none() {
+                                first_user_message = title_candidate(content, 100);
+                            }
+                        }
                     }
                 }
+                "gemini" => {
+                    if msg
+                        .content
+                        .as_deref()
+                        .map(is_visible_assistant_text)
+                        .unwrap_or(false)
+                        || !msg.tool_calls.is_empty()
+                    {
+                        message_count += 1;
+                    }
+                }
+                _ => {}
             }
             for tc in &msg.tool_calls {
                 if let Some(args) = &tc.args {
@@ -151,7 +168,11 @@ impl GeminiAdapter {
             project_dir,
             created_at: start_time,
             updated_at: last_updated,
-            summary: session.summary.or(first_user_message),
+            summary: choose_title(
+                session.summary.as_deref(),
+                first_user_message.as_deref(),
+                100,
+            ),
             message_count,
             file_count: file_paths.len(),
         })
@@ -160,13 +181,7 @@ impl GeminiAdapter {
 
 /// Truncate a string to at most `max_chars` characters, appending "..." if truncated.
 fn truncate_str(s: &str, max_chars: usize) -> String {
-    let mut chars = s.chars();
-    let truncated: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{}...", truncated)
-    } else {
-        truncated
-    }
+    truncate_title(s, max_chars)
 }
 
 /// Try to extract a file path from tool call args for file-modifying tools.
@@ -206,6 +221,7 @@ fn convert_session(session: &GeminiSession, project_dir: &str) -> Result<Convers
     let mut messages: Vec<Message> = Vec::new();
     let mut file_changes: Vec<FileChange> = Vec::new();
     let mut file_paths_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut first_user_message: Option<String> = None;
 
     for gemini_msg in &session.messages {
         let ts = gemini_msg
@@ -222,11 +238,18 @@ fn convert_session(session: &GeminiSession, project_dir: &str) -> Result<Convers
 
         match gemini_msg.message_type.as_str() {
             "user" => {
+                let content = gemini_msg.content.clone().unwrap_or_default();
+                if !is_meaningful_task_text(&content) {
+                    continue;
+                }
+                if first_user_message.is_none() {
+                    first_user_message = title_candidate(&content, 100);
+                }
                 messages.push(Message {
                     id: msg_id,
                     timestamp: ts,
                     role: Role::User,
-                    content: gemini_msg.content.clone().unwrap_or_default(),
+                    content,
                     tool_calls: Vec::new(),
                     metadata: HashMap::new(),
                 });
@@ -307,11 +330,21 @@ fn convert_session(session: &GeminiSession, project_dir: &str) -> Result<Convers
                     });
                 }
 
+                let content = gemini_msg.content.clone().unwrap_or_default();
+                let visible_content = is_visible_assistant_text(&content);
+                if !visible_content && tool_calls.is_empty() {
+                    continue;
+                }
+
                 messages.push(Message {
                     id: msg_id,
                     timestamp: ts,
                     role: Role::Assistant,
-                    content: gemini_msg.content.clone().unwrap_or_default(),
+                    content: if visible_content {
+                        content
+                    } else {
+                        String::new()
+                    },
                     tool_calls,
                     metadata,
                 });
@@ -340,7 +373,11 @@ fn convert_session(session: &GeminiSession, project_dir: &str) -> Result<Convers
         project_dir: project_dir.to_string(),
         created_at: start_time,
         updated_at: last_updated,
-        summary: session.summary.clone(),
+        summary: choose_title(
+            session.summary.as_deref(),
+            first_user_message.as_deref(),
+            100,
+        ),
         messages,
         file_changes,
     })
@@ -777,6 +814,42 @@ mod tests {
         assert_eq!(convos[0].id, "session-001");
         assert_eq!(convos[0].source_agent, AgentKind::Gemini);
         assert_eq!(convos[0].message_count, 2);
+    }
+
+    #[test]
+    fn test_list_conversations_uses_first_meaningful_user_message_for_title() {
+        let tmp = TempDir::new().unwrap();
+        let session = json!({
+            "sessionId": "session-control-title",
+            "projectHash": "hash1",
+            "startTime": "2026-03-04T10:00:00.000Z",
+            "lastUpdated": "2026-03-04T10:05:00.000Z",
+            "messages": [
+                {
+                    "id": "11111111-1111-1111-1111-111111111111",
+                    "timestamp": "2026-03-04T10:00:00.000Z",
+                    "type": "user",
+                    "content": "<local-command-caveat>Caveat: generated by local command.</local-command-caveat>"
+                },
+                {
+                    "id": "22222222-2222-2222-2222-222222222222",
+                    "timestamp": "2026-03-04T10:01:00.000Z",
+                    "type": "user",
+                    "content": "Implement task-based conversation titles"
+                }
+            ]
+        });
+        create_test_session(tmp.path(), "projhash1", "session-control-title", &session);
+
+        let adapter = GeminiAdapter::with_tmp_dir(tmp.path().to_path_buf());
+        let convos = adapter.list_conversations().unwrap();
+
+        assert_eq!(convos.len(), 1);
+        assert_eq!(
+            convos[0].summary.as_deref(),
+            Some("Implement task-based conversation titles")
+        );
+        assert_eq!(convos[0].message_count, 1);
     }
 
     #[test]
@@ -1600,7 +1673,12 @@ mod tests {
                 }
             ]
         });
-        create_test_session(tmp.path(), "projhash-real-path", "session-real-path", &session);
+        create_test_session(
+            tmp.path(),
+            "projhash-real-path",
+            "session-real-path",
+            &session,
+        );
 
         let adapter = GeminiAdapter::with_tmp_dir(tmp.path().to_path_buf());
         let summary = adapter

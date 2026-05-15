@@ -3,16 +3,37 @@ use agentswap_codex::CodexAdapter;
 use agentswap_core::{adapter::AgentAdapter, types::Conversation};
 use agentswap_gemini::GeminiAdapter;
 use agentswap_opencode::OpenCodeAdapter;
+use agentswap_zcode::{
+    ZCodeAdapter, ZCodeClaudeAdapter, ZCodeCodexAdapter, ZCodeGeminiAdapter, ZCodeOpenCodeAdapter,
+};
 use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::{BTreeSet, HashMap};
 use walkdir::WalkDir;
 
 use super::{
+    checkpoints::{CheckpointRecord, CreateCheckpointInput},
     models::{
         AgentConversationCount, LocalHistoryImportReport, ObservedProjectRootCount, RepoScanReport,
     },
     store::MemoryStore,
 };
+
+const LOCAL_HISTORY_AGENTS: &[&str] = &["claude", "codex", "gemini", "opencode", "zcode"];
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoCaptureReport {
+    pub conversation_id: String,
+    pub source_agent: String,
+    pub repo_root: String,
+    pub checkpoint: CheckpointRecord,
+    pub message_count: usize,
+    pub file_count: usize,
+    pub storage_path: Option<String>,
+    pub captured_at: String,
+}
 
 pub fn build_resume_command(agent: &str, id: &str) -> Option<String> {
     match agent {
@@ -20,6 +41,7 @@ pub fn build_resume_command(agent: &str, id: &str) -> Option<String> {
         "codex" => Some(format!("codex resume {}", id)),
         "gemini" => Some(format!("gemini --resume {}", id)),
         "opencode" => Some(format!("opencode --session {}", id)),
+        "zcode" | "zcode-claude" | "zcode-codex" | "zcode-gemini" | "zcode-opencode" => None,
         _ => None,
     }
 }
@@ -94,12 +116,28 @@ pub fn resolve_opencode_storage_path(id: &str) -> Option<String> {
     Some(adapter.db_path().display().to_string())
 }
 
+pub fn resolve_zcode_claude_storage_path(id: &str) -> Option<String> {
+    ZCodeClaudeAdapter::new().storage_path_for_id(id)
+}
+
+pub fn resolve_zcode_codex_storage_path(id: &str) -> Option<String> {
+    ZCodeCodexAdapter::new().storage_path_for_id(id)
+}
+
+pub fn resolve_zcode_storage_path(id: &str) -> Option<String> {
+    ZCodeAdapter::new().storage_path_for_id(id)
+}
+
 pub fn resolve_storage_path(agent: &str, id: &str) -> Option<String> {
     match agent {
         "claude" => resolve_claude_storage_path(id),
         "codex" => resolve_codex_storage_path(id),
         "gemini" => resolve_gemini_storage_path(id),
         "opencode" => resolve_opencode_storage_path(id),
+        "zcode" => resolve_zcode_storage_path(id),
+        "zcode-claude" => resolve_zcode_claude_storage_path(id),
+        "zcode-codex" => resolve_zcode_codex_storage_path(id),
+        "zcode-gemini" | "zcode-opencode" => None,
         _ => None,
     }
 }
@@ -110,6 +148,11 @@ fn get_adapter(agent: &str) -> Option<Box<dyn AgentAdapter>> {
         "codex" => Some(Box::new(CodexAdapter::new())),
         "gemini" => Some(Box::new(GeminiAdapter::new())),
         "opencode" => Some(Box::new(OpenCodeAdapter::new())),
+        "zcode" => Some(Box::new(ZCodeAdapter::new())),
+        "zcode-claude" => Some(Box::new(ZCodeClaudeAdapter::new())),
+        "zcode-codex" => Some(Box::new(ZCodeCodexAdapter::new())),
+        "zcode-gemini" => Some(Box::new(ZCodeGeminiAdapter::new())),
+        "zcode-opencode" => Some(Box::new(ZCodeOpenCodeAdapter::new())),
         _ => None,
     }
 }
@@ -158,7 +201,7 @@ pub(crate) fn is_root_project_placeholder(project_dir: &str) -> bool {
 }
 
 pub(crate) fn is_codex_generated_chat_project_dir(agent: &str, project_dir: &str) -> bool {
-    if agent != "codex" {
+    if !is_codex_family_agent(agent) {
         return false;
     }
 
@@ -193,6 +236,14 @@ pub(crate) fn is_codex_generated_chat_project_dir(agent: &str, project_dir: &str
     }
 }
 
+fn is_codex_family_agent(agent: &str) -> bool {
+    matches!(agent, "codex" | "zcode" | "zcode-codex")
+}
+
+fn is_gemini_family_agent(agent: &str) -> bool {
+    matches!(agent, "gemini" | "zcode-gemini")
+}
+
 fn is_standalone_history_project(agent: &str, project_dir: &str) -> bool {
     is_root_project_placeholder(project_dir)
         || is_codex_generated_chat_project_dir(agent, project_dir)
@@ -221,17 +272,106 @@ pub fn sync_conversation_into_store(
     store.upsert_conversation_snapshot(agent, conversation, storage_path)
 }
 
+pub fn auto_capture_conversation(
+    store: &MemoryStore,
+    agent: &str,
+    id: &str,
+    repo_root_override: Option<&str>,
+) -> anyhow::Result<AutoCaptureReport> {
+    let adapter =
+        get_adapter(agent).ok_or_else(|| anyhow::anyhow!("Unsupported agent: {agent}"))?;
+    let storage_path = resolve_storage_path(agent, id);
+    auto_capture_conversation_with_adapter(
+        store,
+        agent,
+        adapter.as_ref(),
+        id,
+        repo_root_override,
+        storage_path,
+    )
+}
+
+pub(crate) fn auto_capture_conversation_with_adapter(
+    store: &MemoryStore,
+    agent: &str,
+    adapter: &dyn AgentAdapter,
+    id: &str,
+    repo_root_override: Option<&str>,
+    storage_path: Option<String>,
+) -> anyhow::Result<AutoCaptureReport> {
+    if !adapter.is_available() {
+        anyhow::bail!("{agent} adapter is not available");
+    }
+
+    let mut conversation = adapter.read_conversation(id)?;
+    if let Some(repo_root) = repo_root_override
+        .map(str::trim)
+        .filter(|repo_root| !repo_root.is_empty())
+    {
+        conversation.project_dir = repo_root.to_string();
+    }
+
+    let Some(canonical_project_root) =
+        importable_history_project_root(agent, &conversation.project_dir)
+    else {
+        anyhow::bail!(
+            "{agent} conversation {} has no usable project path",
+            conversation.id
+        );
+    };
+    conversation.project_dir = canonical_project_root.clone();
+
+    store.upsert_conversation_snapshot(agent, &conversation, storage_path.clone())?;
+    let conversation_id = format!("{agent}:{}", conversation.id);
+    let captured_at = chrono::Utc::now().to_rfc3339();
+    let message_count = conversation.messages.len();
+    let file_count = conversation.file_changes.len();
+    let summary = conversation
+        .summary
+        .clone()
+        .filter(|summary| !summary.trim().is_empty())
+        .unwrap_or_else(|| conversation.id.clone());
+    let metadata_json = json!({
+        "capture": "auto",
+        "captured_at": captured_at,
+        "storage_path": storage_path,
+        "message_count": message_count,
+        "file_count": file_count,
+        "source_conversation_id": conversation.id,
+    })
+    .to_string();
+    let checkpoint = store.upsert_auto_checkpoint(&CreateCheckpointInput {
+        repo_root: canonical_project_root.clone(),
+        conversation_id: conversation_id.clone(),
+        source_agent: agent.to_string(),
+        summary,
+        resume_command: build_resume_command(agent, &conversation.id),
+        metadata_json: Some(metadata_json),
+    })?;
+
+    Ok(AutoCaptureReport {
+        conversation_id,
+        source_agent: agent.to_string(),
+        repo_root: canonical_project_root,
+        checkpoint,
+        message_count,
+        file_count,
+        storage_path,
+        captured_at,
+    })
+}
+
 pub fn sync_repo_conversations(store: &MemoryStore, repo_root: &str) -> anyhow::Result<usize> {
     Ok(scan_repo_conversations(store, repo_root)?.linked_conversation_count)
 }
 
 pub fn import_all_local_history(store: &MemoryStore) -> anyhow::Result<LocalHistoryImportReport> {
     let mut adapters = Vec::new();
-    for agent in ["claude", "codex", "gemini", "opencode"] {
+    for agent in LOCAL_HISTORY_AGENTS {
         let Some(adapter) = get_adapter(agent) else {
             continue;
         };
-        adapters.push((agent, adapter));
+        adapters.push((*agent, adapter));
     }
 
     import_local_history_from_adapters(store, adapters)
@@ -343,7 +483,7 @@ pub fn scan_repo_conversations(
     let mut source_agent_counts: HashMap<String, usize> = HashMap::new();
     let mut unmatched_project_root_counts: HashMap<(String, String), usize> = HashMap::new();
 
-    for agent in ["claude", "codex", "gemini", "opencode"] {
+    for agent in LOCAL_HISTORY_AGENTS {
         let Some(adapter) = get_adapter(agent) else {
             continue;
         };
@@ -500,7 +640,7 @@ pub(crate) fn summary_project_matches_repo_roots(
         return true;
     }
 
-    if agent != "gemini" {
+    if !is_gemini_family_agent(agent) {
         return false;
     }
 
@@ -541,9 +681,9 @@ fn gemini_repo_hash_candidates(repo_root: &str, normalized_repo: &str) -> BTreeS
 #[cfg(test)]
 mod tests {
     use super::{
-        build_unmatched_project_roots, import_local_history_from_adapters,
-        is_codex_generated_chat_project_dir, is_root_project_placeholder,
-        record_unmatched_project_root, summary_project_matches_repo,
+        auto_capture_conversation_with_adapter, build_unmatched_project_roots,
+        import_local_history_from_adapters, is_codex_generated_chat_project_dir,
+        is_root_project_placeholder, record_unmatched_project_root, summary_project_matches_repo,
         summary_project_matches_repo_roots,
     };
     use crate::chatmem_memory::store::MemoryStore;
@@ -623,6 +763,11 @@ mod tests {
                 AgentKind::Codex => "Codex",
                 AgentKind::Gemini => "Gemini",
                 AgentKind::OpenCode => "OpenCode",
+                AgentKind::ZCode => "ZCode",
+                AgentKind::ZCodeClaude => "ZCode Claude",
+                AgentKind::ZCodeCodex => "ZCode Codex",
+                AgentKind::ZCodeGemini => "ZCode Gemini",
+                AgentKind::ZCodeOpenCode => "ZCode OpenCode",
             }
         }
 
@@ -735,6 +880,10 @@ mod tests {
         assert!(!is_codex_generated_chat_project_dir(
             "claude",
             "C:/Users/Liang/Documents/Codex/2026-04-25/new-chat-2"
+        ));
+        assert!(is_codex_generated_chat_project_dir(
+            "zcode",
+            r"\\?\C:\Users\Liang\Documents\Codex\2026-04-25\new-chat-2"
         ));
     }
 
@@ -864,5 +1013,115 @@ mod tests {
                 .any(|item| item.conversation_id.as_deref() == Some("opencode:opencode-qtx-sponge")),
             "expected standalone OpenCode history to be searchable from a repo, got {matches:#?}"
         );
+    }
+
+    #[test]
+    fn full_local_history_import_indexes_zcode_as_single_top_level_agent() {
+        let store = new_store();
+        let zcode_conversation = fake_conversation(
+            "codex:p1:thread-1",
+            AgentKind::ZCode,
+            r"\\?\D:\VSP\chatmem",
+            "ZCode Codex history for ChatMem",
+        );
+
+        let report = import_local_history_from_adapters(
+            &store,
+            vec![(
+                "zcode",
+                Box::new(FakeAdapter::new(AgentKind::ZCode, vec![zcode_conversation])),
+            )],
+        )
+        .unwrap();
+
+        assert_eq!(report.imported_conversation_count, 1);
+        assert_eq!(report.source_agents[0].source_agent, "zcode");
+
+        let health = store.repo_memory_health("d:/vsp/chatmem").unwrap();
+        assert!(health
+            .conversation_counts_by_agent
+            .iter()
+            .any(|item| item.source_agent == "zcode" && item.conversation_count == 1));
+    }
+
+    #[test]
+    fn auto_capture_updates_index_and_reuses_single_recovery_checkpoint() {
+        let store = new_store();
+        let first_conversation = fake_conversation(
+            "conv-001",
+            AgentKind::Codex,
+            "C:",
+            "Plan ChatMem automatic recovery checkpoints",
+        );
+        let first_adapter = FakeAdapter::new(AgentKind::Codex, vec![first_conversation]);
+
+        let first_report = auto_capture_conversation_with_adapter(
+            &store,
+            "codex",
+            &first_adapter,
+            "conv-001",
+            Some(r"D:\VSP\chatmem"),
+            Some(r"C:\Users\Liang\.codex\rollout.jsonl".to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(first_report.conversation_id, "codex:conv-001");
+        assert_eq!(first_report.repo_root, "d:/vsp/chatmem");
+        assert_eq!(first_report.message_count, 1);
+
+        let mut updated_conversation = fake_conversation(
+            "conv-001",
+            AgentKind::Codex,
+            "C:",
+            "Continue ChatMem automatic recovery checkpoints",
+        );
+        updated_conversation.messages.push(Message {
+            id: Uuid::new_v4(),
+            timestamp: Utc::now(),
+            role: Role::Assistant,
+            content: "Implemented silent capture.".to_string(),
+            tool_calls: vec![],
+            metadata: HashMap::new(),
+        });
+        let updated_adapter = FakeAdapter::new(AgentKind::Codex, vec![updated_conversation]);
+
+        let second_report = auto_capture_conversation_with_adapter(
+            &store,
+            "codex",
+            &updated_adapter,
+            "conv-001",
+            Some("d:/vsp/chatmem"),
+            Some(r"C:\Users\Liang\.codex\rollout.jsonl".to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            first_report.checkpoint.checkpoint_id,
+            second_report.checkpoint.checkpoint_id
+        );
+        assert_eq!(second_report.message_count, 2);
+
+        let checkpoints = store.list_checkpoints("d:/vsp/chatmem").unwrap();
+        assert_eq!(checkpoints.len(), 1);
+        assert_eq!(
+            checkpoints[0].summary,
+            "Continue ChatMem automatic recovery checkpoints"
+        );
+
+        let metadata: serde_json::Value =
+            serde_json::from_str(&checkpoints[0].metadata_json).unwrap();
+        assert_eq!(metadata["capture"], "auto");
+        assert_eq!(metadata["message_count"], 2);
+        assert_eq!(
+            metadata["storage_path"],
+            r"C:\Users\Liang\.codex\rollout.jsonl"
+        );
+
+        let health = store.repo_memory_health("d:/vsp/chatmem").unwrap();
+        assert_eq!(health.indexed_chunk_count, 2);
+        assert!(health
+            .conversation_counts_by_agent
+            .iter()
+            .any(|item| item.source_agent == "codex" && item.conversation_count == 1));
     }
 }
