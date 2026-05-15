@@ -1,6 +1,6 @@
 # ChatMem 架构与功能说明
 
-本文档基于当前仓库源码整理，代码根目录为 `D:\VSP\agentswap-gui`，应用版本为 `1.0.25`。ChatMem 的核心定位是“本地优先的 AI 编程记忆层”：它把 Claude、Codex、Gemini、OpenCode 等本地对话历史统一解析、索引、治理，并通过桌面端和 MCP 两套入口提供给人和 agent 使用。
+本文档基于当前仓库源码整理，代码根目录为 `D:\VSP\chatmem`，应用版本为 `1.1.0`。ChatMem 的核心定位是“本地优先的 AI 编程记忆与迁移层”：它把 Claude、Codex、Gemini、OpenCode、ZCode 等本地对话历史统一解析、索引、治理，并通过桌面端和 MCP 两套入口提供给人和 agent 使用。
 
 ## 1. 总体定位
 
@@ -14,7 +14,7 @@ ChatMem 不是另一个聊天客户端，也不是单纯的向量数据库。它
 
 ```mermaid
 flowchart LR
-  A["Claude / Codex / Gemini / OpenCode local history"] --> B["AgentSwap adapters"]
+  A["Claude / Codex / Gemini / OpenCode / ZCode local history"] --> B["AgentSwap adapters"]
   B --> C["Universal Conversation Format"]
   C --> D["MemoryStore"]
   D --> E["SQLite app database"]
@@ -59,7 +59,7 @@ ChatMem 当前有三种主要运行入口：
 - `src-tauri/src/chatmem_memory/`：ChatMem 记忆系统核心。
 - `src-tauri/src/chatmem_memory/store.rs`：核心业务入口 `MemoryStore`。
 - `src-tauri/src/chatmem_memory/mcp.rs`：MCP 工具注册与实现。
-- `crates/agentswap-*`：四类 agent 的本地历史 adapter。
+- `crates/agentswap-*`：Claude、Codex、Gemini、OpenCode、ZCode 等本地历史 adapter。
 - `skills/chatmem/`：给 agent 使用的 ChatMem 操作指南。
 - `mcp/run-chatmem-mcp.ps1`：开发期 MCP 启动脚本。
 
@@ -318,4 +318,3 @@ Tauri updater 配置在 `src-tauri/tauri.conf.json`，更新源为 GitHub Releas
 4. 如果出现 `conversation_id`，先向用户说明命中来源，再按需调 `read_history_conversation`。
 5. 如果扫描诊断显示路径漂移，先 `merge_repo_alias`，再 `scan_repo_conversations`。
 6. 如果要让未来会话记住稳定规则，创建 `create_memory_candidate`，不要直接写 generated wiki。
-
