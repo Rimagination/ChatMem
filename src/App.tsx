@@ -190,7 +190,7 @@ type MigrationResult = {
   verification: MigrationVerification;
   warnings: string[];
 };
-type CopyTarget = "location" | "resume";
+type CopyTarget = "location" | "resume" | "continuation";
 type CopyState = {
   target: CopyTarget | null;
   status: "idle" | "success" | "error";
@@ -260,6 +260,8 @@ type ShellCopy = {
   copyLocationSuccess: string;
   copyResume: string;
   copyResumeSuccess: string;
+  copyContinuationPrompt: string;
+  copyContinuationPromptSuccess: string;
   copyFailed: string;
   resumeWork: string;
   viewHistory: string;
@@ -311,6 +313,8 @@ type ShellCopy = {
   filterStatus: string;
   noTagsYet: string;
   noStatusesYet: string;
+  collapseSidebar: string;
+  showSidebar: string;
   collapseProjects: string;
   restoreProjects: string;
   openOrganizer: string;
@@ -702,6 +706,56 @@ function getConversationKey(
   return `${conversation.source_agent}:${conversation.id}`;
 }
 
+function cleanPromptLine(value: string | null | undefined) {
+  return value?.replace(/\s+/g, " ").trim() || null;
+}
+
+function buildLowTokenContinuationPrompt({
+  repoRoot,
+  conversation,
+  checkpointId,
+  handoffId,
+}: {
+  repoRoot: string;
+  conversation: Pick<Conversation, "id" | "source_agent" | "summary" | "resume_command">;
+  checkpointId?: string | null;
+  handoffId?: string | null;
+}) {
+  const lines = [
+    "Use ChatMem to continue this project with low-token context.",
+    `repo: ${repoRoot}`,
+    `conversation: ${getConversationKey(conversation)}`,
+    `source agent: ${conversation.source_agent}`,
+  ];
+  const summary = cleanPromptLine(conversation.summary);
+  const resumeCommand = cleanPromptLine(conversation.resume_command);
+
+  if (summary) {
+    lines.push(`summary: ${summary}`);
+  }
+  if (resumeCommand) {
+    lines.push(`resume command: ${resumeCommand}`);
+  }
+  if (checkpointId) {
+    lines.push(`checkpoint: ${checkpointId}`);
+  }
+  if (handoffId) {
+    lines.push(`handoff: ${handoffId}`);
+  }
+
+  lines.push(
+    "",
+    "Protocol:",
+    '1. First call get_project_context with intent="continue_work" and limit=3.',
+    "2. Prefer approved memories, recent checkpoints/handoffs, wiki, and relevant_history summaries.",
+    "3. If evidence is still missing, call search_repo_history with limit<=3, then read_history_conversation for a focused window.",
+    "4. Do not read the raw transcript or tool logs unless the focused evidence is insufficient.",
+    "5. Tool calls: keep state-changing edits, installs, tests/builds, errors, and final verification; summarize exploratory reads/searches and long outputs.",
+  );
+
+  return lines.join("\n");
+}
+
 function sortConversations(conversations: ConversationSummary[], sortMode: LibrarySort) {
   const field = sortMode === "created" ? "created_at" : "updated_at";
   return [...conversations].sort((left, right) =>
@@ -744,6 +798,8 @@ function getShellCopy(locale: Locale): ShellCopy {
       copyLocationSuccess: "Location copied",
       copyResume: "Copy resume command",
       copyResumeSuccess: "Command copied",
+      copyContinuationPrompt: "Copy low-token prompt",
+      copyContinuationPromptSuccess: "Prompt copied",
       copyFailed: "Copy failed",
       resumeWork: "Resume this work",
       viewHistory: "View History",
@@ -800,6 +856,8 @@ function getShellCopy(locale: Locale): ShellCopy {
       filterStatus: "Status",
       noTagsYet: "No tags yet",
       noStatusesYet: "No status filters yet",
+      collapseSidebar: "Collapse sidebar",
+      showSidebar: "Show sidebar",
       collapseProjects: "Collapse all projects",
       restoreProjects: "Restore previous expansion",
       openOrganizer: "Filter, sort, and organize conversations",
@@ -895,6 +953,8 @@ function getShellCopy(locale: Locale): ShellCopy {
     copyLocationSuccess: "位置已复制",
     copyResume: "复制恢复命令",
     copyResumeSuccess: "命令已复制",
+    copyContinuationPrompt: "\u590d\u5236\u7701 token \u7eed\u63a5\u63d0\u793a",
+    copyContinuationPromptSuccess: "\u7eed\u63a5\u63d0\u793a\u5df2\u590d\u5236",
     copyFailed: "复制失败",
     resumeWork: "继续这段工作",
     viewHistory: "查看历史",
@@ -956,6 +1016,8 @@ function getShellCopy(locale: Locale): ShellCopy {
     openOrganizer: "筛选、排序和整理对话",
     refreshList: "刷新会话列表",
     trash: "垃圾箱",
+    collapseSidebar: "\u6536\u8d77\u5de6\u4fa7\u5217\u8868",
+    showSidebar: "\u663e\u793a\u5de6\u4fa7\u5217\u8868",
     bulkSelect: "\u6279\u91cf\u9009\u62e9",
     cancelBulkSelect: "\u53d6\u6d88\u9009\u62e9",
     bulkSelectionToolbar: "\u6279\u91cf\u5bf9\u8bdd\u64cd\u4f5c",
@@ -1079,6 +1141,7 @@ function WindowButtonIcon({
     | "minimize"
     | "maximize"
     | "close"
+    | "sidebar"
     | "collapseAll"
     | "restoreExpansion"
     | "organize"
@@ -1120,6 +1183,16 @@ function WindowButtonIcon({
       <svg viewBox="0 0 16 16" aria-hidden="true">
         <path d="M4 4l8 8" />
         <path d="M12 4l-8 8" />
+      </svg>
+    );
+  }
+
+  if (type === "sidebar") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <rect x="2.8" y="3" width="10.4" height="10" rx="1.4" />
+        <path d="M6.4 3v10" />
+        <path d="M9.1 6.2 7.4 8l1.7 1.8" />
       </svg>
     );
   }
@@ -1323,6 +1396,7 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showTrash, setShowTrash] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [memoryDrawerOpen, setMemoryDrawerOpen] = useState(false);
   const [memoryDrawerTab, setMemoryDrawerTab] = useState<MemoryDrawerTab>("inbox");
   const [listLoading, setListLoading] = useState(false);
@@ -1399,6 +1473,23 @@ function App() {
   const availableHandoffTargets = AGENT_OPTIONS.map((agent) => agent.value).filter(
     (agent) => agent !== selectedAgent,
   );
+  const lowTokenContinuationPrompt = useMemo(() => {
+    if (!activeRepoRoot || !selectedConversation) {
+      return null;
+    }
+
+    const latestCheckpoint =
+      checkpoints.find((checkpoint) => checkpoint.status === "active") ?? checkpoints[0];
+    const latestHandoff =
+      handoffs.find((handoff) => !handoff.consumed_at) ?? handoffs[0];
+
+    return buildLowTokenContinuationPrompt({
+      repoRoot: activeRepoRoot,
+      conversation: selectedConversation,
+      checkpointId: latestCheckpoint?.checkpoint_id,
+      handoffId: latestHandoff?.handoff_id,
+    });
+  }, [activeRepoRoot, checkpoints, handoffs, selectedConversation]);
 
   const syncNativeWindowState = useCallback(async () => {
     try {
@@ -2724,6 +2815,12 @@ function App() {
       : copyState.target === "resume" && copyState.status === "error"
         ? shell.copyFailed
         : shell.copyResume;
+  const continuationPromptButtonLabel =
+    copyState.target === "continuation" && copyState.status === "success"
+      ? shell.copyContinuationPromptSuccess
+      : copyState.target === "continuation" && copyState.status === "error"
+        ? shell.copyFailed
+        : shell.copyContinuationPrompt;
 
   const helpCards = useMemo<HelpCard[]>(
     () => [
@@ -4154,6 +4251,30 @@ function App() {
   const renderAboutWorkspace = () => {
     const releaseItems = [
       {
+        icon: "spark" as const,
+        title: locale === "en" ? "Low-token continuation prompts" : "\u7701 token \u7eed\u63a5\u63d0\u793a",
+        body:
+          locale === "en"
+            ? "Conversation toolbars can copy a compact ChatMem prompt that starts from project context, checkpoints, and focused evidence windows instead of raw transcripts."
+            : "\u5bf9\u8bdd\u5de5\u5177\u680f\u53ef\u4ee5\u590d\u5236\u7b80\u77ed\u7684 ChatMem \u7eed\u63a5\u63d0\u793a\uff0c\u5148\u8bfb\u9879\u76ee\u4e0a\u4e0b\u6587\u3001\u68c0\u67e5\u70b9\u548c\u805a\u7126\u8bc1\u636e\u7a97\u53e3\uff0c\u800c\u4e0d\u662f\u539f\u59cb transcript\u3002",
+      },
+      {
+        icon: "trash" as const,
+        title: locale === "en" ? "Trash actions stay visible" : "垃圾箱操作保持可见",
+        body:
+          locale === "en"
+            ? "Empty Trash now sits below the title on the left, so it remains reachable when the page is narrow or the sidebar is collapsed."
+            : "清空垃圾箱现在固定在标题下方左侧，页面变窄或折叠侧栏时也能直接点到。",
+      },
+      {
+        icon: "sidebar" as const,
+        title: locale === "en" ? "Collapsible sidebar" : "可折叠侧栏",
+        body:
+          locale === "en"
+            ? "The top bar can hide or restore the left navigation, giving the workspace more room when you need it."
+            : "顶栏现在可以收起或恢复左侧导航，需要更大工作区时不用再拖窗口。",
+      },
+      {
         icon: "conversation" as const,
         title: locale === "en" ? "ZCode task history" : "ZCode 任务历史",
         body:
@@ -4288,12 +4409,12 @@ function App() {
         <section className="about-feature-section" aria-labelledby="about-release-title">
           <div className="about-section-heading">
             <h2 id="about-release-title">
-              {locale === "en" ? "What changed in 1.1.0" : "1.1.0 更新内容"}
+              {locale === "en" ? "What changed in 1.1.2" : "1.1.2 更新内容"}
             </h2>
             <p className="settings-helper">
               {locale === "en"
-                ? "This release separates interface hierarchy from raw history evidence, so the app reads more like a working tool and less like a log viewer."
-                : "这一版把功能层级和原始历史证据区分开，让软件更像一个工作台，而不是单纯的日志查看器。"}
+                ? "This release adds a compact continuation prompt while keeping the Trash controls reachable and the workspace responsive."
+                : "\u8fd9\u4e00\u7248\u589e\u52a0\u7701 token \u7eed\u63a5\u63d0\u793a\uff0c\u540c\u65f6\u4fdd\u6301\u5783\u573e\u7bb1\u64cd\u4f5c\u53ef\u70b9\u3001\u5de5\u4f5c\u533a\u54cd\u5e94\u5f0f\u53ef\u7528\u3002"}
             </p>
           </div>
           <div className="about-feature-list">
@@ -4356,28 +4477,29 @@ function App() {
           <h1>{shell.trashWorkspaceTitle}</h1>
           <p>{shell.trashWorkspaceSubtitle}</p>
         </div>
-        <div className="trash-page-actions">
-          <button
-            type="button"
-            className="btn btn-secondary trash-empty-button"
-            onClick={handleEmptyTrashClick}
-            disabled={trashLoading || trashedConversations.length === 0}
-          >
-            {shell.emptyTrash}
-          </button>
-          <label className="trash-retention-control" htmlFor="trash-retention-days">
-            {shell.trashRetentionDays}
-            <input
-              id="trash-retention-days"
-              type="number"
-              min={1}
-              max={365}
-              value={appSettings.trashRetentionDays}
-              onChange={(event) => handleTrashRetentionDaysChange(Number(event.target.value))}
-            />
-          </label>
-        </div>
       </header>
+
+      <div className="trash-page-actions" aria-label={locale === "en" ? "Trash actions" : "垃圾箱操作"}>
+        <button
+          type="button"
+          className="btn btn-secondary trash-empty-button"
+          onClick={handleEmptyTrashClick}
+          disabled={trashLoading || trashedConversations.length === 0}
+        >
+          {shell.emptyTrash}
+        </button>
+        <label className="trash-retention-control" htmlFor="trash-retention-days">
+          {shell.trashRetentionDays}
+          <input
+            id="trash-retention-days"
+            type="number"
+            min={1}
+            max={365}
+            value={appSettings.trashRetentionDays}
+            onChange={(event) => handleTrashRetentionDaysChange(Number(event.target.value))}
+          />
+        </label>
+      </div>
 
       <p className="trash-retention-hint">{shell.trashRetentionHint}</p>
 
@@ -4703,6 +4825,15 @@ function App() {
                   <WindowButtonIcon type="terminal" />
                   <span>{resumeButtonLabel}</span>
                 </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => void handleCopy("continuation", lowTokenContinuationPrompt)}
+                  disabled={!lowTokenContinuationPrompt}
+                >
+                  <WindowButtonIcon type="spark" />
+                  <span>{continuationPromptButtonLabel}</span>
+                </button>
               </div>
             </header>
 
@@ -4853,6 +4984,16 @@ function App() {
         <div className="topbar-left" data-tauri-drag-region="true">
           <img className="topbar-app-icon" src={brandIcon} alt="ChatMem icon" />
           <span className="topbar-version">ChatMem v{packageInfo.version}</span>
+          <button
+            type="button"
+            className={`icon-button topbar-sidebar-toggle ${sidebarCollapsed ? "is-active" : ""}`}
+            aria-label={sidebarCollapsed ? shell.showSidebar : shell.collapseSidebar}
+            aria-pressed={sidebarCollapsed}
+            title={sidebarCollapsed ? shell.showSidebar : shell.collapseSidebar}
+            onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+          >
+            <WindowButtonIcon type="sidebar" />
+          </button>
         </div>
 
         <div className="topbar-drag-space" data-tauri-drag-region="true" />
@@ -4888,7 +5029,7 @@ function App() {
       <div
         className={`app-body ${libraryArrangement === "chats-first" ? "chats-first" : ""} ${
           showSettings || showAbout ? "is-full-page" : ""
-        }`}
+        } ${sidebarCollapsed ? "is-sidebar-collapsed" : ""}`}
       >
         <aside className="sidebar">
           <div className="sidebar-scroll">

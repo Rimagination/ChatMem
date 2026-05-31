@@ -366,7 +366,7 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "Choose a conversation" })).toBeTruthy();
   });
 
-  it("renders the 1.1.0 version and updated About page structure", async () => {
+  it("renders the 1.1.2 version and updated About page structure", async () => {
     localStorage.setItem(
       "chatmem.settings",
       JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
@@ -374,12 +374,14 @@ describe("App", () => {
 
     renderApp();
 
-    expect(await screen.findByText("ChatMem v1.1.0")).toBeTruthy();
+    expect(await screen.findByText("ChatMem v1.1.2")).toBeTruthy();
 
     fireEvent.click(await screen.findByRole("button", { name: "About us" }));
 
     expect(await screen.findByRole("heading", { name: "About ChatMem" })).toBeTruthy();
-    expect(screen.getByText("What changed in 1.1.0")).toBeTruthy();
+    expect(screen.getByText("What changed in 1.1.2")).toBeTruthy();
+    expect(screen.getByText("Low-token continuation prompts")).toBeTruthy();
+    expect(screen.getByText("Trash actions stay visible")).toBeTruthy();
     expect(screen.getByText(/ZCode task history/)).toBeTruthy();
     expect(screen.getByText(/Markdown conversation reading/)).toBeTruthy();
   });
@@ -526,7 +528,12 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Trash" }));
     expect(await screen.findByText("Debug session")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Empty Trash" }));
+    const trashActions = document.querySelector(".trash-page-actions");
+    expect(trashActions).toBeTruthy();
+    expect(document.querySelector(".trash-page-header .trash-page-actions")).toBeNull();
+    expect(trashActions?.previousElementSibling?.classList.contains("trash-page-header")).toBe(true);
+
+    fireEvent.click(within(trashActions as HTMLElement).getByRole("button", { name: "Empty Trash" }));
     const dialog = await screen.findByRole("dialog", { name: "Empty Trash?" });
     expect(
       within(dialog).getByText(
@@ -541,6 +548,29 @@ describe("App", () => {
       expect(screen.getByText("Trash is empty")).toBeTruthy();
     });
     expect(window.confirm).not.toHaveBeenCalled();
+  });
+
+  it("collapses and restores the sidebar from the top bar", async () => {
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
+    );
+
+    renderApp();
+
+    expect(await screen.findByText("Debug session")).toBeTruthy();
+    const appBody = document.querySelector(".app-body");
+    expect(appBody?.className).not.toContain("is-sidebar-collapsed");
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+
+    expect(appBody?.className).toContain("is-sidebar-collapsed");
+    expect(screen.getByRole("button", { name: "Show sidebar" }).getAttribute("aria-pressed")).toBe("true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Show sidebar" }));
+
+    expect(appBody?.className).not.toContain("is-sidebar-collapsed");
+    expect(screen.getByRole("button", { name: "Collapse sidebar" }).getAttribute("aria-pressed")).toBe("false");
   });
 
   it("merges equivalent project paths and does not repeat project conversations as chats", async () => {
@@ -1045,6 +1075,37 @@ describe("App", () => {
 
     expect(await screen.findByRole("complementary", { name: "Startup Rules" })).toBeTruthy();
     expect(screen.getByText("Use ChatMem for cross-agent continuation")).toBeTruthy();
+  });
+
+  it("copies a low-token continuation prompt without the raw transcript path", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
+    );
+
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("Debug session"))[0]);
+    fireEvent.click(await screen.findByRole("button", { name: "Copy low-token prompt" }));
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledTimes(1);
+    });
+
+    const prompt = writeText.mock.calls[0][0] as string;
+    expect(prompt).toContain("repo: D:/VSP/demo");
+    expect(prompt).toContain("conversation: claude:conv-001");
+    expect(prompt).toContain("get_project_context");
+    expect(prompt).toContain("read_history_conversation");
+    expect(prompt).toContain("Do not read the raw transcript");
+    expect(prompt).not.toContain("rollout-conv-001.jsonl");
+    expect(await screen.findByRole("button", { name: "Prompt copied" })).toBeTruthy();
   });
 
   it("does not let an auto scan from a stale repo overwrite the active repo history state", async () => {

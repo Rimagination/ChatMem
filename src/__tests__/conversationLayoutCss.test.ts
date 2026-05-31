@@ -34,4 +34,20 @@ describe("conversation layout CSS", () => {
     expect(ruleFor(".conversation-meta-strip.compact .meta-block")).toContain("min-width: 0");
     expect(ruleFor(".conversation-meta-strip.compact .meta-value")).toContain("overflow-wrap: anywhere");
   });
+
+  it("lets conversation toolbar actions wrap instead of widening the workspace", () => {
+    expect(ruleFor(".conversation-toolbar-actions")).toContain("flex-wrap: wrap");
+    expect(ruleFor(".conversation-toolbar-actions")).toContain("max-width: min(");
+  });
+
+  it("keeps Trash header actions reachable in narrow workspaces", () => {
+    expect(ruleFor(".trash-workspace-page")).toContain("width: min(");
+    expect(ruleFor(".trash-workspace-page")).toContain("margin: 0 auto");
+    expect(ruleFor(".trash-page-header")).toContain("flex-wrap: wrap");
+    expect(ruleFor(".trash-page-header > div:first-child")).toContain("min-width: 0");
+    expect(ruleFor(".trash-page-actions")).toContain("flex: 1 1");
+    expect(ruleFor(".trash-page-actions")).toContain("min-width: 0");
+    expect(ruleFor(".trash-page-actions")).toContain("justify-content: flex-start");
+    expect(ruleFor(".trash-page-actions")).toContain("flex-wrap: wrap");
+  });
 });

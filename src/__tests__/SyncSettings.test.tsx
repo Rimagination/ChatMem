@@ -53,7 +53,9 @@ describe("Sync settings", () => {
     fireEvent.click(await screen.findByRole("button", { name: "About us" }));
     expect(await screen.findByRole("heading", { name: "About ChatMem" })).toBeTruthy();
     expect(screen.getByText(/local-first memory and migration layer/i)).toBeTruthy();
-    expect(screen.getByText("What changed in 1.1.0")).toBeTruthy();
+    expect(screen.getByText("What changed in 1.1.2")).toBeTruthy();
+    expect(screen.getByText("Low-token continuation prompts")).toBeTruthy();
+    expect(screen.getByText("Trash actions stay visible")).toBeTruthy();
     expect(screen.getByText("ZCode task history")).toBeTruthy();
     expect(screen.getByText("Markdown conversation reading")).toBeTruthy();
     expect(screen.getByText("Rimagination/ChatMem")).toBeTruthy();

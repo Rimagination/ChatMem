@@ -165,6 +165,8 @@ impl CodexAdapter {
             ("agent_path", "TEXT"),
             ("created_at_ms", "INTEGER"),
             ("updated_at_ms", "INTEGER"),
+            ("thread_source", "TEXT"),
+            ("preview", "TEXT"),
         ] {
             if !columns.contains(name) {
                 conn.execute(
@@ -251,7 +253,9 @@ impl CodexAdapter {
                 reasoning_effort TEXT,
                 agent_path TEXT,
                 created_at_ms INTEGER,
-                updated_at_ms INTEGER
+                updated_at_ms INTEGER,
+                thread_source TEXT,
+                preview TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_threads_created_at ON threads(created_at DESC, id DESC);
             CREATE INDEX IF NOT EXISTS idx_threads_updated_at ON threads(updated_at DESC, id DESC);
@@ -920,6 +924,11 @@ impl AgentAdapter for CodexAdapter {
             .clone()
             .filter(|value| is_meaningful_task_text(value))
             .unwrap_or_else(|| first_user_message.clone());
+        let preview = if first_user_message.trim().is_empty() {
+            title.clone()
+        } else {
+            first_user_message.clone()
+        };
         let created_at = conv.created_at.timestamp();
         let updated_at = conv.updated_at.timestamp();
         let created_at_ms = conv.created_at.timestamp_millis();
@@ -931,9 +940,9 @@ impl AgentAdapter for CodexAdapter {
              source, model_provider, cwd, title, sandbox_policy, approval_mode, \
              tokens_used, has_user_event, archived, git_branch, cli_version, \
              first_user_message, memory_mode, model, reasoning_effort, agent_path, \
-             created_at_ms, updated_at_ms) \
+              created_at_ms, updated_at_ms, thread_source, preview) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
-             ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+              ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
             rusqlite::params![
                 thread_id,
                 rollout_path_str,
@@ -957,6 +966,8 @@ impl AgentAdapter for CodexAdapter {
                 None::<String>, // agent_path
                 created_at_ms,
                 updated_at_ms,
+                "user", // thread_source
+                preview,
             ],
         )?;
 
@@ -2281,7 +2292,7 @@ mod tests {
             .query_row(
                 "SELECT source, sandbox_policy, approval_mode, cli_version, model, \
                  reasoning_effort, has_user_event, created_at_ms, updated_at_ms, cwd, \
-                 title FROM threads WHERE id = ?1",
+                 title, thread_source, preview FROM threads WHERE id = ?1",
                 [thread_id.as_str()],
                 |row| {
                     Ok((
@@ -2296,6 +2307,8 @@ mod tests {
                         row.get::<_, Option<i64>>(8)?,
                         row.get::<_, String>(9)?,
                         row.get::<_, String>(10)?,
+                        row.get::<_, Option<String>>(11)?,
+                        row.get::<_, Option<String>>(12)?,
                     ))
                 },
             )
@@ -2311,6 +2324,8 @@ mod tests {
         assert_eq!(row.7, Some(created_at.timestamp_millis()));
         assert_eq!(row.8, Some(updated_at.timestamp_millis()));
         assert_eq!(row.10, "desktop-visible prompt");
+        assert_eq!(row.11.as_deref(), Some("user"));
+        assert_eq!(row.12.as_deref(), Some("desktop-visible prompt"));
         if cfg!(windows) {
             assert!(row.9.ends_with(r"D:\VSP"));
             assert!(row.9.contains(':'));
