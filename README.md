@@ -1,42 +1,33 @@
 # ChatMem
 
-ChatMem 是一个本地优先的 AI 编程记忆与迁移层。它把 Claude、Codex、Gemini、OpenCode、ZCode 等本地对话历史整理成可搜索、可恢复、可迁移、可继续使用的项目上下文。
+ChatMem 是一个本地优先的 AI 编程记忆与迁移层。它会把 Claude、Codex、Gemini、OpenCode、ZCode 等本地对话历史整理成可搜索、可恢复、可迁移、可继续使用的项目上下文。
 
 它不是另一个聊天客户端。ChatMem 解决的是 AI 编程里最容易断线的部分：换 agent、换窗口、换机器、隔几天回来，模型不知道之前发生过什么。ChatMem 会把本地对话作为证据层索引，再把稳定知识沉淀为启动规则、Wiki、checkpoint 和 handoff，并通过桌面端与 MCP 把这些上下文带回新的 agent 会话。
 
 ## 当前版本
 
-最新版本：`v1.1.0`
+最新稳定版：[`v1.1.3`](https://github.com/Rimagination/ChatMem/releases/tag/v1.1.3)
 
-1.1.0 的重点更新：
+`v1.1.3` 是 1.1 系列的稳定整合版：
 
-- 新增 ZCode 顶层来源：ZCode 下按 CLI 分组，CLI 下再按项目分组，支持 ZCode 内的 Claude、Codex、Gemini、OpenCode 等会话结构。
-- 对话标题更贴近任务内容：优先使用用户真实输入的任务文字，而不是原始 UUID、命令提示或工具调用字符串。
-- 完整对话支持 Markdown 渲染：长回答、列表、代码块、链接会以更可读的方式显示。
-- 工具调用历史更安静：多个工具调用默认折叠为小字号灰色信息层，让“用户说了什么、agent 回答了什么”成为阅读重点。
-- 更适合长会话延续：低 token 历史检索、对话证据窗口、checkpoint、handoff 和 Wiki 可以帮助新窗口接续，而不是重新读取整段超长对话。
-- UI 层级优化：来源选择、搜索、项目/对话列表、对话操作、关于页都按 Codex 桌面端方向重新梳理，并修复右侧对话区横向溢出。
+- 保留 1.1.x 的 ZCode、Markdown 阅读、工具调用折叠、低 token 续接提示、侧栏折叠和垃圾箱布局优化。
+- 自动恢复快照改为默认关闭，用户在设置里手动开启后才会自动创建恢复 checkpoint。
+- Windows、macOS Apple Silicon、macOS Intel 和 portable zip 都由同一个 release tag 构建发布。
+- 应用内版本、Tauri 包版本、Rust 包版本和 GitHub Release tag 统一为 `1.1.3`。
 
 ## 下载
 
-正式下载入口：
+推荐从正式 Release 下载，不要下载 GitHub 自动生成的 source code zip/tar.gz。
 
-- [GitHub Releases](https://github.com/Rimagination/ChatMem/releases)
-
-Windows 推荐下载：
-
-- `ChatMem_<version>_x64-setup.exe`：普通用户推荐安装包。
-- `ChatMem_<version>_x64_en-US.msi`：适合企业化或脚本化安装环境。
-- `ChatMem-v<version>-portable.zip`：免安装便携版，如果发布页提供该文件。
-
-macOS 推荐下载：
-
-- `ChatMem-v<version>-macOS-Apple-Silicon.dmg`：M1 / M2 / M3 / M4 等 Apple Silicon Mac。
-- `ChatMem-v<version>-macOS-Intel.dmg`：Intel Mac。
+- [全部下载：ChatMem v1.1.3 Release](https://github.com/Rimagination/ChatMem/releases/tag/v1.1.3)
+- Windows 安装包：[ChatMem_1.1.3_x64-setup.exe](https://github.com/Rimagination/ChatMem/releases/download/v1.1.3/ChatMem_1.1.3_x64-setup.exe)
+- Windows 便携版：[ChatMem-v1.1.3-portable.zip](https://github.com/Rimagination/ChatMem/releases/download/v1.1.3/ChatMem-v1.1.3-portable.zip)
+- macOS Apple Silicon：[ChatMem-v1.1.3-macOS-Apple-Silicon.dmg](https://github.com/Rimagination/ChatMem/releases/download/v1.1.3/ChatMem-v1.1.3-macOS-Apple-Silicon.dmg)
+- macOS Intel：[ChatMem-v1.1.3-macOS-Intel.dmg](https://github.com/Rimagination/ChatMem/releases/download/v1.1.3/ChatMem-v1.1.3-macOS-Intel.dmg)
 
 不知道自己的 Mac 属于哪一种时，点屏幕左上角苹果菜单，选择“关于本机”。如果显示“芯片 Apple M1/M2/M3/M4”，下载 Apple Silicon 版；如果显示“处理器 Intel”，下载 Intel 版。
 
-当前 macOS 包暂未做 Apple Developer ID 签名和 notarization。首次打开时，系统可能需要你在“系统设置”中允许打开，或者通过右键菜单打开。
+当前 macOS 包暂未做 Apple Developer ID 签名和 notarization。首次打开时，系统可能需要你在“系统设置”里允许打开，或者通过右键菜单打开。
 
 ## 支持的本地历史来源
 
@@ -57,8 +48,8 @@ C:\Users\<you>\.zcode\v2\acp-config\
 ## 核心能力
 
 - 本地对话浏览、归类、全文搜索和标题清洗
-- 对话详情、Markdown 正文、工具调用折叠、文件变更查看
-- 一键复制会话文件位置与恢复命令
+- Markdown 对话正文、工具调用折叠、文件变更查看
+- 一键复制会话文件位置、恢复命令和低 token 续接提示
 - Claude / Codex / Gemini / OpenCode / ZCode 之间的对话迁移
 - 删除前确认、批量选择、垃圾箱保留与恢复
 - 全量本地历史导入、当前项目扫描、路径别名修复
@@ -69,12 +60,18 @@ C:\Users\<you>\.zcode\v2\acp-config\
 - 简体中文 / English 切换
 - 应用内检查更新
 
+## 自动恢复快照
+
+ChatMem 支持自动捕获当前对话并创建恢复 checkpoint，但从 `v1.1.3` 起这是一个显式 opt-in 功能。
+
+默认状态下，ChatMem 不会自动创建恢复快照。需要自动恢复时，可以在设置里开启“自动保存恢复快照”。这样做是为了避免刚安装或刚升级的用户在不知情时产生额外本地记忆记录。
+
 ## 推荐工作流
 
 1. 打开 ChatMem，选择左侧来源。
 2. 对 ZCode，先选 CLI 分组，再进入项目和对话；其他来源直接按项目或本地历史浏览。
-3. 在对话详情里重点阅读用户消息和 agent 回复，需要时再展开工具调用。
-4. 对很长的旧会话，优先用本地历史检索、checkpoint 或 handoff 接续，不要让新窗口整段读取超长 transcript。
+3. 在对话详情里优先阅读用户消息和 agent 回复，需要时再展开工具调用。
+4. 对很长的旧会话，优先复制低 token 续接提示、使用 checkpoint 或 handoff 接续，不要让新窗口整段读取超长 transcript。
 5. 在“设置 -> Agent 集成”里安装 ChatMem MCP，让 Claude Code、Codex、Gemini CLI、OpenCode 等 agent 能主动读取项目记忆。
 
 可以在新线程里这样提示 agent：
@@ -101,7 +98,7 @@ MCP 能力包括：
 - `import_all_local_history`：导入 Claude、Codex、Gemini、OpenCode、ZCode 等本地历史。
 - 记忆候选、冲突检查、规则合并、Wiki 重建、checkpoint、handoff 等工具。
 
-推荐查看完整说明：
+完整说明：
 
 - [ChatMem MCP Setup](./docs/CHATMEM_MCP_SETUP.md)
 - [ChatMem Architecture and Features](./docs/CHATMEM_ARCHITECTURE_AND_FEATURES.md)
@@ -118,16 +115,17 @@ MCP 能力包括：
 
 安装后完全退出并重新打开对应 agent。ChatMem 通常不会出现在 `@chatmem` 这种对话提及列表里，它是 agent 后台可调用的 MCP 工具。
 
-安装版优先使用 `ChatMem.exe --mcp` 启动 MCP，这样升级后不会依赖旧仓库路径。开发模式仍保留 `mcp/run-chatmem-mcp.ps1` 作为手动排障入口。
+安装版优先使用 `ChatMem.exe --mcp` 启动 MCP，这样升级后不会依赖旧仓库路径。开发模式保留 `mcp/run-chatmem-mcp.ps1` 作为手动排障入口。
 
 ## 数据与隐私
 
 ChatMem 默认本地优先：
 
 - 本地历史和记忆索引存放在用户机器上的 SQLite 数据库中。
-- 对话原文仍以本地 agent 的原始历史文件作为证据来源。
+- 对话原文件仍以本地 agent 的原始历史文件作为证据来源。
 - WebDAV 是可选备份，不是日常检索和记忆能力的前提。
 - MCP 工具会尽量返回紧凑上下文，避免把超长历史一次性塞进新窗口。
+- 自动恢复快照默认关闭，必须由用户在设置中主动开启。
 
 ## 本地开发
 
@@ -148,7 +146,7 @@ npm run tauri build
 
 ## 发布
 
-发布由 GitHub Actions 处理。推送形如 `v1.1.0` 的 tag 后，工作流会自动构建并上传：
+发布由 GitHub Actions 处理。推送形如 `v1.1.3` 的 tag 后，工作流会自动构建并上传：
 
 - Windows NSIS 安装包
 - Windows MSI 安装包
@@ -168,4 +166,4 @@ https://github.com/Rimagination/ChatMem/releases/latest/download/latest.json
 - `TAURI_PRIVATE_KEY`
 - `TAURI_KEY_PASSWORD`
 
-细节见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
+更多开发和发布细节见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
