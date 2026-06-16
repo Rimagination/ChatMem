@@ -201,7 +201,7 @@ fn default_font_family() -> String {
 }
 
 fn default_auto_capture_memory() -> bool {
-    true
+    false
 }
 
 fn default_trash_retention_days() -> i64 {
@@ -2295,6 +2295,26 @@ mod tests {
     }
 
     #[test]
+    fn app_settings_default_auto_capture_is_opt_in() {
+        let settings: super::AppSettingsPayload = serde_json::from_value(json!({
+            "locale": "en",
+            "autoCheckUpdates": true,
+            "sync": {
+                "provider": "off",
+                "webdavScheme": "https",
+                "webdavHost": "",
+                "webdavPath": "",
+                "username": "",
+                "remotePath": "chatmem",
+                "downloadMode": "on-sync"
+            }
+        }))
+        .unwrap();
+
+        assert!(!settings.auto_capture_memory);
+    }
+
+    #[test]
     fn builds_webdav_probe_url_from_host_and_path() {
         let url = build_webdav_probe_url("https", "example.com", "dav/chatmem").unwrap();
 
@@ -2432,7 +2452,7 @@ mod tests {
                 locale: "zh-CN".to_string(),
                 font_family: "system".to_string(),
                 auto_check_updates: true,
-                auto_capture_memory: true,
+                auto_capture_memory: false,
                 trash_retention_days: super::DEFAULT_TRASH_RETENTION_DAYS,
                 sync: super::SyncSettingsPayload {
                     provider: "webdav".to_string(),

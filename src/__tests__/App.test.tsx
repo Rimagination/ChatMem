@@ -366,7 +366,7 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "Choose a conversation" })).toBeTruthy();
   });
 
-  it("renders the 1.1.2 version and updated About page structure", async () => {
+  it("renders the 1.1.3 version and updated About page structure", async () => {
     localStorage.setItem(
       "chatmem.settings",
       JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
@@ -374,12 +374,13 @@ describe("App", () => {
 
     renderApp();
 
-    expect(await screen.findByText("ChatMem v1.1.2")).toBeTruthy();
+    expect(await screen.findByText("ChatMem v1.1.3")).toBeTruthy();
 
     fireEvent.click(await screen.findByRole("button", { name: "About us" }));
 
     expect(await screen.findByRole("heading", { name: "About ChatMem" })).toBeTruthy();
-    expect(screen.getByText("What changed in 1.1.2")).toBeTruthy();
+    expect(screen.getByText("What changed in 1.1.3")).toBeTruthy();
+    expect(screen.getByText(/automatic recovery checkpoints opt-in/)).toBeTruthy();
     expect(screen.getByText("Low-token continuation prompts")).toBeTruthy();
     expect(screen.getByText("Trash actions stay visible")).toBeTruthy();
     expect(screen.getByText(/ZCode task history/)).toBeTruthy();

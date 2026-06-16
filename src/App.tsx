@@ -4409,12 +4409,12 @@ function App() {
         <section className="about-feature-section" aria-labelledby="about-release-title">
           <div className="about-section-heading">
             <h2 id="about-release-title">
-              {locale === "en" ? "What changed in 1.1.2" : "1.1.2 更新内容"}
+              {locale === "en" ? "What changed in 1.1.3" : "1.1.3 稳定版更新"}
             </h2>
             <p className="settings-helper">
               {locale === "en"
-                ? "This release adds a compact continuation prompt while keeping the Trash controls reachable and the workspace responsive."
-                : "\u8fd9\u4e00\u7248\u589e\u52a0\u7701 token \u7eed\u63a5\u63d0\u793a\uff0c\u540c\u65f6\u4fdd\u6301\u5783\u573e\u7bb1\u64cd\u4f5c\u53ef\u70b9\u3001\u5de5\u4f5c\u533a\u54cd\u5e94\u5f0f\u53ef\u7528\u3002"}
+                ? "This stable release keeps the 1.1.x improvements while making automatic recovery checkpoints opt-in."
+                : "\u8fd9\u4e2a\u7a33\u5b9a\u7248\u4fdd\u7559 1.1.x \u7684\u6539\u8fdb\uff0c\u540c\u65f6\u5c06\u81ea\u52a8\u6062\u590d\u5feb\u7167\u6539\u4e3a\u624b\u52a8\u5f00\u542f\u3002"}
             </p>
           </div>
           <div className="about-feature-list">

@@ -37,6 +37,11 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: ChatMem ${{ github.ref_name }}
           releaseBody: |
+            Stable 1.1.3 release:
+            - Keeps the 1.1.x ZCode, Markdown reading, continuation prompt, sidebar, and Trash improvements.
+            - Makes automatic recovery checkpoints opt-in instead of enabled by default.
+            - Ships version-aligned Windows and macOS packages from the release tag.
+
             推荐下载 / Recommended downloads:
             - Windows installer: download the `.exe` installer if you want the normal install flow.
             - Windows portable: download `ChatMem-${{ github.ref_name }}-portable.zip` if you want a no-install portable build.
@@ -113,6 +118,11 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: ChatMem ${{ github.ref_name }}
           releaseBody: |
+            Stable 1.1.3 release:
+            - Keeps the 1.1.x ZCode, Markdown reading, continuation prompt, sidebar, and Trash improvements.
+            - Makes automatic recovery checkpoints opt-in instead of enabled by default.
+            - Ships version-aligned Windows and macOS packages from the release tag.
+
             推荐下载 / Recommended downloads:
             - Windows installer: download the `.exe` installer if you want the normal install flow.
             - Windows portable: download `ChatMem-${{ github.ref_name }}-portable.zip` if you want a no-install portable build.
