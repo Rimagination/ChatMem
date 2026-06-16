@@ -46,7 +46,7 @@ function MigrateModal({ sourceAgent, onMigrate, onClose }: MigrateModalProps) {
         <h3>迁移对话</h3>
         <div className="modal-content">
           <p className="modal-helper-text">
-            可在 Claude、Codex、Gemini 和 OpenCode 之间迁移。写入后会自动读回验证，验证失败时不会删除原对话。
+            可在 Claude、Codex、Gemini 和 OpenCode 之间迁移完整对话，适合归档、审计或兼容旧流程。继续工作时优先使用继续卡片或交接包，避免把整段历史直接带入新窗口。
           </p>
 
           <div className="form-group">

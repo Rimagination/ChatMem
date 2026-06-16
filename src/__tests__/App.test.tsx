@@ -380,7 +380,7 @@ describe("App", () => {
 
     expect(await screen.findByRole("heading", { name: "About ChatMem" })).toBeTruthy();
     expect(screen.getByText("What changed in 1.1.2")).toBeTruthy();
-    expect(screen.getByText("Low-token continuation prompts")).toBeTruthy();
+    expect(screen.getByText("Continuation briefs")).toBeTruthy();
     expect(screen.getByText("Trash actions stay visible")).toBeTruthy();
     expect(screen.getByText(/ZCode task history/)).toBeTruthy();
     expect(screen.getByText(/Markdown conversation reading/)).toBeTruthy();
@@ -1077,7 +1077,7 @@ describe("App", () => {
     expect(screen.getByText("Use ChatMem for cross-agent continuation")).toBeTruthy();
   });
 
-  it("copies a low-token continuation prompt without the raw transcript path", async () => {
+  it("copies a continuation brief without the raw transcript path", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -1092,20 +1092,23 @@ describe("App", () => {
     renderApp();
 
     fireEvent.click((await screen.findAllByText("Debug session"))[0]);
-    fireEvent.click(await screen.findByRole("button", { name: "Copy low-token prompt" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Copy continuation brief" }));
 
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledTimes(1);
     });
 
     const prompt = writeText.mock.calls[0][0] as string;
+    expect(prompt).toContain("# Continuation Brief");
     expect(prompt).toContain("repo: D:/VSP/demo");
     expect(prompt).toContain("conversation: claude:conv-001");
+    expect(prompt).toContain("Evidence source: claude:conv-001");
+    expect(prompt).toContain("Token posture:");
     expect(prompt).toContain("get_project_context");
     expect(prompt).toContain("read_history_conversation");
-    expect(prompt).toContain("Do not read the raw transcript");
+    expect(prompt).toContain("Do not replay the full transcript");
     expect(prompt).not.toContain("rollout-conv-001.jsonl");
-    expect(await screen.findByRole("button", { name: "Prompt copied" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Brief copied" })).toBeTruthy();
   });
 
   it("does not let an auto scan from a stale repo overwrite the active repo history state", async () => {

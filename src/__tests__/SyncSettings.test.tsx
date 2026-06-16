@@ -54,7 +54,7 @@ describe("Sync settings", () => {
     expect(await screen.findByRole("heading", { name: "About ChatMem" })).toBeTruthy();
     expect(screen.getByText(/local-first memory and migration layer/i)).toBeTruthy();
     expect(screen.getByText("What changed in 1.1.2")).toBeTruthy();
-    expect(screen.getByText("Low-token continuation prompts")).toBeTruthy();
+    expect(screen.getByText("Continuation briefs")).toBeTruthy();
     expect(screen.getByText("Trash actions stay visible")).toBeTruthy();
     expect(screen.getByText("ZCode task history")).toBeTruthy();
     expect(screen.getByText("Markdown conversation reading")).toBeTruthy();

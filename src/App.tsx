@@ -33,6 +33,7 @@ import {
 } from "./settings/storage";
 import { installAvailableUpdate, runUpdateCheck, type UpdateState } from "./updater/updater";
 import { formatDateTime, formatDistanceToNow } from "./utils/dateUtils";
+import { buildContinuationBriefPrompt } from "./utils/continuationBrief";
 import {
   normalizeConversationTitle,
   truncateSidebarTitle,
@@ -706,56 +707,6 @@ function getConversationKey(
   return `${conversation.source_agent}:${conversation.id}`;
 }
 
-function cleanPromptLine(value: string | null | undefined) {
-  return value?.replace(/\s+/g, " ").trim() || null;
-}
-
-function buildLowTokenContinuationPrompt({
-  repoRoot,
-  conversation,
-  checkpointId,
-  handoffId,
-}: {
-  repoRoot: string;
-  conversation: Pick<Conversation, "id" | "source_agent" | "summary" | "resume_command">;
-  checkpointId?: string | null;
-  handoffId?: string | null;
-}) {
-  const lines = [
-    "Use ChatMem to continue this project with low-token context.",
-    `repo: ${repoRoot}`,
-    `conversation: ${getConversationKey(conversation)}`,
-    `source agent: ${conversation.source_agent}`,
-  ];
-  const summary = cleanPromptLine(conversation.summary);
-  const resumeCommand = cleanPromptLine(conversation.resume_command);
-
-  if (summary) {
-    lines.push(`summary: ${summary}`);
-  }
-  if (resumeCommand) {
-    lines.push(`resume command: ${resumeCommand}`);
-  }
-  if (checkpointId) {
-    lines.push(`checkpoint: ${checkpointId}`);
-  }
-  if (handoffId) {
-    lines.push(`handoff: ${handoffId}`);
-  }
-
-  lines.push(
-    "",
-    "Protocol:",
-    '1. First call get_project_context with intent="continue_work" and limit=3.',
-    "2. Prefer approved memories, recent checkpoints/handoffs, wiki, and relevant_history summaries.",
-    "3. If evidence is still missing, call search_repo_history with limit<=3, then read_history_conversation for a focused window.",
-    "4. Do not read the raw transcript or tool logs unless the focused evidence is insufficient.",
-    "5. Tool calls: keep state-changing edits, installs, tests/builds, errors, and final verification; summarize exploratory reads/searches and long outputs.",
-  );
-
-  return lines.join("\n");
-}
-
 function sortConversations(conversations: ConversationSummary[], sortMode: LibrarySort) {
   const field = sortMode === "created" ? "created_at" : "updated_at";
   return [...conversations].sort((left, right) =>
@@ -798,8 +749,8 @@ function getShellCopy(locale: Locale): ShellCopy {
       copyLocationSuccess: "Location copied",
       copyResume: "Copy resume command",
       copyResumeSuccess: "Command copied",
-      copyContinuationPrompt: "Copy low-token prompt",
-      copyContinuationPromptSuccess: "Prompt copied",
+      copyContinuationPrompt: "Copy continuation brief",
+      copyContinuationPromptSuccess: "Brief copied",
       copyFailed: "Copy failed",
       resumeWork: "Resume this work",
       viewHistory: "View History",
@@ -953,8 +904,8 @@ function getShellCopy(locale: Locale): ShellCopy {
     copyLocationSuccess: "位置已复制",
     copyResume: "复制恢复命令",
     copyResumeSuccess: "命令已复制",
-    copyContinuationPrompt: "\u590d\u5236\u7701 token \u7eed\u63a5\u63d0\u793a",
-    copyContinuationPromptSuccess: "\u7eed\u63a5\u63d0\u793a\u5df2\u590d\u5236",
+    copyContinuationPrompt: "\u590d\u5236\u7ee7\u7eed\u5361\u7247",
+    copyContinuationPromptSuccess: "\u7ee7\u7eed\u5361\u7247\u5df2\u590d\u5236",
     copyFailed: "复制失败",
     resumeWork: "继续这段工作",
     viewHistory: "查看历史",
@@ -1473,7 +1424,7 @@ function App() {
   const availableHandoffTargets = AGENT_OPTIONS.map((agent) => agent.value).filter(
     (agent) => agent !== selectedAgent,
   );
-  const lowTokenContinuationPrompt = useMemo(() => {
+  const continuationBriefPrompt = useMemo(() => {
     if (!activeRepoRoot || !selectedConversation) {
       return null;
     }
@@ -1483,7 +1434,7 @@ function App() {
     const latestHandoff =
       handoffs.find((handoff) => !handoff.consumed_at) ?? handoffs[0];
 
-    return buildLowTokenContinuationPrompt({
+    return buildContinuationBriefPrompt({
       repoRoot: activeRepoRoot,
       conversation: selectedConversation,
       checkpointId: latestCheckpoint?.checkpoint_id,
@@ -4252,11 +4203,11 @@ function App() {
     const releaseItems = [
       {
         icon: "spark" as const,
-        title: locale === "en" ? "Low-token continuation prompts" : "\u7701 token \u7eed\u63a5\u63d0\u793a",
+        title: locale === "en" ? "Continuation briefs" : "\u7ee7\u7eed\u5361\u7247",
         body:
           locale === "en"
-            ? "Conversation toolbars can copy a compact ChatMem prompt that starts from project context, checkpoints, and focused evidence windows instead of raw transcripts."
-            : "\u5bf9\u8bdd\u5de5\u5177\u680f\u53ef\u4ee5\u590d\u5236\u7b80\u77ed\u7684 ChatMem \u7eed\u63a5\u63d0\u793a\uff0c\u5148\u8bfb\u9879\u76ee\u4e0a\u4e0b\u6587\u3001\u68c0\u67e5\u70b9\u548c\u805a\u7126\u8bc1\u636e\u7a97\u53e3\uff0c\u800c\u4e0d\u662f\u539f\u59cb transcript\u3002",
+            ? "Conversation toolbars now copy a source-backed brief with the active workline, latest completed action, canonical files, obsolete context, and a focused continuation protocol instead of raw transcripts."
+            : "\u5bf9\u8bdd\u5de5\u5177\u680f\u73b0\u5728\u590d\u5236\u6709\u6765\u6e90\u7684\u7ee7\u7eed\u5361\u7247\uff0c\u5305\u542b\u5f53\u524d\u5de5\u4f5c\u7ebf\u3001\u6700\u65b0\u5b8c\u6210\u52a8\u4f5c\u3001\u6743\u5a01\u6587\u4ef6\u3001\u8fc7\u671f\u80cc\u666f\u548c\u805a\u7126\u7eed\u63a5\u534f\u8bae\uff0c\u800c\u4e0d\u662f\u539f\u59cb transcript\u3002",
       },
       {
         icon: "trash" as const,
@@ -4828,8 +4779,8 @@ function App() {
                 <button
                   type="button"
                   className="btn btn-secondary"
-                  onClick={() => void handleCopy("continuation", lowTokenContinuationPrompt)}
-                  disabled={!lowTokenContinuationPrompt}
+                  onClick={() => void handleCopy("continuation", continuationBriefPrompt)}
+                  disabled={!continuationBriefPrompt}
                 >
                   <WindowButtonIcon type="spark" />
                   <span>{continuationPromptButtonLabel}</span>

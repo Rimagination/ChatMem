@@ -14,7 +14,7 @@ ChatMem 是一个本地优先的 AI 编程记忆与迁移层。它把 Claude、C
 - 对话标题更贴近任务内容：优先使用用户真实输入的任务文字，而不是原始 UUID、命令提示或工具调用字符串。
 - 完整对话支持 Markdown 渲染：长回答、列表、代码块、链接会以更可读的方式显示。
 - 工具调用历史更安静：多个工具调用默认折叠为小字号灰色信息层，让“用户说了什么、agent 回答了什么”成为阅读重点。
-- 更适合长会话延续：低 token 历史检索、对话证据窗口、checkpoint、handoff 和 Wiki 可以帮助新窗口接续，而不是重新读取整段超长对话。
+- 更适合长会话延续：继续卡片会提取当前工作线、最新完成动作、权威文件和过期背景，配合低 token 历史检索、对话证据窗口、checkpoint、handoff 和 Wiki 接续，而不是重新读取整段超长对话。
 - UI 层级优化：来源选择、搜索、项目/对话列表、对话操作、关于页都按 Codex 桌面端方向重新梳理，并修复右侧对话区横向溢出。
 
 ## 下载
@@ -59,11 +59,11 @@ C:\Users\<you>\.zcode\v2\acp-config\
 - 本地对话浏览、归类、全文搜索和标题清洗
 - 对话详情、Markdown 正文、工具调用折叠、文件变更查看
 - 一键复制会话文件位置与恢复命令
-- Claude / Codex / Gemini / OpenCode / ZCode 之间的对话迁移
+- Claude / Codex / Gemini / OpenCode / ZCode 之间的完整对话迁移，用于归档、审计和兼容旧流程
 - 删除前确认、批量选择、垃圾箱保留与恢复
 - 全量本地历史导入、当前项目扫描、路径别名修复
 - 低 token 历史检索、对话证据读取、Wiki 投影、启动规则
-- checkpoint、handoff、run、artifact 等继续工作记录
+- 继续卡片、checkpoint、handoff、run、artifact 等继续工作记录
 - 设置页一键安装 ChatMem MCP 与各平台原生引导入口
 - WebDAV 可选备份与同步
 - 简体中文 / English 切换
@@ -74,7 +74,7 @@ C:\Users\<you>\.zcode\v2\acp-config\
 1. 打开 ChatMem，选择左侧来源。
 2. 对 ZCode，先选 CLI 分组，再进入项目和对话；其他来源直接按项目或本地历史浏览。
 3. 在对话详情里重点阅读用户消息和 agent 回复，需要时再展开工具调用。
-4. 对很长的旧会话，优先用本地历史检索、checkpoint 或 handoff 接续，不要让新窗口整段读取超长 transcript。
+4. 对很长的旧会话，优先复制继续卡片，让新窗口从当前工作线、最新完成动作、权威文件和过期背景接手；证据不够时再用本地历史检索、checkpoint、handoff 打开局部原文，不要整段读取超长 transcript。
 5. 在“设置 -> Agent 集成”里安装 ChatMem MCP，让 Claude Code、Codex、Gemini CLI、OpenCode 等 agent 能主动读取项目记忆。
 
 可以在新线程里这样提示 agent：
@@ -142,9 +142,20 @@ ChatMem 默认本地优先：
 ```powershell
 npm ci
 npm run test:run
+npm run eval:continuation-brief
 cargo test --manifest-path .\src-tauri\Cargo.toml
 npm run tauri build
 ```
+
+Continuation brief 的回归评测单独跑：
+
+```powershell
+npm run eval:continuation-brief
+npm run eval:continuation-brief -- --split=dev
+npm run eval:continuation-brief -- --split=holdout
+```
+
+评测集用真实长会话中抽出的代表性场景检查当前目标、恢复提示、权威文件排序、证据保留和过期上下文噪声。`P0` 是会误导续接的致命问题，`P1` 是证据或噪声层面的质量问题。
 
 ## 发布
 

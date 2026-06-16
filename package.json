@@ -9,6 +9,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "eval:continuation-brief": "node scripts/eval-continuation-brief.mjs",
     "test": "vitest",
     "test:run": "vitest run"
   },
