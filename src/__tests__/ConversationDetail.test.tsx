@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import ConversationDetail from "../components/ConversationDetail";
 
 type ToolCall = {
@@ -18,7 +18,7 @@ type Message = {
   metadata: Record<string, unknown>;
 };
 
-function buildConversation(overrides?: { messages?: Message[] }) {
+function buildConversation(overrides?: { messages?: Message[]; totalMessageCount?: number }) {
   return {
     id: "conv-001",
     source_agent: "codex",
@@ -26,6 +26,7 @@ function buildConversation(overrides?: { messages?: Message[] }) {
     created_at: "2026-04-08T08:00:00Z",
     updated_at: "2026-04-08T09:00:00Z",
     summary: "Debug session",
+    total_message_count: overrides?.totalMessageCount,
     messages: overrides?.messages ?? [],
     file_changes: [],
   };
@@ -120,6 +121,70 @@ describe("ConversationDetail", () => {
     expect(screen.queryByText(/UNIQUE_TAIL_TOKEN/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /展开全文/ }));
     expect(screen.getByText(/UNIQUE_TAIL_TOKEN/)).toBeTruthy();
+  });
+
+  it("renders large conversations progressively from the first messages", () => {
+    const messages = Array.from({ length: 125 }, (_, index) => ({
+      id: `m${index + 1}`,
+      timestamp: `2026-04-08T08:${String(index % 60).padStart(2, "0")}:00Z`,
+      role: index % 2 === 0 ? "user" : "assistant",
+      content: `message-${index + 1}`,
+      tool_calls: [],
+      metadata: {},
+    }));
+    const conversation = buildConversation({ messages });
+
+    render(<ConversationDetail conversation={conversation} />);
+
+    expect(screen.getByText("message-1")).toBeTruthy();
+    expect(screen.getByText("message-80")).toBeTruthy();
+    expect(screen.queryByText("message-81")).toBeNull();
+    expect(screen.queryByText("message-125")).toBeNull();
+    expect(screen.getAllByRole("article")).toHaveLength(80);
+
+    fireEvent.click(screen.getByRole("button", { name: /\u663e\u793a\u540e\u7eed\u6d88\u606f/ }));
+
+    expect(screen.getByText("message-125")).toBeTruthy();
+    expect(screen.getAllByRole("article")).toHaveLength(125);
+  });
+
+  it("requests a larger server-side message window when following messages are not loaded yet", () => {
+    const messages = Array.from({ length: 80 }, (_, index) => ({
+      id: `m${index + 1}`,
+      timestamp: `2026-04-08T08:${String(index % 60).padStart(2, "0")}:00Z`,
+      role: index % 2 === 0 ? "user" : "assistant",
+      content: `message-${index + 1}`,
+      tool_calls: [],
+      metadata: {},
+    }));
+    const onLoadFollowingMessages = vi.fn();
+    const conversation = buildConversation({ messages, totalMessageCount: 125 });
+
+    render(
+      <ConversationDetail
+        conversation={conversation}
+        onLoadFollowingMessages={onLoadFollowingMessages}
+      />,
+    );
+
+    expect(screen.getByText("125")).toBeTruthy();
+    expect(screen.getByText("message-1")).toBeTruthy();
+    expect(screen.getByText("message-80")).toBeTruthy();
+    expect(screen.queryByText("message-81")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /\u663e\u793a\u540e\u7eed\u6d88\u606f/ }));
+
+    expect(onLoadFollowingMessages).toHaveBeenCalledWith(125);
+  });
+
+  it("does not show a load-following action when no messages were loaded", () => {
+    const conversation = buildConversation({ messages: [], totalMessageCount: 2 });
+
+    const { container } = render(<ConversationDetail conversation={conversation} />);
+
+    expect(screen.getByText("2")).toBeTruthy();
+    expect(container.querySelector(".message-load-following")).toBeNull();
+    expect(screen.queryAllByRole("article")).toHaveLength(0);
   });
 
   it("does not collapse user messages by default", () => {

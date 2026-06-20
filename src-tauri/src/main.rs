@@ -73,6 +73,7 @@ struct ConversationResponse {
     summary: Option<String>,
     storage_path: Option<String>,
     resume_command: Option<String>,
+    total_message_count: usize,
     messages: Vec<MessageResponse>,
     file_changes: Vec<FileChangeResponse>,
 }
@@ -698,7 +699,11 @@ fn convert_conversation(
     conv: Conversation,
     storage_path: Option<String>,
     resume_command: Option<String>,
+    message_limit: Option<usize>,
 ) -> ConversationResponse {
+    let total_message_count = conv.messages.len();
+    let message_take = message_limit.unwrap_or(total_message_count);
+
     ConversationResponse {
         id: conv.id,
         source_agent: agent_key(&conv.source_agent).to_string(),
@@ -708,9 +713,11 @@ fn convert_conversation(
         summary: conv.summary,
         storage_path,
         resume_command,
+        total_message_count,
         messages: conv
             .messages
             .into_iter()
+            .take(message_take)
             .map(|m| MessageResponse {
                 id: m.id.to_string(),
                 timestamp: m.timestamp.to_rfc3339(),
@@ -1336,7 +1343,7 @@ fn collect_webdav_conversation_uploads() -> Result<Vec<WebDavConversationUpload>
             let remote_file = format!("conversations/{agent}/{file_name}");
             let storage_path = resolve_storage_path(agent, &id);
             let resume_command = build_resume_command(agent, &id);
-            let payload = convert_conversation(conversation, storage_path, resume_command);
+            let payload = convert_conversation(conversation, storage_path, resume_command, None);
             let body = serde_json::to_vec_pretty(&payload).map_err(|error| error.to_string())?;
 
             uploads.push(WebDavConversationUpload {
@@ -1757,7 +1764,11 @@ async fn search_conversations(
 }
 
 #[command]
-async fn read_conversation(agent: String, id: String) -> Result<ConversationResponse, String> {
+async fn read_conversation(
+    agent: String,
+    id: String,
+    message_limit: Option<usize>,
+) -> Result<ConversationResponse, String> {
     let adapter = get_adapter(&agent)?;
 
     // Try adapter first (local native storage)
@@ -1800,6 +1811,7 @@ async fn read_conversation(agent: String, id: String) -> Result<ConversationResp
         conversation,
         storage_path,
         resume_command,
+        message_limit,
     ))
 }
 
@@ -2704,8 +2716,8 @@ fn main() {
 mod tests {
     use super::{
         build_migration_verification, build_resume_command, build_webdav_probe_url,
-        build_webdav_remote_collection_url, conversation_matches_query, normalize_project_dir,
-        AgentKind, Conversation,
+        build_webdav_remote_collection_url, conversation_matches_query, convert_conversation,
+        normalize_project_dir, AgentKind, Conversation,
     };
     use agentswap_core::types::{ChangeType, FileChange, Message, Role, ToolCall, ToolStatus};
     use chrono::Utc;
@@ -2744,6 +2756,40 @@ mod tests {
         .unwrap();
 
         assert!(!settings.auto_capture_memory);
+    }
+
+    #[test]
+    fn convert_conversation_message_limit_keeps_the_first_messages() {
+        let now = Utc::now();
+        let conversation = Conversation {
+            id: "conv-001".to_string(),
+            source_agent: AgentKind::Claude,
+            project_dir: "D:/VSP/demo".to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("Debug session".to_string()),
+            messages: (1..=5)
+                .map(|index| Message {
+                    id: Uuid::new_v4(),
+                    timestamp: now,
+                    role: Role::User,
+                    content: format!("message-{index}"),
+                    tool_calls: vec![],
+                    metadata: HashMap::new(),
+                })
+                .collect(),
+            file_changes: vec![],
+        };
+
+        let response = convert_conversation(conversation, None, None, Some(2));
+        let contents: Vec<&str> = response
+            .messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect();
+
+        assert_eq!(response.total_message_count, 5);
+        assert_eq!(contents, vec!["message-1", "message-2"]);
     }
 
     #[test]

@@ -100,6 +100,7 @@ interface Conversation {
   summary: string | null;
   storage_path?: string | null;
   resume_command?: string | null;
+  total_message_count?: number;
   messages: Message[];
   file_changes: FileChange[];
 }
@@ -387,6 +388,7 @@ type ProjectGroup = {
 };
 
 const COPY_RESET_DELAY_MS = 1800;
+const INITIAL_CONVERSATION_MESSAGE_LIMIT = 80;
 const AGENT_OPTIONS: { value: AgentType; label: string }[] = [
   { value: "claude", label: "Claude" },
   { value: "codex", label: "Codex" },
@@ -651,6 +653,31 @@ function normalizeConversationProject<T extends { project_dir: string }>(convers
     ...conversation,
     project_dir: projectDir,
   };
+}
+
+function conversationSummaryToLoadingConversation(
+  conversation: ConversationSummary,
+  agent: AgentType,
+): Conversation {
+  return normalizeConversationProject({
+    id: conversation.id,
+    source_agent: conversation.source_agent || agent,
+    project_dir: conversation.project_dir,
+    created_at: conversation.created_at,
+    updated_at: conversation.updated_at,
+    summary: conversation.summary,
+    storage_path: null,
+    resume_command: null,
+    total_message_count: conversation.message_count,
+    messages: [],
+    file_changes: [],
+  });
+}
+
+function getInitialConversationMessageLimit(conversation: ConversationSummary) {
+  return conversation.message_count > INITIAL_CONVERSATION_MESSAGE_LIMIT
+    ? INITIAL_CONVERSATION_MESSAGE_LIMIT
+    : undefined;
 }
 
 const CODEX_DOCUMENTS_MARKER = "/documents/codex/";
@@ -1502,6 +1529,7 @@ function App() {
   const [memoryDrawerTab, setMemoryDrawerTab] = useState<MemoryDrawerTab>("inbox");
   const [listLoading, setListLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [followingMessagesLoading, setFollowingMessagesLoading] = useState(false);
   const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
   const [bulkSelectionMode, setBulkSelectionMode] = useState(false);
   const [selectedConversationKeys, setSelectedConversationKeys] = useState<string[]>([]);
@@ -2043,10 +2071,15 @@ function App() {
   const loadConversationDetail = async (
     id: string,
     agent = selectedAgent,
-    options: { throwOnError?: boolean } = {},
+    options: {
+      throwOnError?: boolean;
+      loadingConversation?: ConversationSummary;
+      messageLimit?: number;
+      keepCurrentConversation?: boolean;
+    } = {},
   ) => {
     const requestId = ++conversationDetailRequestIdRef.current;
-    const cacheKey = `${agent}:${id}`;
+    const cacheKey = `${agent}:${id}:${options.messageLimit ?? "full"}`;
     if (id !== activeConversationIdRef.current) {
       setBootstrapReadyConversationId(null);
     }
@@ -2056,15 +2089,34 @@ function App() {
     const cachedConversation = conversationDetailCacheRef.current[cacheKey];
     if (cachedConversation) {
       setSelectedConversation(cachedConversation);
-      setDetailLoading(false);
+      if (!options.keepCurrentConversation) {
+        setDetailLoading(false);
+      }
       return true;
     }
-    setDetailLoading(true);
+    if (!options.keepCurrentConversation) {
+      setDetailLoading(true);
+    }
+    if (options.loadingConversation && !options.keepCurrentConversation) {
+      setSelectedConversation(conversationSummaryToLoadingConversation(options.loadingConversation, agent));
+    }
     try {
-      const result = await invoke<Conversation>("read_conversation", {
+      const payload: { agent: string; id: string; messageLimit?: number } = {
         agent,
         id,
-      });
+      };
+      if (options.messageLimit !== undefined) {
+        payload.messageLimit = options.messageLimit;
+      }
+
+      let result = await invoke<Conversation>("read_conversation", payload);
+      if (
+        options.messageLimit !== undefined &&
+        (result.total_message_count ?? 0) > 0 &&
+        result.messages.length === 0
+      ) {
+        result = await invoke<Conversation>("read_conversation", { agent, id });
+      }
       if (requestId !== conversationDetailRequestIdRef.current) {
         return false;
       }
@@ -2077,9 +2129,12 @@ function App() {
       if (options.throwOnError) {
         throw error;
       }
+      if (requestId === conversationDetailRequestIdRef.current && options.loadingConversation) {
+        setSelectedConversation(null);
+      }
       return false;
     } finally {
-      if (requestId === conversationDetailRequestIdRef.current) {
+      if (requestId === conversationDetailRequestIdRef.current && !options.keepCurrentConversation) {
         setDetailLoading(false);
       }
     }
@@ -2091,7 +2146,26 @@ function App() {
       setSelectedAgent(agent);
       await loadConversations(searchQuery, agent);
     }
-    await loadConversationDetail(conversation.id, agent);
+    await loadConversationDetail(conversation.id, agent, {
+      loadingConversation: conversation,
+      messageLimit: getInitialConversationMessageLimit(conversation),
+    });
+  };
+
+  const handleLoadFollowingConversationMessages = async (messageLimit: number) => {
+    if (!selectedConversation) {
+      return;
+    }
+    const agent = getTopLevelAgent(selectedConversation.source_agent || selectedAgent);
+    setFollowingMessagesLoading(true);
+    try {
+      await loadConversationDetail(selectedConversation.id, agent, {
+        messageLimit,
+        keepCurrentConversation: true,
+      });
+    } finally {
+      setFollowingMessagesLoading(false);
+    }
   };
 
   const handleToggleFavoriteConversation = (
@@ -4055,7 +4129,13 @@ function App() {
             <div className="spinner"></div>
           </div>
         ) : (
-          <ConversationDetail conversation={selectedConversation} />
+          <ConversationDetail
+            conversation={selectedConversation}
+            loadingFollowingMessages={followingMessagesLoading}
+            onLoadFollowingMessages={(messageLimit) =>
+              void handleLoadFollowingConversationMessages(messageLimit)
+            }
+          />
         )}
       </div>
     );
@@ -4716,7 +4796,7 @@ function App() {
     );
   };
 
-  const renderAboutWorkspace = () => {
+  const renderAboutWorkspace = ({ embedded = false }: { embedded?: boolean } = {}) => {
     const releaseItems = [
       {
         icon: "spark" as const,
@@ -4811,22 +4891,40 @@ function App() {
       },
     ];
 
+    const aboutTitleId = embedded ? "settings-about-chatmem-title" : "about-chatmem-title";
+
     return (
-      <section className="about-workspace-page" aria-labelledby="about-chatmem-title">
-        <header className="settings-panel-header about-page-header">
-          <div className="about-title-cluster">
-            <div className="about-brand-mark" aria-hidden="true">
-              <img src={brandIcon} alt="" />
-            </div>
+      <section
+        className={`about-workspace-page ${embedded ? "is-settings-embedded" : ""}`}
+        aria-labelledby={aboutTitleId}
+      >
+        {embedded ? (
+          <header className="settings-section-heading about-settings-heading">
             <div>
-              <p className="page-eyebrow">{shell.aboutChatMem}</p>
-              <h1 id="about-chatmem-title">{locale === "en" ? "About ChatMem" : "关于 ChatMem"}</h1>
+              <h4 id={aboutTitleId}>{locale === "en" ? "About ChatMem" : "关于 ChatMem"}</h4>
+              <p className="settings-helper">
+                {locale === "en"
+                  ? "Version, release notes, project links, and design acknowledgements live here with the rest of the app settings."
+                  : "版本、更新说明、项目链接和设计致谢现在和其他应用设置放在一起。"}
+              </p>
             </div>
-          </div>
-          <button type="button" className="toolbar-button" onClick={() => setShowAbout(false)}>
-            {locale === "en" ? "Back" : "返回"}
-          </button>
-        </header>
+          </header>
+        ) : (
+          <header className="settings-panel-header about-page-header">
+            <div className="about-title-cluster">
+              <div className="about-brand-mark" aria-hidden="true">
+                <img src={brandIcon} alt="" />
+              </div>
+              <div>
+                <p className="page-eyebrow">{shell.aboutChatMem}</p>
+                <h1 id={aboutTitleId}>{locale === "en" ? "About ChatMem" : "关于 ChatMem"}</h1>
+              </div>
+            </div>
+            <button type="button" className="toolbar-button" onClick={() => setShowAbout(false)}>
+              {locale === "en" ? "Back" : "返回"}
+            </button>
+          </header>
+        )}
 
         <section className="about-hero-section" aria-label={locale === "en" ? "Overview" : "概览"}>
           <div className="about-hero-copy">
@@ -4885,12 +4983,12 @@ function App() {
         <section className="about-feature-section" aria-labelledby="about-release-title">
           <div className="about-section-heading">
             <h2 id="about-release-title">
-              {locale === "en" ? "What changed in 1.2.1" : "1.2.1 更新内容"}
+              {locale === "en" ? "What changed in 1.1.4" : "1.1.4 更新内容"}
             </h2>
             <p className="settings-helper">
               {locale === "en"
-                ? "This release adds evaluated continuation briefs while keeping the 1.2.x delete, sync, UI, and ZCode improvements intact."
-                : "\u8fd9\u4e00\u7248\u589e\u52a0\u5df2\u8bc4\u6d4b\u7684\u7ee7\u7eed\u5361\u7247\uff0c\u540c\u65f6\u4fdd\u7559 1.2.x \u7684\u5220\u9664\u3001\u540c\u6b65\u3001UI \u548c ZCode \u6539\u8fdb\u3002"}
+                ? "This release adds evaluated continuation briefs, favorites, layout fixes, and clearer progressive conversation loading."
+                : "\u8fd9\u4e00\u7248\u589e\u52a0\u5df2\u8bc4\u6d4b\u7684\u7ee7\u7eed\u5361\u7247\u3001\u6536\u85cf\u5939\u3001\u5e03\u5c40\u4fee\u590d\u548c\u66f4\u6e05\u6670\u7684\u6e10\u8fdb\u5f0f\u5bf9\u8bdd\u52a0\u8f7d\u3002"}
             </p>
           </div>
           <div className="about-feature-list">
@@ -5353,7 +5451,19 @@ function App() {
             </div>
 
             <div className="conversation-content-grid">
-              <ConversationDetail conversation={selectedConversation} />
+              {detailLoading ? (
+                <div className="detail-loading">
+                  <div className="spinner"></div>
+                </div>
+              ) : (
+                <ConversationDetail
+                  conversation={selectedConversation}
+                  loadingFollowingMessages={followingMessagesLoading}
+                  onLoadFollowingMessages={(messageLimit) =>
+                    void handleLoadFollowingConversationMessages(messageLimit)
+                  }
+                />
+              )}
             </div>
           </div>
         )}
@@ -5482,6 +5592,7 @@ function App() {
           setUpdateState({ kind: "error", message: t("settings.updateError") });
         }
       }}
+      aboutContent={renderAboutWorkspace({ embedded: true })}
     />
   );
 
@@ -5490,10 +5601,21 @@ function App() {
       <header
         className="app-topbar"
         data-tauri-drag-region="true"
-        style={{ paddingLeft: 78 }}
         onMouseDown={handleTopbarMouseDown}
       >
         <div className="topbar-center">
+          {!showSettings && !showAbout ? (
+            <button
+              type="button"
+              className={`icon-button topbar-sidebar-toggle ${sidebarCollapsed ? "is-active" : ""}`}
+              aria-label={sidebarCollapsed ? shell.showSidebar : shell.collapseSidebar}
+              aria-pressed={sidebarCollapsed}
+              title={sidebarCollapsed ? shell.showSidebar : shell.collapseSidebar}
+              onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+            >
+              <WindowButtonIcon type="sidebar" />
+            </button>
+          ) : null}
           <img className="topbar-app-icon" src={brandIcon} alt="ChatMem icon" />
           <span className="topbar-app-name">ChatMem</span>
         </div>
@@ -5986,37 +6108,9 @@ function App() {
               <WindowButtonIcon type="settings" />
               <span className="utility-nav-label">{shell.settings}</span>
             </button>
-
-            <button
-              type="button"
-              className={`utility-nav-button ${showAbout ? "active" : ""}`}
-              aria-label={shell.aboutChatMem}
-              onClick={() => {
-                setShowFavorites(false);
-                setShowTrash(false);
-                setShowSettings(false);
-                setShowAbout(true);
-              }}
-            >
-              <WindowButtonIcon type="help" />
-              <span className="utility-nav-label">{shell.aboutChatMem}</span>
-            </button>
             <span className="utility-nav-version">v{packageInfo.version}</span>
           </nav>
         </aside>
-
-        {!showSettings && !showAbout ? (
-          <button
-            type="button"
-            className={`sidebar-collapse-float ${sidebarCollapsed ? "is-collapsed" : ""}`}
-            aria-label={sidebarCollapsed ? shell.showSidebar : shell.collapseSidebar}
-            aria-pressed={sidebarCollapsed}
-            title={sidebarCollapsed ? shell.showSidebar : shell.collapseSidebar}
-            onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
-          >
-            <WindowButtonIcon type="sidebar" />
-          </button>
-        ) : null}
 
         <main
           className={`workspace ${showSettings ? "settings-workspace" : ""} ${

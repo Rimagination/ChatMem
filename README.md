@@ -6,47 +6,26 @@ ChatMem 是一个本地优先的 AI 编程记忆与迁移层。它会把 Claude�
 
 ## 当前版本
 
-最新版本：`v1.2.1`
+最新版本：`v1.1.4`
 
-### v1.2.1 重点更新
+### v1.1.4 重点更新
 
-**继续卡片**
-- `Migrate` 弹窗新增“总结式迁移”选项，用于复制 source-backed continuation brief；原完整对话迁移仍作为默认选项保留。
-- 对话工具栏的继续按钮继续复制原有低 token 续接提示，不替代原功能。
-- brief 会提取当前工作线、最新完成动作、权威文件、过期背景、证据来源和续接协议。
-- 新增 continuation brief 回归评测：`npm run eval:continuation-brief`。
-- 完整对话迁移继续用于归档、审计和兼容旧流程；总结式迁移用于跨 agent 快速接续。
-- Release 说明见 `docs/releases/v1.2.1.md`。
-- Windows 端同功能实现指南见 `docs/windows-summary-migration-implementation.md`。
+**对话阅读和性能**
+- 对话详情先展示最开始的消息，长对话再通过“显示后续消息”逐步加载，避免倒序阅读。
+- 小对话直接完整读取，大对话才按消息数分段加载，减少点击对话后的等待和空白详情页。
+- 对话列表和消息卡片增加轻量渲染约束，降低长列表滚动卡顿。
 
-**收藏夹**
+**布局和设置**
+- 收起侧边栏按钮移到顶栏 Logo 左侧，并与 Logo 中线对齐。
+- 最大化窗口下保留右侧对话区的圆角边界，避免内容向屏幕外偏移。
+- “关于 ChatMem”并入设置页，侧栏底部只保留收藏夹、垃圾箱、设置和版本号。
+
+**继续、收藏和迁移**
+- `Migrate` 弹窗支持“总结式迁移”，可复制 source-backed continuation brief；完整对话迁移仍保留。
+- 对话工具栏继续保留低 token 续接提示，不替代原功能。
 - 重要对话可以一键收藏，并在侧栏收藏夹入口集中查看。
-- 收藏状态保存在本地设置里，重新打开应用后仍可恢复。
-
----
-
-### v1.2.0 重点更新
-
-**删除对话功能增强**
-- 新增确认对话框：删除前二次确认，提示"此操作将删除本机记录和 OneDrive 同步记录，删除后无法找回"
-- 新增 `delete_memory_conversation` 命令：直接从记忆库 + 同步文件夹删除对话
-- 前端 fallback：`trash_conversation` 失败时自动尝试 `delete_memory_conversation`
-- `trash_conversation` 回退：适配器找不到对话时，从同步文件夹或记忆库读取
-
-**列表显示修复**
-- `list_conversations` 直接读取同步文件夹：在适配器 + 记忆库之后，额外从 OneDrive 同步文件夹读取对话列表
-- 修复同步对话在来源视图中不可见的问题
-
-**UI 改进**
-- 标题栏居中：Logo + "ChatMem" 居中显示
-- 版本号移到底部栏右下角
-- 收起按钮浮动：从侧边栏内部移到外部，绝对定位在左下角
-- 新图标：sidebar 收起图标（面板+箭头）、manage groups 图标（重叠矩形）
-
-**ZCode 原生集成**
-- Agent 集成中新增 ZCode 选项
-- MCP 自动安装到 `~/.zcode/v2/config.json`
-- Skill 通过 skills-manager 中央仓库软链接
+- Release 说明见 `docs/releases/v1.1.4.md`。
+- Windows 端总结式迁移实现指南见 `docs/windows-summary-migration-implementation.md`。
 
 ---
 
@@ -248,7 +227,7 @@ npm run tauri build
 
 ## 发布
 
-发布由 GitHub Actions 处理。推送形如 `v1.2.1` 的 tag 后，工作流会自动构建并上传：
+发布由 GitHub Actions 处理。推送形如 `v1.1.4` 的 tag 后，工作流会自动构建并上传：
 
 - Windows NSIS 安装包
 - Windows MSI 安装包

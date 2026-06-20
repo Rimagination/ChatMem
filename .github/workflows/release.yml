@@ -38,9 +38,11 @@ jobs:
           releaseName: ChatMem ${{ github.ref_name }}
           releaseBody: |
             ChatMem ${{ github.ref_name }} release:
-            - Adds evaluated continuation briefs and summary-style migration.
-            - Adds Favorites for important conversations.
-            - Keeps the 1.2.x delete, sync, UI, ZCode, Hermes, and recovery improvements.
+            - Shows conversations from the first message, then loads following messages progressively.
+            - Loads small conversations fully and uses message windows only for larger conversations.
+            - Moves the sidebar collapse control next to the logo and keeps the maximized conversation surface inset.
+            - Moves About ChatMem into Settings.
+            - Keeps summary-style migration and Favorites available.
 
             推荐下载 / Recommended downloads:
             - Windows installer: download the `.exe` installer if you want the normal install flow.
@@ -119,9 +121,11 @@ jobs:
           releaseName: ChatMem ${{ github.ref_name }}
           releaseBody: |
             ChatMem ${{ github.ref_name }} release:
-            - Adds evaluated continuation briefs and summary-style migration.
-            - Adds Favorites for important conversations.
-            - Keeps the 1.2.x delete, sync, UI, ZCode, Hermes, and recovery improvements.
+            - Shows conversations from the first message, then loads following messages progressively.
+            - Loads small conversations fully and uses message windows only for larger conversations.
+            - Moves the sidebar collapse control next to the logo and keeps the maximized conversation surface inset.
+            - Moves About ChatMem into Settings.
+            - Keeps summary-style migration and Favorites available.
 
             推荐下载 / Recommended downloads:
             - Windows installer: download the `.exe` installer if you want the normal install flow.

@@ -40,6 +40,32 @@ describe("conversation layout CSS", () => {
     expect(ruleFor(".conversation-toolbar-actions")).toContain("max-width: min(");
   });
 
+  it("keeps the collapse control inline with the topbar brand", () => {
+    const collapseControl = ruleFor(".topbar-sidebar-toggle");
+
+    expect(styles).not.toContain(".sidebar-collapse-float");
+    expect(collapseControl).toContain("height: 32px");
+    expect(collapseControl).toContain("align-items: center");
+    expect(collapseControl).toContain("justify-content: center");
+  });
+
+  it("left-aligns the topbar brand group with the sidebar content", () => {
+    expect(ruleFor(".app-topbar")).toContain("padding: 0 8px 0 14px");
+    expect(ruleFor(".topbar-center")).toContain("justify-content: flex-start");
+  });
+
+  it("preserves the inset rounded workspace surface when the window is filled", () => {
+    expect(ruleFor(".workspace")).toContain("padding: 12px 14px 14px");
+    expect(ruleFor(".workspace-surface")).toContain("border-radius: var(--radius-xl)");
+    expect(ruleFor(".app-shell.is-window-filled .workspace")).not.toContain("padding: 0");
+    expect(ruleFor(".app-shell.is-window-filled .workspace-surface")).not.toContain("border-radius: 0");
+  });
+
+  it("uses browser render containment for repeated conversation rows", () => {
+    expect(ruleFor(".message")).toContain("content-visibility: auto");
+    expect(ruleFor(".conversation-item")).toContain("content-visibility: auto");
+  });
+
   it("keeps Trash header actions reachable in narrow workspaces", () => {
     expect(ruleFor(".trash-workspace-page")).toContain("width: min(");
     expect(ruleFor(".trash-workspace-page")).toContain("margin: 0 auto");

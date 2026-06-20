@@ -366,7 +366,7 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "Choose a conversation" })).toBeTruthy();
   });
 
-  it("renders the 1.2.1 version and updated About page structure", async () => {
+  it("renders the 1.1.4 version and updated About section from Settings", async () => {
     localStorage.setItem(
       "chatmem.settings",
       JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
@@ -374,12 +374,13 @@ describe("App", () => {
 
     renderApp();
 
-    expect(await screen.findByText("v1.2.1")).toBeTruthy();
+    expect(await screen.findByText("v1.1.4")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "About us" })).toBeNull();
 
-    fireEvent.click(await screen.findByRole("button", { name: "About us" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
 
     expect(await screen.findByRole("heading", { name: "About ChatMem" })).toBeTruthy();
-    expect(screen.getByText("What changed in 1.2.1")).toBeTruthy();
+    expect(screen.getByText("What changed in 1.1.4")).toBeTruthy();
     expect(screen.getByText("Continuation briefs")).toBeTruthy();
     expect(screen.getByText("Trash actions stay visible")).toBeTruthy();
     expect(screen.getByText(/ZCode task history/)).toBeTruthy();
@@ -592,8 +593,17 @@ describe("App", () => {
     expect(await screen.findByText("Debug session")).toBeTruthy();
     const appBody = document.querySelector(".app-body");
     expect(appBody?.className).not.toContain("is-sidebar-collapsed");
+    const collapseButton = screen.getByRole("button", { name: "Collapse sidebar" });
+    const topbar = document.querySelector(".app-topbar");
+    const topbarCenter = document.querySelector(".topbar-center");
+    const brandIcon = document.querySelector(".topbar-app-icon");
+    expect(topbar?.getAttribute("style") ?? "").not.toContain("padding-left");
+    expect(collapseButton.closest(".topbar-center")).toBe(topbarCenter);
+    expect(
+      collapseButton.compareDocumentPosition(brandIcon as Element) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+    fireEvent.click(collapseButton);
 
     expect(appBody?.className).toContain("is-sidebar-collapsed");
     expect(screen.getByRole("button", { name: "Show sidebar" }).getAttribute("aria-pressed")).toBe("true");
@@ -602,6 +612,25 @@ describe("App", () => {
 
     expect(appBody?.className).not.toContain("is-sidebar-collapsed");
     expect(screen.getByRole("button", { name: "Collapse sidebar" }).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("keeps About inside Settings instead of the sidebar utility navigation", async () => {
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
+    );
+
+    renderApp();
+
+    expect(await screen.findByText("Debug session")).toBeTruthy();
+    const utilityNav = document.querySelector(".sidebar-utility-nav");
+    expect(utilityNav?.textContent).not.toContain("About us");
+    expect(screen.queryByRole("button", { name: "About us" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+    expect(await screen.findByRole("heading", { name: "About ChatMem" })).toBeTruthy();
+    expect(screen.getByText("Rimagination/ChatMem")).toBeTruthy();
   });
 
   it("merges equivalent project paths and does not repeat project conversations as chats", async () => {
@@ -1107,6 +1136,80 @@ describe("App", () => {
 
     expect(await screen.findByRole("complementary", { name: "Startup Rules" })).toBeTruthy();
     expect(screen.getByText("Use ChatMem for cross-agent continuation")).toBeTruthy();
+  });
+
+  it("shows the selected conversation shell while slow detail loading is still in flight", async () => {
+    const deferredDetail = createDeferred<{
+      id: string;
+      source_agent: string;
+      project_dir: string;
+      created_at: string;
+      updated_at: string;
+      summary: string;
+      storage_path: string;
+      resume_command: string;
+      messages: Array<{
+        id: string;
+        timestamp: string;
+        role: string;
+        content: string;
+        tool_calls: never[];
+        metadata: Record<string, never>;
+      }>;
+      file_changes: never[];
+    }>();
+    const baseImplementation = mockInvoke.getMockImplementation();
+
+    mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
+      if (command === "read_conversation" && payload?.id === "conv-001") {
+        return deferredDetail.promise;
+      }
+      return baseImplementation?.(command, payload) ?? [];
+    });
+
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
+    );
+
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("Debug session"))[0]);
+
+    expect(mockInvoke).toHaveBeenCalledWith("read_conversation", {
+      agent: "claude",
+      id: "conv-001",
+    });
+    expect(screen.getByRole("heading", { name: "Debug session" })).toBeTruthy();
+    expect(document.querySelector(".detail-loading")).toBeTruthy();
+    expect(screen.queryByText("Fix the memory view")).toBeNull();
+
+    await act(async () => {
+      deferredDetail.resolve({
+        id: "conv-001",
+        source_agent: "claude",
+        project_dir: "D:/VSP/demo",
+        created_at: "2026-04-08T08:00:00Z",
+        updated_at: "2026-04-08T09:00:00Z",
+        summary: "Debug session",
+        storage_path: "C:/Users/demo/.codex/sessions/2026/04/08/rollout-conv-001.jsonl",
+        resume_command: "codex resume conv-001",
+        messages: [
+          {
+            id: "msg-001",
+            timestamp: "2026-04-08T08:00:00Z",
+            role: "user",
+            content: "Fix the memory view",
+            tool_calls: [],
+            metadata: {},
+          },
+        ],
+        file_changes: [],
+      });
+      await deferredDetail.promise;
+    });
+
+    expect(await screen.findByText("Fix the memory view")).toBeTruthy();
   });
 
   it("copies the original low-token continuation prompt from the toolbar", async () => {

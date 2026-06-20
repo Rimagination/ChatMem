@@ -1,6 +1,6 @@
 # Windows Implementation Guide: Summary-Style Migration
 
-This document describes the v1.2.1 summary-style migration feature so the Windows build can implement the same behavior without depending on macOS-specific assumptions.
+This document describes the v1.1.4 summary-style migration feature so the Windows build can implement the same behavior without depending on macOS-specific assumptions.
 
 ## Goal
 
@@ -257,7 +257,7 @@ Eval command:
 npm run eval:continuation-brief
 ```
 
-Expected v1.2.1 baseline:
+Expected v1.1.4 baseline:
 
 - 10 cases
 - 100% pass
@@ -270,14 +270,14 @@ Before shipping the Windows build:
 
 ```powershell
 npm ci
-npm run test:run -- src/__tests__/App.test.tsx -t "low-token continuation prompt|summary-style migration|keeps migration working|1.2.1 version"
+npm run test:run -- src/__tests__/App.test.tsx -t "low-token continuation prompt|summary-style migration|keeps migration working|1.1.4 version"
 npm run test:run -- src/__tests__/continuationBrief.test.ts src/__tests__/continuationBriefEval.test.ts src/__tests__/continuationBriefEvalCases.test.ts
 npm run eval:continuation-brief
 npm run build
 npm run tauri build
 ```
 
-If using GitHub Actions, pushing tag `v1.2.1` runs `.github/workflows/release.yml`, which builds:
+If using GitHub Actions, pushing tag `v1.1.4` runs `.github/workflows/release.yml`, which builds:
 
 - Windows installer
 - Windows portable zip

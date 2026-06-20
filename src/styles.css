@@ -102,10 +102,10 @@ button {
 .app-topbar {
   height: 48px;
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 14px;
-  padding: 0 8px 0 12px;
+  padding: 0 8px 0 14px;
   background: rgba(246, 248, 243, 0.78);
   border-bottom: 1px solid rgba(22, 32, 24, 0.06);
   backdrop-filter: blur(16px);
@@ -132,8 +132,8 @@ button {
   display: flex;
   align-items: center;
   gap: 10px;
-  justify-content: center;
-  flex: 1;
+  justify-content: flex-start;
+  flex: 0 0 auto;
 }
 
 .topbar-app-icon {
@@ -156,12 +156,13 @@ button {
 }
 
 .topbar-sidebar-toggle {
-  width: 30px;
-  height: 28px;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
 }
 
 .topbar-sidebar-toggle.is-active {
@@ -966,6 +967,8 @@ button {
   padding: 0;
   border-radius: var(--radius-md);
   border: 1px solid transparent;
+  content-visibility: auto;
+  contain-intrinsic-size: 56px;
   transition:
     background var(--transition-base),
     border-color var(--transition-base),
@@ -1231,6 +1234,23 @@ button {
   display: grid;
   align-content: start;
   gap: 18px;
+}
+
+.about-workspace-page.is-settings-embedded {
+  width: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 18px 0 0;
+  border-top: 1px solid rgba(22, 32, 24, 0.07);
+}
+
+.about-workspace-page.is-settings-embedded .about-hero-copy,
+.about-workspace-page.is-settings-embedded .about-release-panel {
+  min-height: 0;
+}
+
+.about-workspace-page.is-settings-embedded .about-hero-copy {
+  padding: 0;
 }
 
 .about-page-header {
@@ -1691,33 +1711,6 @@ button {
   padding-left: 8px;
 }
 
-.sidebar-collapse-float {
-  position: absolute;
-  left: 8px;
-  bottom: 56px;
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  border: 1px solid var(--border-soft);
-  background: var(--bg-surface);
-  color: var(--text-secondary);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all var(--transition-base);
-  z-index: 5;
-}
-
-.sidebar-collapse-float:hover {
-  background: var(--bg-selected);
-  color: var(--text-primary);
-}
-
-.sidebar-collapse-float.is-collapsed {
-  left: 8px;
-}
-
 .utility-nav-button {
   position: relative;
   width: 100%;
@@ -1807,10 +1800,6 @@ button {
   padding: 0;
 }
 
-.app-shell.is-window-filled .workspace {
-  padding: 0;
-}
-
 .workspace-surface {
   height: 100%;
   min-height: 0;
@@ -1832,11 +1821,6 @@ button {
 .app-body.is-full-page .workspace-surface,
 .app-body.is-settings-page .workspace-surface {
   border: 0;
-  border-radius: 0;
-  box-shadow: none;
-}
-
-.app-shell.is-window-filled .workspace-surface {
   border-radius: 0;
   box-shadow: none;
 }
@@ -3557,6 +3541,8 @@ button {
   min-width: 0;
   display: flex;
   width: 100%;
+  content-visibility: auto;
+  contain-intrinsic-size: 148px;
 }
 
 .message-user {
@@ -3707,6 +3693,7 @@ button {
 }
 
 .message-toggle,
+.message-load-following,
 .tool-call-toggle {
   appearance: none;
   border: 0;
@@ -3716,6 +3703,20 @@ button {
   padding: 0;
   font-size: 12px;
   font-weight: 600;
+}
+
+.message-load-following {
+  justify-self: center;
+  padding: 7px 12px;
+  border: 1px solid rgba(58, 143, 100, 0.16);
+  border-radius: var(--radius-md);
+  background: rgba(237, 248, 241, 0.72);
+}
+
+.message-load-following:hover,
+.message-load-following:focus-visible {
+  background: rgba(237, 248, 241, 0.96);
+  outline: none;
 }
 
 .tool-calls,

@@ -33,15 +33,20 @@ interface Conversation {
   created_at: string;
   updated_at: string;
   summary: string | null;
+  total_message_count?: number;
   messages: Message[];
   file_changes: FileChange[];
 }
 
 interface ConversationDetailProps {
   conversation: Conversation;
+  loadingFollowingMessages?: boolean;
+  onLoadFollowingMessages?: (messageLimit: number) => void;
 }
 
 const COLLAPSIBLE_MESSAGE_LENGTH = 280;
+const INITIAL_VISIBLE_MESSAGE_COUNT = 80;
+const LOAD_MORE_MESSAGE_COUNT = 80;
 
 function formatRole(role: string) {
   switch (role) {
@@ -98,25 +103,72 @@ function MessageMarkdown({ content }: { content: string }) {
   );
 }
 
-function ConversationDetail({ conversation }: ConversationDetailProps) {
+function ConversationDetail({
+  conversation,
+  loadingFollowingMessages = false,
+  onLoadFollowingMessages,
+}: ConversationDetailProps) {
+  const [visibleMessageState, setVisibleMessageState] = useState({
+    conversationId: conversation.id,
+    count: INITIAL_VISIBLE_MESSAGE_COUNT,
+  });
   const [expandedMessages, setExpandedMessages] = useState<Record<string, boolean>>({});
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
+    setVisibleMessageState({
+      conversationId: conversation.id,
+      count: INITIAL_VISIBLE_MESSAGE_COUNT,
+    });
     setExpandedMessages({});
     setExpandedTools({});
   }, [conversation.id]);
 
+  const visibleMessageCount =
+    visibleMessageState.conversationId === conversation.id
+      ? visibleMessageState.count
+      : INITIAL_VISIBLE_MESSAGE_COUNT;
+  const totalMessageCount = Math.max(
+    conversation.total_message_count ?? conversation.messages.length,
+    conversation.messages.length,
+  );
+  const hasLoadedMessages = conversation.messages.length > 0;
+  const hasServerHiddenMessages = hasLoadedMessages && totalMessageCount > conversation.messages.length;
+  const localHiddenMessageCount = Math.max(0, conversation.messages.length - visibleMessageCount);
+  const hiddenMessageCount = hasServerHiddenMessages
+    ? totalMessageCount - conversation.messages.length
+    : localHiddenMessageCount;
+  const visibleMessages = hasServerHiddenMessages
+    ? conversation.messages
+    : conversation.messages.slice(0, visibleMessageCount);
   const toolCallCount = conversation.messages.reduce(
     (count, message) => count + message.tool_calls.length,
     0,
   );
 
+  const handleShowFollowingMessages = () => {
+    if (hasServerHiddenMessages) {
+      onLoadFollowingMessages?.(
+        Math.min(totalMessageCount, conversation.messages.length + LOAD_MORE_MESSAGE_COUNT),
+      );
+      return;
+    }
+
+    setVisibleMessageState((current) => {
+      const currentCount =
+        current.conversationId === conversation.id ? current.count : INITIAL_VISIBLE_MESSAGE_COUNT;
+      return {
+        conversationId: conversation.id,
+        count: Math.min(conversation.messages.length, currentCount + LOAD_MORE_MESSAGE_COUNT),
+      };
+    });
+  };
+
   return (
     <div className="conversation-detail">
       <div className="stats">
         <div className="stat-item">
-          <div className="stat-value">{conversation.messages.length}</div>
+          <div className="stat-value">{totalMessageCount}</div>
           <div className="stat-label">{"\u6d88\u606f\u6570"}</div>
         </div>
         <div className="stat-item">
@@ -130,7 +182,7 @@ function ConversationDetail({ conversation }: ConversationDetailProps) {
       </div>
 
       <div className="message-list">
-        {conversation.messages.map((message) => {
+        {visibleMessages.map((message) => {
           const hasContent = Boolean(message.content?.trim());
           const collapsible = shouldCollapseMessage(message);
           const isExpanded = expandedMessages[message.id] ?? false;
@@ -240,6 +292,21 @@ function ConversationDetail({ conversation }: ConversationDetailProps) {
             </article>
           );
         })}
+
+        {hiddenMessageCount > 0 ? (
+          <button
+            type="button"
+            className="message-load-following"
+            onClick={handleShowFollowingMessages}
+            disabled={
+              hasServerHiddenMessages && (!onLoadFollowingMessages || loadingFollowingMessages)
+            }
+          >
+            {loadingFollowingMessages
+              ? "\u52a0\u8f7d\u4e2d..."
+              : `\u663e\u793a\u540e\u7eed\u6d88\u606f\uff08${hiddenMessageCount}\uff09`}
+          </button>
+        ) : null}
       </div>
 
       {conversation.file_changes.length > 0 && (

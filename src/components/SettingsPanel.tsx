@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { Locale } from "../i18n/types";
 import { open as openDialog } from "@tauri-apps/api/dialog";
 import {
@@ -140,6 +140,7 @@ type SettingsPanelProps = {
   onAutoBackupIntervalChange: (minutes: number) => void;
   onCheckUpdates: () => void;
   onInstallUpdate: () => void;
+  aboutContent?: ReactNode;
 };
 
 type WebDavVerificationState =
@@ -233,6 +234,7 @@ export default function SettingsPanel({
   onAutoBackupIntervalChange,
   onCheckUpdates,
   onInstallUpdate,
+  aboutContent,
 }: SettingsPanelProps) {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -1090,6 +1092,8 @@ export default function SettingsPanel({
             ) : null}
           </div>
         </section>
+
+        {aboutContent}
 
       </section>
   );
