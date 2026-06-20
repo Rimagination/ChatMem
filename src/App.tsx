@@ -7,6 +7,8 @@ import MigrateModal from "./components/MigrateModal";
 import SettingsPanel, {
   type AgentIntegrationOperationResult,
   type AgentIntegrationStatus,
+  type LocalSyncStatusResult,
+  type LocalSyncResult,
   type SettingsSyncCopy,
   type UpgradeReadinessReport,
   type WebDavSyncResult,
@@ -30,9 +32,11 @@ import {
   updateSettings,
   type AppFontFamily,
   type AppSettings,
+  type FavoriteConversationSnapshot,
 } from "./settings/storage";
 import { installAvailableUpdate, runUpdateCheck, type UpdateState } from "./updater/updater";
 import { formatDateTime, formatDistanceToNow } from "./utils/dateUtils";
+import { buildContinuationBriefPrompt } from "./utils/continuationBrief";
 import {
   normalizeConversationTitle,
   truncateSidebarTitle,
@@ -125,6 +129,7 @@ interface EmptyTrashResponse {
 type TrashConfirmState = {
   targets: TrashTarget[];
   deleteRemoteBackup: boolean;
+  deleteSyncBackup: boolean;
   busy: boolean;
   error: string | null;
 } | null;
@@ -167,7 +172,8 @@ type AgentType =
   | "codex"
   | "gemini"
   | "opencode"
-  | "zcode";
+  | "zcode"
+  | "hermes";
 type TopPage = "continue" | "review" | "history" | "help";
 type HistoryView = "conversations" | "recovery" | "transfers" | "outputs";
 type MemoryDrawerTab = "inbox" | "approved" | "wiki" | "continuation";
@@ -237,6 +243,7 @@ type ShellCopy = {
   navAria: string;
   projectSection: string;
   chatSection: string;
+  favorites: string;
   settings: string;
   aboutChatMem: string;
   continueTitle: string;
@@ -319,6 +326,9 @@ type ShellCopy = {
   restoreProjects: string;
   openOrganizer: string;
   refreshList: string;
+  favoriteConversation: (title: string) => string;
+  unfavoriteConversation: (title: string) => string;
+  noFavoritesBody: string;
   trash: string;
   bulkSelect: string;
   cancelBulkSelect: string;
@@ -334,6 +344,8 @@ type ShellCopy = {
   confirmTrashRemoteBackup: string;
   confirmTrashRemoteUnavailable: string;
   confirmTrashRemotePasswordMissing: string;
+  confirmTrashSyncBackup: string;
+  confirmTrashSyncUnavailable: string;
   cancel: string;
   moveToTrash: string;
   movingToTrash: string;
@@ -381,6 +393,7 @@ const AGENT_OPTIONS: { value: AgentType; label: string }[] = [
   { value: "gemini", label: "Gemini" },
   { value: "opencode", label: "OpenCode" },
   { value: "zcode", label: "ZCode" },
+  { value: "hermes", label: "Hermes" },
 ];
 const ZCODE_CLI_LABELS: Record<string, string> = {
   claude: "Claude",
@@ -457,6 +470,8 @@ function getAgentHeading(agent: AgentType, locale: Locale) {
       return "OPENCODE \u5bf9\u8bdd";
     case "zcode":
       return "ZCODE \u5bf9\u8bdd";
+    case "hermes":
+      return "HERMES \u5bf9\u8bdd";
     default:
       return "对话";
   }
@@ -468,6 +483,7 @@ const AGENT_LABELS: Record<string, string> = {
   gemini: "Gemini",
   opencode: "OpenCode",
   zcode: "ZCode",
+  hermes: "Hermes",
   "zcode-claude": "ZCode Claude",
   "zcode-codex": "ZCode Codex",
   "zcode-gemini": "ZCode Gemini",
@@ -504,6 +520,8 @@ function getAgentConfigLocation(agent: AgentType) {
       return "$XDG_DATA_HOME/opencode or ~/.local/share/opencode";
     case "zcode":
       return "~/.zcode/v2/acp-config";
+    case "hermes":
+      return "~/.hermes";
     default:
       return "--";
   }
@@ -513,6 +531,20 @@ function getProjectLabel(projectDir: string) {
   const trimmed = normalizeProjectPath(projectDir).replace(/[\\/]+$/, "");
   const segments = trimmed.split(/[\\/]/).filter(Boolean);
   return segments[segments.length - 1] || projectDir;
+}
+
+function detectMachineId(projectDir: string): string {
+  const normalized = projectDir.replace(/\\/g, "/");
+  // Windows: C:/Users/xxx
+  if (/^[a-zA-Z]:\//.test(normalized)) return "windows";
+  // macOS: /Users/xxx, /Volumes/xxx, /Applications
+  if (/^\/(Users|Volumes|Applications)\//i.test(normalized) || normalized === "/Applications") return "macos";
+  // Linux
+  if (/^\/(home|root|usr|opt|tmp)\//.test(normalized)) return "linux";
+  // ChatMem internal paths
+  if (normalized.startsWith("chatmem://")) return "internal";
+  // Fallback
+  return "other";
 }
 
 function getWikiPreview(body: string) {
@@ -706,6 +738,46 @@ function getConversationKey(
   return `${conversation.source_agent}:${conversation.id}`;
 }
 
+function getTopLevelAgent(sourceAgent: string): AgentType {
+  const normalized = sourceAgent.toLowerCase();
+  if (AGENT_OPTIONS.some((agent) => agent.value === normalized)) {
+    return normalized as AgentType;
+  }
+  if (normalized.startsWith("zcode")) {
+    return "zcode";
+  }
+  return "claude";
+}
+
+function conversationToFavoriteSnapshot(
+  conversation: Pick<
+    ConversationSummary,
+    "id" | "source_agent" | "project_dir" | "created_at" | "updated_at" | "summary"
+  >,
+): FavoriteConversationSnapshot {
+  return {
+    id: conversation.id,
+    sourceAgent: conversation.source_agent,
+    projectDir: conversation.project_dir,
+    createdAt: conversation.created_at,
+    updatedAt: conversation.updated_at,
+    summary: conversation.summary,
+  };
+}
+
+function favoriteSnapshotToConversationSummary(snapshot: FavoriteConversationSnapshot): ConversationSummary {
+  return {
+    id: snapshot.id,
+    source_agent: snapshot.sourceAgent,
+    project_dir: snapshot.projectDir,
+    created_at: snapshot.createdAt,
+    updated_at: snapshot.updatedAt,
+    summary: snapshot.summary,
+    message_count: 0,
+    file_count: 0,
+  };
+}
+
 function cleanPromptLine(value: string | null | undefined) {
   return value?.replace(/\s+/g, " ").trim() || null;
 }
@@ -775,6 +847,7 @@ function getShellCopy(locale: Locale): ShellCopy {
       navAria: "Primary navigation",
       projectSection: "Projects",
       chatSection: "Chats",
+      favorites: "Favorites",
       settings: "Settings",
       aboutChatMem: "About us",
       continueTitle: "Continue Work",
@@ -862,6 +935,9 @@ function getShellCopy(locale: Locale): ShellCopy {
       restoreProjects: "Restore previous expansion",
       openOrganizer: "Filter, sort, and organize conversations",
       refreshList: "Refresh conversations",
+      favoriteConversation: (title) => `Favorite ${title}`,
+      unfavoriteConversation: (title) => `Remove ${title} from Favorites`,
+      noFavoritesBody: "Favorite important conversations and they will appear here.",
       trash: "Trash",
       bulkSelect: "Select conversations",
       cancelBulkSelect: "Cancel selection",
@@ -883,6 +959,8 @@ function getShellCopy(locale: Locale): ShellCopy {
       confirmTrashRemoteBackup: "Also delete the WebDAV cloud backup",
       confirmTrashRemoteUnavailable: "WebDAV sync is not configured, so no cloud backup will be deleted.",
       confirmTrashRemotePasswordMissing: "WebDAV password is missing. Save it in Settings before deleting cloud backups.",
+      confirmTrashSyncBackup: "Also delete OneDrive sync backup",
+      confirmTrashSyncUnavailable: "OneDrive sync folder is not configured.",
       cancel: "Cancel",
       moveToTrash: "Move to Trash",
       movingToTrash: "Moving...",
@@ -930,6 +1008,7 @@ function getShellCopy(locale: Locale): ShellCopy {
     navAria: "主导航",
     projectSection: "项目",
     chatSection: "对话",
+    favorites: "收藏夹",
     settings: "设置",
     aboutChatMem: "关于我们",
     continueTitle: "继续工作",
@@ -1015,6 +1094,9 @@ function getShellCopy(locale: Locale): ShellCopy {
     restoreProjects: "恢复之前展开的分组",
     openOrganizer: "筛选、排序和整理对话",
     refreshList: "刷新会话列表",
+    favoriteConversation: (title) => `收藏 ${title}`,
+    unfavoriteConversation: (title) => `取消收藏 ${title}`,
+    noFavoritesBody: "把重要对话标记为收藏后，会集中显示在这里。",
     trash: "垃圾箱",
     collapseSidebar: "\u6536\u8d77\u5de6\u4fa7\u5217\u8868",
     showSidebar: "\u663e\u793a\u5de6\u4fa7\u5217\u8868",
@@ -1036,6 +1118,8 @@ function getShellCopy(locale: Locale): ShellCopy {
     confirmTrashRemoteBackup: "同时删除 WebDAV 网盘备份",
     confirmTrashRemoteUnavailable: "未配置 WebDAV 同步，不会处理云端备份。",
     confirmTrashRemotePasswordMissing: "缺少 WebDAV 密码。请先在设置里保存密码，再删除云端备份。",
+    confirmTrashSyncBackup: "同时删除 OneDrive 同步备份",
+    confirmTrashSyncUnavailable: "未配置 OneDrive 同步文件夹，不会处理同步备份。",
     cancel: "取消",
     moveToTrash: "移到垃圾箱",
     movingToTrash: "正在移动...",
@@ -1146,6 +1230,7 @@ function WindowButtonIcon({
     | "restoreExpansion"
     | "organize"
     | "bulkSelect"
+    | "favorite"
     | "trash"
     | "settings"
     | "help"
@@ -1190,9 +1275,12 @@ function WindowButtonIcon({
   if (type === "sidebar") {
     return (
       <svg viewBox="0 0 16 16" aria-hidden="true">
-        <rect x="2.8" y="3" width="10.4" height="10" rx="1.4" />
-        <path d="M6.4 3v10" />
-        <path d="M9.1 6.2 7.4 8l1.7 1.8" />
+        {/* Sidebar panel */}
+        <rect x="2" y="3" width="12" height="10" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
+        {/* Divider line */}
+        <line x1="6" y1="3" x2="6" y2="13" stroke="currentColor" strokeWidth="1.3" />
+        {/* Left arrow - collapse direction */}
+        <path d="M10.5 6.5L9 8l1.5 1.5" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     );
   }
@@ -1220,9 +1308,13 @@ function WindowButtonIcon({
   if (type === "organize") {
     return (
       <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M3 4h10" />
-        <path d="M5 8h6" />
-        <path d="M7 12h2" />
+        {/* Back rectangle */}
+        <rect x="1.5" y="4.5" width="8" height="6" rx="1.2" fill="none" stroke="currentColor" strokeWidth="1.2" />
+        {/* Front rectangle */}
+        <rect x="5.5" y="5.5" width="8" height="6" rx="1.2" fill="var(--bg-surface, #f6f8f3)" stroke="currentColor" strokeWidth="1.2" />
+        {/* Connection dots */}
+        <circle cx="5" cy="7.5" r="0.8" fill="currentColor" />
+        <circle cx="10" cy="7.5" r="0.8" fill="currentColor" />
       </svg>
     );
   }
@@ -1234,6 +1326,14 @@ function WindowButtonIcon({
         <path d="M9 5h4" />
         <rect x="3" y="9" width="4" height="4" rx="0.8" />
         <path d="M9 11h4" />
+      </svg>
+    );
+  }
+
+  if (type === "favorite") {
+    return (
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="m8 2.8 1.5 3 3.3.5-2.4 2.3.6 3.3L8 10.3 5 11.9l.6-3.3-2.4-2.3 3.3-.5Z" />
       </svg>
     );
   }
@@ -1395,6 +1495,7 @@ function App() {
   const [showMigrateModal, setShowMigrateModal] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showTrash, setShowTrash] = useState(false);
+  const [showFavorites, setShowFavorites] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [memoryDrawerOpen, setMemoryDrawerOpen] = useState(false);
@@ -1473,23 +1574,35 @@ function App() {
   const availableHandoffTargets = AGENT_OPTIONS.map((agent) => agent.value).filter(
     (agent) => agent !== selectedAgent,
   );
+  const latestActiveCheckpoint =
+    checkpoints.find((checkpoint) => checkpoint.status === "active") ?? checkpoints[0];
+  const latestPendingHandoff =
+    handoffs.find((handoff) => !handoff.consumed_at) ?? handoffs[0];
   const lowTokenContinuationPrompt = useMemo(() => {
     if (!activeRepoRoot || !selectedConversation) {
       return null;
     }
 
-    const latestCheckpoint =
-      checkpoints.find((checkpoint) => checkpoint.status === "active") ?? checkpoints[0];
-    const latestHandoff =
-      handoffs.find((handoff) => !handoff.consumed_at) ?? handoffs[0];
-
     return buildLowTokenContinuationPrompt({
       repoRoot: activeRepoRoot,
       conversation: selectedConversation,
-      checkpointId: latestCheckpoint?.checkpoint_id,
-      handoffId: latestHandoff?.handoff_id,
+      checkpointId: latestActiveCheckpoint?.checkpoint_id,
+      handoffId: latestPendingHandoff?.handoff_id,
     });
-  }, [activeRepoRoot, checkpoints, handoffs, selectedConversation]);
+  }, [activeRepoRoot, latestActiveCheckpoint, latestPendingHandoff, selectedConversation]);
+
+  const continuationBriefPrompt = useMemo(() => {
+    if (!activeRepoRoot || !selectedConversation) {
+      return null;
+    }
+
+    return buildContinuationBriefPrompt({
+      repoRoot: activeRepoRoot,
+      conversation: selectedConversation,
+      checkpointId: latestActiveCheckpoint?.checkpoint_id,
+      handoffId: latestPendingHandoff?.handoff_id,
+    });
+  }, [activeRepoRoot, latestActiveCheckpoint, latestPendingHandoff, selectedConversation]);
 
   const syncNativeWindowState = useCallback(async () => {
     try {
@@ -1972,6 +2085,32 @@ function App() {
     }
   };
 
+  const handleOpenConversation = async (conversation: ConversationSummary) => {
+    const agent = getTopLevelAgent(conversation.source_agent);
+    if (agent !== selectedAgent) {
+      setSelectedAgent(agent);
+      await loadConversations(searchQuery, agent);
+    }
+    await loadConversationDetail(conversation.id, agent);
+  };
+
+  const handleToggleFavoriteConversation = (
+    conversation: Pick<
+      ConversationSummary,
+      "id" | "source_agent" | "project_dir" | "created_at" | "updated_at" | "summary"
+    >,
+  ) => {
+    const key = getConversationKey(conversation);
+    const nextFavorites = { ...appSettings.favoriteConversations };
+    if (nextFavorites[key]) {
+      delete nextFavorites[key];
+    } else {
+      nextFavorites[key] = conversationToFavoriteSnapshot(conversation);
+    }
+    const nextSettings = updateSettings({ favoriteConversations: nextFavorites });
+    setAppSettings(nextSettings);
+  };
+
   const loadTrashConversations = async () => {
     setTrashLoading(true);
     try {
@@ -2057,6 +2196,7 @@ function App() {
         summary: target.summary ?? null,
       })),
       deleteRemoteBackup: false,
+      deleteSyncBackup: false,
       busy: false,
       error: null,
     });
@@ -2078,6 +2218,9 @@ function App() {
       syncSettings.provider === "webdav" &&
       syncSettings.webdavHost.trim().length > 0 &&
       syncSettings.username.trim().length > 0;
+    const shouldDeleteSync =
+      trashConfirm.deleteSyncBackup &&
+      syncSettings.syncFolder.trim().length > 0;
     let webdavPassword: string | null = null;
 
     if (shouldDeleteRemote) {
@@ -2103,18 +2246,29 @@ function App() {
     setTrashConfirm((current) => (current ? { ...current, busy: true, error: null } : current));
     try {
       for (const conversation of targets) {
-        await invoke("trash_conversation", {
-          agent: conversation.source_agent || selectedAgent,
-          id: conversation.id,
-          retentionDays: appSettings.trashRetentionDays,
-          deleteRemoteBackup: shouldDeleteRemote,
-          webdavScheme: syncSettings.webdavScheme,
-          webdavHost: syncSettings.webdavHost,
-          webdavPath: syncSettings.webdavPath,
-          remotePath: syncSettings.remotePath,
-          username: syncSettings.username,
-          password: webdavPassword ?? "",
-        });
+        try {
+          await invoke("trash_conversation", {
+            agent: conversation.source_agent || selectedAgent,
+            id: conversation.id,
+            retentionDays: appSettings.trashRetentionDays,
+            deleteRemoteBackup: shouldDeleteRemote,
+            webdavScheme: syncSettings.webdavScheme,
+            webdavHost: syncSettings.webdavHost,
+            webdavPath: syncSettings.webdavPath,
+            remotePath: syncSettings.remotePath,
+            username: syncSettings.username,
+            password: webdavPassword ?? "",
+            deleteSyncBackup: shouldDeleteSync,
+            syncFolder: syncSettings.syncFolder,
+          });
+        } catch (trashError) {
+          console.warn("trash_conversation failed, trying delete_memory_conversation:", trashError);
+          await invoke("delete_memory_conversation", {
+            agent: conversation.source_agent || selectedAgent,
+            id: conversation.id,
+            deleteSyncBackup: shouldDeleteSync,
+          });
+        }
       }
       setAppNotice({
         kind: "success",
@@ -2167,7 +2321,7 @@ function App() {
 
   const handleCopy = async (target: CopyTarget, value: string | null | undefined) => {
     if (!value) {
-      return;
+      return false;
     }
 
     try {
@@ -2176,9 +2330,11 @@ function App() {
       }
       await navigator.clipboard.writeText(value);
       setCopyState({ target, status: "success" });
+      return true;
     } catch (error) {
       console.error(`Failed to copy ${target}:`, error);
       setCopyState({ target, status: "error" });
+      return false;
     } finally {
       window.setTimeout(() => {
         setCopyState((current) =>
@@ -2186,6 +2342,23 @@ function App() {
         );
       }, COPY_RESET_DELAY_MS);
     }
+  };
+
+  const handleCopyContinuationBriefFromMigrate = async () => {
+    const copied = await handleCopy("continuation", continuationBriefPrompt);
+    if (!copied) {
+      setAppNotice({
+        kind: "error",
+        message: locale === "en" ? "Could not copy continuation card" : "继续卡片复制失败",
+      });
+      return;
+    }
+
+    setAppNotice({
+      kind: "success",
+      message: locale === "en" ? "Continuation card copied" : "继续卡片已复制",
+    });
+    setShowMigrateModal(false);
   };
 
   const handleVerifyWebDavServer = async ({
@@ -2235,6 +2408,76 @@ function App() {
   ): Promise<AgentIntegrationOperationResult[]> => {
     return invoke<AgentIntegrationOperationResult[]>("uninstall_agent_integration", { agent });
   };
+
+  const handleLocalSyncStatus = async (): Promise<LocalSyncStatusResult> => {
+    const folder = appSettings.sync.syncFolder;
+    if (!folder) return { available: false, folder_path: "", remote_conversation_count: 0, last_sync_info: null } as LocalSyncStatusResult;
+    return invoke<LocalSyncStatusResult>("local_sync_status", { folderPath: folder });
+  };
+
+  const handleSyncLocalNow = async (): Promise<LocalSyncResult> => {
+    const folder = appSettings.sync.syncFolder;
+    if (!folder) throw new Error("Please select a sync folder first");
+    return invoke<LocalSyncResult>("sync_local_now", { folderPath: folder });
+  };
+
+  // Auto-backup timer: periodically check cloud readiness and sync
+  const autoBackupRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const autoBackupRunningRef = useRef(false);
+
+  useEffect(() => {
+    // Clear existing timer
+    if (autoBackupRef.current) {
+      clearInterval(autoBackupRef.current);
+      autoBackupRef.current = null;
+    }
+
+    if (!appSettings.autoBackupEnabled || !appSettings.sync.syncFolder) {
+      return;
+    }
+
+    const intervalMs = appSettings.autoBackupIntervalMinutes * 60 * 1000;
+
+    const runAutoBackup = async () => {
+      if (autoBackupRunningRef.current) return;
+      autoBackupRunningRef.current = true;
+
+      try {
+        const folder = appSettings.sync.syncFolder;
+        if (!folder) return;
+
+        // Check if the cloud folder is quiet (not being synced)
+        const readiness = await invoke<{
+          folder_exists: boolean;
+          is_quiet: boolean;
+          has_lock_files: boolean;
+          recommended_action: string;
+        }>("check_cloud_readiness", { folderPath: folder });
+
+        if (readiness.recommended_action === "safe_to_sync") {
+          console.log("[AutoBackup] Cloud folder is quiet, starting sync...");
+          await invoke<LocalSyncResult>("sync_local_now", { folderPath: folder });
+          console.log("[AutoBackup] Sync completed");
+        } else {
+          console.log("[AutoBackup] Cloud folder is busy, skipping this cycle");
+        }
+      } catch (err) {
+        console.warn("[AutoBackup] Sync failed:", err);
+      } finally {
+        autoBackupRunningRef.current = false;
+      }
+    };
+
+    autoBackupRef.current = setInterval(runAutoBackup, intervalMs);
+    console.log(`[AutoBackup] Timer started, interval=${appSettings.autoBackupIntervalMinutes}min`);
+
+    return () => {
+      if (autoBackupRef.current) {
+        clearInterval(autoBackupRef.current);
+        autoBackupRef.current = null;
+      }
+    };
+  }, [appSettings.autoBackupEnabled, appSettings.autoBackupIntervalMinutes, appSettings.sync.syncFolder]);
 
   const handleApproveCandidate = async (
     candidate: MemoryCandidate,
@@ -2579,6 +2822,17 @@ function App() {
     });
   }, [projectFilters, sortedConversations]);
 
+  const favoriteConversations = useMemo(
+    () =>
+      sortConversations(
+        Object.values(appSettings.favoriteConversations).map(favoriteSnapshotToConversationSummary),
+        librarySort,
+      ),
+    [appSettings.favoriteConversations, librarySort],
+  );
+
+  const displayedConversations = showFavorites ? favoriteConversations : filteredConversations;
+
   const selectedConversationKeySet = useMemo(
     () => new Set(selectedConversationKeys),
     [selectedConversationKeys],
@@ -2586,27 +2840,27 @@ function App() {
 
   const selectedConversationsForBulkAction = useMemo(
     () =>
-      filteredConversations.filter((conversation) =>
+      displayedConversations.filter((conversation) =>
         selectedConversationKeySet.has(getConversationKey(conversation)),
       ),
-    [filteredConversations, selectedConversationKeySet],
+    [displayedConversations, selectedConversationKeySet],
   );
 
   const selectedConversationCount = selectedConversationsForBulkAction.length;
   const allVisibleConversationsSelected =
-    filteredConversations.length > 0 &&
-    filteredConversations.every((conversation) =>
+    displayedConversations.length > 0 &&
+    displayedConversations.every((conversation) =>
       selectedConversationKeySet.has(getConversationKey(conversation)),
     );
 
   const projectConversations = useMemo(
-    () => filteredConversations.filter(isProjectConversation),
-    [filteredConversations],
+    () => displayedConversations.filter(isProjectConversation),
+    [displayedConversations],
   );
 
   const chatConversations = useMemo(
-    () => filteredConversations.filter((conversation) => !isProjectConversation(conversation)),
-    [filteredConversations],
+    () => displayedConversations.filter((conversation) => !isProjectConversation(conversation)),
+    [displayedConversations],
   );
 
   const repoLibraryRecords = useMemo(() => {
@@ -2714,6 +2968,182 @@ function App() {
     });
   }, [projectGroups]);
 
+  const machineGroups = useMemo(() => {
+    type MachineGroup = {
+      id: string;
+      label: string;
+      latestAt: string;
+      conversationCount: number;
+      projects: ProjectGroup[];
+    };
+    const groups = new Map<string, MachineGroup>();
+
+    projectGroups.forEach((group) => {
+      const machineId = appSettings.machineGroupOverrides[group.fullPath] ?? detectMachineId(group.fullPath);
+      const existing = groups.get(machineId);
+      if (existing) {
+        existing.projects.push(group);
+        existing.conversationCount += group.conversations.length;
+        if (group.latestAt > existing.latestAt) {
+          existing.latestAt = group.latestAt;
+        }
+        return;
+      }
+      groups.set(machineId, {
+        id: machineId,
+        label: appSettings.machineGroupNames[machineId] ?? "",
+        latestAt: group.latestAt,
+        conversationCount: group.conversations.length,
+        projects: [group],
+      });
+    });
+
+    const result = Array.from(groups.values());
+
+    // Auto-generate labels for unnamed groups
+    const platformLabels: Record<string, string> = {
+      windows: "Windows",
+      macos: "Mac",
+      linux: "Linux",
+      internal: "Internal",
+      other: "Other",
+    };
+    const platformCounts: Record<string, number> = {};
+    result.forEach((g) => {
+      platformCounts[g.id] = (platformCounts[g.id] || 0) + 1;
+    });
+    const platformSeen: Record<string, number> = {};
+    result.forEach((g) => {
+      if (!g.label) {
+        const platform = g.id;
+        const total = platformCounts[platform] || 1;
+        const idx = (platformSeen[platform] = (platformSeen[platform] || 0));
+        platformSeen[platform] = idx + 1;
+        const platformLabel = platformLabels[platform] ?? platform;
+        g.label = total > 1 ? `${platformLabel}-${idx + 1}` : platformLabel;
+      }
+    });
+
+    // Sort: most recent first
+    result.sort((a, b) => b.latestAt.localeCompare(a.latestAt));
+    return result;
+  }, [projectGroups, appSettings.machineGroupNames, appSettings.machineGroupOverrides]);
+
+  const [expandedMachineGroups, setExpandedMachineGroups] = useState<Record<string, boolean>>({});
+
+  const handleRenameMachineGroup = useCallback(
+    (machineId: string, newLabel: string) => {
+      const trimmed = newLabel.trim();
+      if (!trimmed) return;
+      const nextNames = { ...appSettings.machineGroupNames, [machineId]: trimmed };
+      const nextSettings = updateSettings({ machineGroupNames: nextNames });
+      setAppSettings(nextSettings);
+    },
+    [appSettings.machineGroupNames],
+  );
+
+  const [editingMachineGroup, setEditingMachineGroup] = useState<string | null>(null);
+  const [editingMachineGroupValue, setEditingMachineGroupValue] = useState("");
+  const machineGroupEditInputRef = useRef<HTMLInputElement | null>(null);
+
+  const startEditMachineGroup = useCallback(
+    (machineId: string, currentLabel: string) => {
+      setEditingMachineGroup(machineId);
+      setEditingMachineGroupValue(currentLabel);
+    },
+    [],
+  );
+
+  const commitEditMachineGroup = useCallback(() => {
+    if (editingMachineGroup && editingMachineGroupValue.trim()) {
+      handleRenameMachineGroup(editingMachineGroup, editingMachineGroupValue);
+    }
+    setEditingMachineGroup(null);
+  }, [editingMachineGroup, editingMachineGroupValue, handleRenameMachineGroup]);
+
+  const cancelEditMachineGroup = useCallback(() => {
+    setEditingMachineGroup(null);
+  }, []);
+
+  // --- Merge/Move machine groups ---
+  const [mgSelectMode, setMgSelectMode] = useState(false);
+  const [selectedMgIds, setSelectedMgIds] = useState<Set<string>>(new Set());
+  const [selectedConvKeysForMove, setSelectedConvKeysForMove] = useState<Set<string>>(new Set());
+  const [mergeTargetId, setMergeTargetId] = useState<string | null>(null);
+  const [moveTargetId, setMoveTargetId] = useState<string | null>(null);
+
+  const toggleMgSelect = useCallback((mgId: string) => {
+    setSelectedMgIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(mgId)) next.delete(mgId);
+      else next.add(mgId);
+      return next;
+    });
+  }, []);
+
+  const handleMergeMachineGroups = useCallback(
+    (targetId: string) => {
+      const overrides = { ...appSettings.machineGroupOverrides };
+      machineGroups.forEach((mg) => {
+        if (selectedMgIds.has(mg.id) && mg.id !== targetId) {
+          mg.projects.forEach((pg) => {
+            pg.conversations.forEach((c) => {
+              // Override each conversation's project_dir to target machine
+              overrides[c.project_dir] = targetId;
+            });
+          });
+        }
+      });
+      const nextSettings = updateSettings({ machineGroupOverrides: overrides });
+      setAppSettings(nextSettings);
+      setSelectedMgIds(new Set());
+      setMergeTargetId(null);
+      setMgSelectMode(false);
+    },
+    [selectedMgIds, machineGroups, appSettings.machineGroupOverrides],
+  );
+
+  const handleMoveConversations = useCallback(
+    (targetId: string) => {
+      const overrides = { ...appSettings.machineGroupOverrides };
+      selectedConvKeysForMove.forEach((key) => {
+        // Find the conversation by key
+        for (const mg of machineGroups) {
+          for (const pg of mg.projects) {
+            for (const c of pg.conversations) {
+              if (getConversationKey(c) === key) {
+                overrides[c.project_dir] = targetId;
+              }
+            }
+          }
+        }
+      });
+      const nextSettings = updateSettings({ machineGroupOverrides: overrides });
+      setAppSettings(nextSettings);
+      setSelectedConvKeysForMove(new Set());
+      setMoveTargetId(null);
+      setMgSelectMode(false);
+    },
+    [selectedConvKeysForMove, machineGroups, appSettings.machineGroupOverrides],
+  );
+
+  const handleResetGroupOverrides = useCallback(() => {
+    const nextSettings = updateSettings({ machineGroupOverrides: {} });
+    setAppSettings(nextSettings);
+    setSelectedMgIds(new Set());
+    setSelectedConvKeysForMove(new Set());
+    setMgSelectMode(false);
+  }, []);
+
+  const toggleConvForMove = useCallback((key: string) => {
+    setSelectedConvKeysForMove((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
   const zcodeChatCliGroups = useMemo(() => {
     const groups = new Map<
       string,
@@ -2779,7 +3209,7 @@ function App() {
   const projectCollapseActionLabel = allProjectsCollapsed
     ? shell.restoreProjects
     : shell.collapseProjects;
-  const activeFilterCount = projectFilters.length;
+  const activeFilterCount = showFavorites ? 0 : projectFilters.length;
 
   const handleOpenLibraryRecord = async (record: LibraryRecord) => {
     if (record.destination === "review") {
@@ -2976,7 +3406,7 @@ function App() {
   };
 
   const handleSelectVisibleConversations = () => {
-    const visibleKeys = filteredConversations.map(getConversationKey);
+    const visibleKeys = displayedConversations.map(getConversationKey);
     setSelectedConversationKeys((current) => {
       const next = new Set(current);
       visibleKeys.forEach((key) => next.add(key));
@@ -3051,14 +3481,17 @@ function App() {
     const isSelected = selectedConversation?.id === conversation.id;
     const conversationKey = getConversationKey(conversation);
     const isBulkSelected = selectedConversationKeySet.has(conversationKey);
+    const isMoveSelected = selectedConvKeysForMove.has(conversationKey);
+    const isFavorite = Boolean(appSettings.favoriteConversations[conversationKey]);
     const projectDisplay = getConversationProjectDisplay(conversation);
+    const inAnySelectMode = bulkSelectionMode || mgSelectMode;
 
     return (
       <div
         key={`${conversation.project_dir}-${conversation.id}`}
         className={`conversation-item ${isSelected ? "selected" : ""} ${
-          bulkSelectionMode ? "selection-mode" : ""
-        } ${isBulkSelected ? "is-bulk-selected" : ""} ${extraClassName}`.trim()}
+          inAnySelectMode ? "selection-mode" : ""
+        } ${isBulkSelected || isMoveSelected ? "is-bulk-selected" : ""} ${extraClassName}`.trim()}
       >
         {bulkSelectionMode ? (
           <label className="conversation-item-checkbox">
@@ -3070,6 +3503,16 @@ function App() {
             />
             <span aria-hidden="true"></span>
           </label>
+        ) : mgSelectMode ? (
+          <label className="conversation-item-checkbox">
+            <input
+              type="checkbox"
+              aria-label={`选择 ${title}`}
+              checked={isMoveSelected}
+              onChange={() => toggleConvForMove(conversationKey)}
+            />
+            <span aria-hidden="true"></span>
+          </label>
         ) : null}
         <button
           type="button"
@@ -3077,7 +3520,9 @@ function App() {
           onClick={() =>
             bulkSelectionMode
               ? handleToggleConversationSelection(conversation)
-              : void loadConversationDetail(conversation.id)
+              : mgSelectMode
+                ? toggleConvForMove(conversationKey)
+                : void handleOpenConversation(conversation)
           }
         >
           <div className="conversation-item-row">
@@ -3092,7 +3537,30 @@ function App() {
             <div className="conversation-item-time">{formatDistanceToNow(conversation.updated_at)}</div>
           </div>
         </button>
-        {!bulkSelectionMode ? (
+        {!inAnySelectMode ? (
+          <button
+            type="button"
+            className={`conversation-item-favorite ${isFavorite ? "is-active" : ""}`}
+            aria-label={
+              isFavorite
+                ? shell.unfavoriteConversation(title)
+                : shell.favoriteConversation(title)
+            }
+            aria-pressed={isFavorite}
+            title={
+              isFavorite
+                ? shell.unfavoriteConversation(title)
+                : shell.favoriteConversation(title)
+            }
+            onClick={(event) => {
+              event.stopPropagation();
+              handleToggleFavoriteConversation(conversation);
+            }}
+          >
+            <WindowButtonIcon type="favorite" />
+          </button>
+        ) : null}
+        {!inAnySelectMode ? (
           <button
             type="button"
             className="conversation-item-delete"
@@ -4252,11 +4720,19 @@ function App() {
     const releaseItems = [
       {
         icon: "spark" as const,
-        title: locale === "en" ? "Low-token continuation prompts" : "\u7701 token \u7eed\u63a5\u63d0\u793a",
+        title: locale === "en" ? "Continuation briefs" : "\u7ee7\u7eed\u5361\u7247",
         body:
           locale === "en"
-            ? "Conversation toolbars can copy a compact ChatMem prompt that starts from project context, checkpoints, and focused evidence windows instead of raw transcripts."
-            : "\u5bf9\u8bdd\u5de5\u5177\u680f\u53ef\u4ee5\u590d\u5236\u7b80\u77ed\u7684 ChatMem \u7eed\u63a5\u63d0\u793a\uff0c\u5148\u8bfb\u9879\u76ee\u4e0a\u4e0b\u6587\u3001\u68c0\u67e5\u70b9\u548c\u805a\u7126\u8bc1\u636e\u7a97\u53e3\uff0c\u800c\u4e0d\u662f\u539f\u59cb transcript\u3002",
+            ? "The Migrate dialog now offers summary-style migration: copy a source-backed continuation card with the active workline, latest completed action, canonical files, obsolete context, and focused protocol."
+            : "Migrate \u5f39\u7a97\u73b0\u5728\u65b0\u589e\u603b\u7ed3\u5f0f\u8fc1\u79fb\uff1a\u590d\u5236\u6709\u6765\u6e90\u7684\u7ee7\u7eed\u5361\u7247\uff0c\u5305\u542b\u5f53\u524d\u5de5\u4f5c\u7ebf\u3001\u6700\u65b0\u5b8c\u6210\u52a8\u4f5c\u3001\u6743\u5a01\u6587\u4ef6\u3001\u8fc7\u671f\u80cc\u666f\u548c\u805a\u7126\u7eed\u63a5\u534f\u8bae\u3002",
+      },
+      {
+        icon: "favorite" as const,
+        title: locale === "en" ? "Favorites" : "收藏夹",
+        body:
+          locale === "en"
+            ? "Important conversations can now be starred and reopened from a dedicated Favorites entry across sources."
+            : "重要对话现在可以标记收藏，并通过独立收藏夹入口跨来源集中查看和重新打开。",
       },
       {
         icon: "trash" as const,
@@ -4322,8 +4798,8 @@ function App() {
         title: locale === "en" ? "Agent migration" : "Agent 迁移",
         body:
           locale === "en"
-            ? "ChatMem is designed for moving work between Claude, Codex, Gemini, OpenCode, and ZCode without losing context."
-            : "ChatMem 面向 Claude、Codex、Gemini、OpenCode 和 ZCode 之间的工作迁移，不让上下文散掉。",
+            ? "ChatMem is designed for continuing work across Claude, Codex, Gemini, OpenCode, ZCode, and Hermes without losing context."
+            : "ChatMem 面向 Claude、Codex、Gemini、OpenCode、ZCode 和 Hermes 的跨来源续接，不让上下文散掉。",
       },
       {
         icon: "spark" as const,
@@ -4385,7 +4861,7 @@ function App() {
           <article className="about-detail-card">
             <WindowButtonIcon type="migrate" />
             <span>{locale === "en" ? "Agent scope" : "Agent 范围"}</span>
-            <strong>Claude / Codex / Gemini / OpenCode / ZCode</strong>
+            <strong>Claude / Codex / Gemini / OpenCode / ZCode / Hermes</strong>
           </article>
           <article className="about-detail-card">
             <WindowButtonIcon type="shield" />
@@ -4409,12 +4885,12 @@ function App() {
         <section className="about-feature-section" aria-labelledby="about-release-title">
           <div className="about-section-heading">
             <h2 id="about-release-title">
-              {locale === "en" ? "What changed in 1.1.3" : "1.1.3 稳定版更新"}
+              {locale === "en" ? "What changed in 1.2.1" : "1.2.1 更新内容"}
             </h2>
             <p className="settings-helper">
               {locale === "en"
-                ? "This stable release keeps the 1.1.x improvements while making automatic recovery checkpoints opt-in."
-                : "\u8fd9\u4e2a\u7a33\u5b9a\u7248\u4fdd\u7559 1.1.x \u7684\u6539\u8fdb\uff0c\u540c\u65f6\u5c06\u81ea\u52a8\u6062\u590d\u5feb\u7167\u6539\u4e3a\u624b\u52a8\u5f00\u542f\u3002"}
+                ? "This release adds evaluated continuation briefs while keeping the 1.2.x delete, sync, UI, and ZCode improvements intact."
+                : "\u8fd9\u4e00\u7248\u589e\u52a0\u5df2\u8bc4\u6d4b\u7684\u7ee7\u7eed\u5361\u7247\uff0c\u540c\u65f6\u4fdd\u7559 1.2.x \u7684\u5220\u9664\u3001\u540c\u6b65\u3001UI \u548c ZCode \u6539\u8fdb\u3002"}
             </p>
           </div>
           <div className="about-feature-list">
@@ -4560,6 +5036,8 @@ function App() {
       appSettings.sync.provider === "webdav" &&
       appSettings.sync.webdavHost.trim().length > 0 &&
       appSettings.sync.username.trim().length > 0;
+    const syncFolderAvailable =
+      appSettings.sync.syncFolder.trim().length > 0;
     const previewTargets = trashConfirm.targets.slice(0, 4);
 
     return (
@@ -4614,6 +5092,28 @@ function App() {
             </label>
             {!remoteAvailable ? (
               <p className="trash-remote-note">{shell.confirmTrashRemoteUnavailable}</p>
+            ) : null}
+            <label className={`trash-remote-option ${syncFolderAvailable ? "" : "is-disabled"}`}>
+              <input
+                type="checkbox"
+                checked={trashConfirm.deleteSyncBackup && syncFolderAvailable}
+                disabled={!syncFolderAvailable || trashConfirm.busy}
+                onChange={(event) =>
+                  setTrashConfirm((current) =>
+                    current
+                      ? {
+                          ...current,
+                          deleteSyncBackup: event.target.checked,
+                          error: null,
+                        }
+                      : current,
+                  )
+                }
+              />
+              <span>{shell.confirmTrashSyncBackup}</span>
+            </label>
+            {!syncFolderAvailable ? (
+              <p className="trash-remote-note">{shell.confirmTrashSyncUnavailable}</p>
             ) : null}
             {trashConfirm.error ? (
               <p className="settings-notice is-danger">{trashConfirm.error}</p>
@@ -4861,6 +5361,17 @@ function App() {
     );
   };
 
+  const handleTrashRetentionDaysChange = (nextDays: number) => {
+    const trashRetentionDays = Math.min(365, Math.max(1, Math.round(nextDays || 1)));
+    const nextSettings = updateSettings({ trashRetentionDays });
+    setAppSettings(nextSettings);
+  };
+
+  const handleFontFamilyChange = (fontFamily: AppFontFamily) => {
+    const nextSettings = updateSettings({ fontFamily });
+    setAppSettings(nextSettings);
+  };
+
   const handleTopbarMouseDown = (event: ReactMouseEvent<HTMLElement>) => {
     if (event.button !== 0) {
       return;
@@ -4873,24 +5384,6 @@ function App() {
 
     event.preventDefault();
     void appWindow.startDragging();
-  };
-
-  const handleToggleWindowSize = async () => {
-    await appWindow.toggleMaximize();
-    window.setTimeout(() => {
-      void syncNativeWindowState();
-    }, 0);
-  };
-
-  const handleTrashRetentionDaysChange = (nextDays: number) => {
-    const trashRetentionDays = Math.min(365, Math.max(1, Math.round(nextDays || 1)));
-    const nextSettings = updateSettings({ trashRetentionDays });
-    setAppSettings(nextSettings);
-  };
-
-  const handleFontFamilyChange = (fontFamily: AppFontFamily) => {
-    const nextSettings = updateSettings({ fontFamily });
-    setAppSettings(nextSettings);
   };
 
   const renderSettingsPanel = () => (
@@ -4953,6 +5446,20 @@ function App() {
       onUninstallAgentIntegration={handleUninstallAgentIntegration}
       onLoadWebDavPassword={loadWebDavPassword}
       onSaveWebDavPassword={({ username, password }) => saveWebDavPassword(username, password)}
+      onLocalSyncStatus={handleLocalSyncStatus}
+      onSyncLocalNow={handleSyncLocalNow}
+      autoBackupEnabled={appSettings.autoBackupEnabled}
+      autoBackupIntervalMinutes={appSettings.autoBackupIntervalMinutes}
+      onAutoBackupEnabledChange={(enabled) => {
+        const next = { ...appSettings, autoBackupEnabled: enabled };
+        setAppSettings(next);
+        saveSettings(next);
+      }}
+      onAutoBackupIntervalChange={(minutes) => {
+        const next = { ...appSettings, autoBackupIntervalMinutes: minutes };
+        setAppSettings(next);
+        saveSettings(next);
+      }}
       onCheckUpdates={async () => {
         setUpdateState({ kind: "checking" });
         try {
@@ -4980,50 +5487,17 @@ function App() {
 
   return (
     <div className={`app-shell ${isWindowFilled ? "is-window-filled" : ""}`} style={appShellStyle}>
-      <header className="app-topbar" data-tauri-drag-region="true" onMouseDown={handleTopbarMouseDown}>
-        <div className="topbar-left" data-tauri-drag-region="true">
+      <header
+        className="app-topbar"
+        data-tauri-drag-region="true"
+        style={{ paddingLeft: 78 }}
+        onMouseDown={handleTopbarMouseDown}
+      >
+        <div className="topbar-center">
           <img className="topbar-app-icon" src={brandIcon} alt="ChatMem icon" />
-          <span className="topbar-version">ChatMem v{packageInfo.version}</span>
-          <button
-            type="button"
-            className={`icon-button topbar-sidebar-toggle ${sidebarCollapsed ? "is-active" : ""}`}
-            aria-label={sidebarCollapsed ? shell.showSidebar : shell.collapseSidebar}
-            aria-pressed={sidebarCollapsed}
-            title={sidebarCollapsed ? shell.showSidebar : shell.collapseSidebar}
-            onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
-          >
-            <WindowButtonIcon type="sidebar" />
-          </button>
+          <span className="topbar-app-name">ChatMem</span>
         </div>
-
         <div className="topbar-drag-space" data-tauri-drag-region="true" />
-
-        <div className="window-controls">
-          <button
-            type="button"
-            className="window-control-button"
-            aria-label="Minimize window"
-            onClick={() => void appWindow.minimize()}
-          >
-            <WindowButtonIcon type="minimize" />
-          </button>
-          <button
-            type="button"
-            className="window-control-button"
-            aria-label="Toggle window size"
-            onClick={() => void handleToggleWindowSize()}
-          >
-            <WindowButtonIcon type="maximize" />
-          </button>
-          <button
-            type="button"
-            className="window-control-button is-close"
-            aria-label="Close window"
-            onClick={() => void appWindow.close()}
-          >
-            <WindowButtonIcon type="close" />
-          </button>
-        </div>
       </header>
 
       <div
@@ -5044,7 +5518,10 @@ function App() {
                     id="agent-source-select"
                     value={selectedAgent}
                     aria-label={locale === "en" ? "Conversation source" : "对话来源"}
-                    onChange={(event) => setSelectedAgent(event.target.value as AgentType)}
+                    onChange={(event) => {
+                      setShowFavorites(false);
+                      setSelectedAgent(event.target.value as AgentType);
+                    }}
                   >
                     {AGENT_OPTIONS.map((agent) => (
                       <option key={agent.value} value={agent.value}>
@@ -5071,10 +5548,12 @@ function App() {
               <div className="library-section-header">
                 <div className="library-section-title-row">
                   <h2>
-                    <WindowButtonIcon type="project" />
-                    <span>{shell.projectSection}</span>
+                    <WindowButtonIcon type={showFavorites ? "favorite" : "project"} />
+                    <span>{showFavorites ? shell.favorites : shell.projectSection}</span>
                   </h2>
-                  <span className="library-count-pill">{projectGroups.length}</span>
+                  <span className="library-count-pill">
+                    {showFavorites ? favoriteConversations.length : projectGroups.length}
+                  </span>
                 </div>
                 <div className="library-section-actions" ref={organizeMenuRef}>
                   <button
@@ -5117,6 +5596,28 @@ function App() {
                       {bulkSelectionMode ? shell.cancelBulkSelect : shell.bulkSelect}
                     </span>
                   </button>
+                  {machineGroups.length > 1 ? (
+                    <button
+                      type="button"
+                      className={`icon-button sidebar-action-button ${mgSelectMode ? "is-active" : ""}`}
+                      aria-label={mgSelectMode ? "取消管理分组" : "管理分组"}
+                      title={mgSelectMode ? "取消管理分组" : "管理分组"}
+                      onClick={() => {
+                        setMgSelectMode((cur) => !cur);
+                        if (mgSelectMode) {
+                          setSelectedMgIds(new Set());
+                          setSelectedConvKeysForMove(new Set());
+                          setMergeTargetId(null);
+                          setMoveTargetId(null);
+                        }
+                      }}
+                    >
+                      <WindowButtonIcon type="organize" />
+                      <span className="sidebar-action-tooltip" aria-hidden="true">
+                        {mgSelectMode ? "取消管理分组" : "管理分组"}
+                      </span>
+                    </button>
+                  ) : null}
                   {showOrganizeMenu && (
                     <div className="organize-menu">
                       <div className="organize-group">
@@ -5200,7 +5701,7 @@ function App() {
                       type="button"
                       className="bulk-selection-action"
                       onClick={handleSelectVisibleConversations}
-                      disabled={allVisibleConversationsSelected || filteredConversations.length === 0}
+                      disabled={allVisibleConversationsSelected || displayedConversations.length === 0}
                     >
                       {shell.selectVisible}
                     </button>
@@ -5230,9 +5731,11 @@ function App() {
                 </div>
               ) : projectGroups.length === 0 ? (
                 <div className="inline-empty-state sidebar-empty">
-                  <div className="inline-empty-body">{shell.noProgressBody}</div>
+                  <div className="inline-empty-body">
+                    {showFavorites ? shell.noFavoritesBody : shell.noProgressBody}
+                  </div>
                 </div>
-              ) : selectedAgent === "zcode" ? (
+              ) : !showFavorites && selectedAgent === "zcode" ? (
                 <div className="zcode-cli-group-list">
                   {zcodeProjectCliGroups.map((cliGroup) => (
                     <div key={cliGroup.id} className="zcode-cli-group">
@@ -5245,6 +5748,151 @@ function App() {
                       </div>
                     </div>
                   ))}
+                </div>
+              ) : !showFavorites && machineGroups.length > 1 ? (
+                <div className="machine-group-list">
+                  {mgSelectMode ? (
+                    <div className="mg-action-bar">
+                      <span className="mg-action-status">
+                        已选 {selectedMgIds.size} 个分组, {selectedConvKeysForMove.size} 个对话
+                      </span>
+                      {selectedMgIds.size >= 2 ? (
+                        <div style={{ position: "relative", display: "inline-block" }}>
+                          <button
+                            type="button"
+                            className="bulk-selection-action"
+                            onClick={() => setMergeTargetId(mergeTargetId ? null : "__pick__")}
+                          >
+                            合并电脑
+                          </button>
+                          {mergeTargetId === "__pick__" ? (
+                            <div className="merge-move-dropdown">
+                              {machineGroups.filter(g => selectedMgIds.has(g.id)).map((g) => (
+                                <button
+                                  key={g.id}
+                                  type="button"
+                                  className="merge-move-dropdown-item"
+                                  onClick={() => handleMergeMachineGroups(g.id)}
+                                >
+                                  → {g.label}
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      {selectedConvKeysForMove.size > 0 ? (
+                        <div style={{ position: "relative", display: "inline-block" }}>
+                          <button
+                            type="button"
+                            className="bulk-selection-action"
+                            onClick={() => setMoveTargetId(moveTargetId ? null : "__pick__")}
+                          >
+                            移动对话
+                          </button>
+                          {moveTargetId === "__pick__" ? (
+                            <div className="merge-move-dropdown">
+                              {machineGroups.map((g) => (
+                                <button
+                                  key={g.id}
+                                  type="button"
+                                  className="merge-move-dropdown-item"
+                                  onClick={() => handleMoveConversations(g.id)}
+                                >
+                                  → {g.label}
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="bulk-selection-action"
+                        onClick={() => {
+                          if (selectedMgIds.size === machineGroups.length) {
+                            setSelectedMgIds(new Set());
+                          } else {
+                            setSelectedMgIds(new Set(machineGroups.map((g) => g.id)));
+                          }
+                        }}
+                      >
+                        {selectedMgIds.size === machineGroups.length ? "取消选择" : "选择全部"}
+                      </button>
+                      <button
+                        type="button"
+                        className={`bulk-selection-action ${Object.keys(appSettings.machineGroupOverrides).length > 0 ? "" : "disabled"}`}
+                        onClick={handleResetGroupOverrides}
+                        disabled={Object.keys(appSettings.machineGroupOverrides).length === 0}
+                      >
+                        重置分组
+                      </button>
+                    </div>
+                  ) : null}
+                  {machineGroups.map((mg) => {
+                    const isExpanded = expandedMachineGroups[mg.id] ?? true;
+                    const isEditing = editingMachineGroup === mg.id;
+                    const isMgChecked = selectedMgIds.has(mg.id);
+                    return (
+                      <div key={mg.id} className={`machine-group ${isMgChecked ? "mg-selected" : ""}`}>
+                        <div className="machine-group-header">
+                          {mgSelectMode ? (
+                            <label className="machine-group-checkbox" style={{ display: "flex", alignItems: "center", marginRight: "4px" }}>
+                              <input
+                                type="checkbox"
+                                checked={isMgChecked}
+                                onChange={() => toggleMgSelect(mg.id)}
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                            </label>
+                          ) : null}
+                          <button
+                            type="button"
+                            className="machine-group-chevron-btn"
+                            onClick={() =>
+                              setExpandedMachineGroups((cur) => ({ ...cur, [mg.id]: !isExpanded }))
+                            }
+                          >
+                            <span className={`machine-group-chevron ${isExpanded ? "expanded" : ""}`}>
+                              <WindowButtonIcon type="chevron" />
+                            </span>
+                            {isEditing ? (
+                              <input
+                                ref={machineGroupEditInputRef}
+                                className="machine-group-rename-input"
+                                value={editingMachineGroupValue}
+                                onChange={(e) => setEditingMachineGroupValue(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") commitEditMachineGroup();
+                                  else if (e.key === "Escape") cancelEditMachineGroup();
+                                }}
+                                onBlur={commitEditMachineGroup}
+                                onClick={(e) => e.stopPropagation()}
+                                autoFocus
+                              />
+                            ) : (
+                              <span
+                                className="machine-group-label"
+                                title={mg.id}
+                                onDoubleClick={(e) => {
+                                  e.stopPropagation();
+                                  startEditMachineGroup(mg.id, mg.label);
+                                }}
+                              >
+                                {mg.label}
+                              </span>
+                            )}
+                          </button>
+                          <span className="library-count-pill">{mg.conversationCount}</span>
+                        </div>
+                        {isExpanded ? (
+                          <div className="project-group-list machine-project-group-list">
+                            {mg.projects.map((group) => renderProjectGroup(group))}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="project-group-list">
@@ -5290,9 +5938,28 @@ function App() {
           <nav className="sidebar-utility-nav" aria-label={locale === "en" ? "App pages" : "应用页面"}>
             <button
               type="button"
+              className={`utility-nav-button ${showFavorites ? "active" : ""}`}
+              aria-label={shell.favorites}
+              onClick={() => {
+                setShowTrash(false);
+                setShowSettings(false);
+                setShowAbout(false);
+                setShowFavorites(true);
+              }}
+            >
+              <WindowButtonIcon type="favorite" />
+              <span className="utility-nav-label">{shell.favorites}</span>
+              {favoriteConversations.length > 0 ? (
+                <span className="utility-nav-count">{favoriteConversations.length}</span>
+              ) : null}
+            </button>
+
+            <button
+              type="button"
               className={`utility-nav-button ${showTrash ? "active" : ""}`}
               aria-label={shell.trash}
               onClick={() => {
+                setShowFavorites(false);
                 setShowSettings(false);
                 setShowAbout(false);
                 setShowTrash(true);
@@ -5310,6 +5977,7 @@ function App() {
               className={`utility-nav-button ${showSettings ? "active" : ""}`}
               aria-label={shell.settings}
               onClick={() => {
+                setShowFavorites(false);
                 setShowTrash(false);
                 setShowAbout(false);
                 setShowSettings(true);
@@ -5324,6 +5992,7 @@ function App() {
               className={`utility-nav-button ${showAbout ? "active" : ""}`}
               aria-label={shell.aboutChatMem}
               onClick={() => {
+                setShowFavorites(false);
                 setShowTrash(false);
                 setShowSettings(false);
                 setShowAbout(true);
@@ -5332,8 +6001,22 @@ function App() {
               <WindowButtonIcon type="help" />
               <span className="utility-nav-label">{shell.aboutChatMem}</span>
             </button>
+            <span className="utility-nav-version">v{packageInfo.version}</span>
           </nav>
         </aside>
+
+        {!showSettings && !showAbout ? (
+          <button
+            type="button"
+            className={`sidebar-collapse-float ${sidebarCollapsed ? "is-collapsed" : ""}`}
+            aria-label={sidebarCollapsed ? shell.showSidebar : shell.collapseSidebar}
+            aria-pressed={sidebarCollapsed}
+            title={sidebarCollapsed ? shell.showSidebar : shell.collapseSidebar}
+            onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+          >
+            <WindowButtonIcon type="sidebar" />
+          </button>
+        ) : null}
 
         <main
           className={`workspace ${showSettings ? "settings-workspace" : ""} ${
@@ -5392,6 +6075,8 @@ function App() {
         <MigrateModal
           sourceAgent={selectedAgent}
           onMigrate={handleMigrate}
+          continuationBriefAvailable={Boolean(continuationBriefPrompt)}
+          onCopyContinuationBrief={() => void handleCopyContinuationBriefFromMigrate()}
           onClose={() => setShowMigrateModal(false)}
         />
       ) : null}

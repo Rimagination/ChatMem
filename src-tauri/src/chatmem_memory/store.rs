@@ -1005,6 +1005,113 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// List all conversations from the memory store for a given source agent.
+    /// Returns (source_conversation_id, repo_root, summary, started_at, updated_at, message_count).
+    pub fn list_store_conversations(
+        &self,
+        source_agent: &str,
+    ) -> Result<Vec<(String, String, Option<String>, String, String, usize)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT c.source_conversation_id, r.repo_root, c.summary, c.started_at, c.updated_at,
+                    (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.conversation_id) as msg_count
+             FROM conversations c
+             JOIN repos r ON c.repo_id = r.repo_id
+             WHERE c.source_agent = ?1
+             ORDER BY c.updated_at DESC",
+        )?;
+        let rows = stmt
+            .query_map([source_agent], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, usize>(5)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Read a conversation from the memory store by source_conversation_id.
+    /// Returns (repo_root, summary, started_at, updated_at, messages_json).
+    pub fn read_store_conversation(
+        &self,
+        source_agent: &str,
+        source_conversation_id: &str,
+    ) -> Result<Option<(String, Option<String>, String, String, Vec<(String, String, String)>)>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT r.repo_root, c.summary, c.started_at, c.updated_at, c.conversation_id
+             FROM conversations c
+             JOIN repos r ON c.repo_id = r.repo_id
+             WHERE c.source_agent = ?1 AND c.source_conversation_id = ?2",
+        )?;
+        let mut rows = stmt.query_map([source_agent, source_conversation_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        let (repo_root, summary, started_at, updated_at, conversation_id) =
+            match rows.next() {
+                Some(row) => row?,
+                None => return Ok(None),
+            };
+        // Read messages
+        let mut msg_stmt = conn.prepare(
+            "SELECT role, content, timestamp FROM messages WHERE conversation_id = ?1 ORDER BY timestamp",
+        )?;
+        let messages: Vec<(String, String, String)> = msg_stmt
+            .query_map([&conversation_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(Some((repo_root, summary, started_at, updated_at, messages)))
+    }
+
+    /// Delete a conversation from the memory store by source_conversation_id.
+    pub fn delete_store_conversation(
+        &self,
+        source_agent: &str,
+        source_conversation_id: &str,
+    ) -> Result<bool> {
+        let conn = self.conn()?;
+        // Find conversation_id
+        let conv_id: Option<String> = conn
+            .query_row(
+                "SELECT conversation_id FROM conversations WHERE source_agent = ?1 AND source_conversation_id = ?2",
+                [source_agent, source_conversation_id],
+                |row| row.get(0),
+            )
+            .ok();
+        let conv_id = match conv_id {
+            Some(id) => id,
+            None => return Ok(false),
+        };
+        // Delete tool_calls first
+        conn.execute(
+            "DELETE FROM tool_calls WHERE message_id IN (SELECT message_id FROM messages WHERE conversation_id = ?1)",
+            [&conv_id],
+        )?;
+        // Delete messages
+        conn.execute("DELETE FROM messages WHERE conversation_id = ?1", [&conv_id])?;
+        // Delete conversation
+        conn.execute("DELETE FROM conversations WHERE conversation_id = ?1", [&conv_id])?;
+        Ok(true)
+    }
+
     pub fn list_repo_memories(&self, repo_root: &str) -> Result<Vec<ApprovedMemoryResponse>> {
         let repo_id = self.ensure_repo(repo_root)?;
         let conn = self.conn()?;

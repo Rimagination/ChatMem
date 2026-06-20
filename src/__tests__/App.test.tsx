@@ -15,7 +15,7 @@ const mockStartDragging = vi.fn();
 const mockIsMaximized = vi.fn();
 const mockIsFullscreen = vi.fn();
 const mockOnResized = vi.fn();
-const appVersionPattern = /ChatMem v\d+\.\d+\.\d+/;
+const appTitlePattern = /^ChatMem$/;
 const longConversationTitle =
   "Review the latest changes in D:\\VSP\\agentswap-gui\\.worktrees\\chatmem-control-plane-v2 and focus on concrete risks instead of generic advice.";
 
@@ -285,7 +285,7 @@ describe("App", () => {
 
     renderApp();
 
-    expect(await screen.findByText(appVersionPattern)).toBeTruthy();
+    expect(await screen.findByText(appTitlePattern)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Continue Work" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Needs Review" })).toBeNull();
     expect(screen.queryByRole("button", { name: "History" })).toBeNull();
@@ -366,7 +366,7 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "Choose a conversation" })).toBeTruthy();
   });
 
-  it("renders the 1.1.3 version and updated About page structure", async () => {
+  it("renders the 1.2.1 version and updated About page structure", async () => {
     localStorage.setItem(
       "chatmem.settings",
       JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
@@ -374,14 +374,13 @@ describe("App", () => {
 
     renderApp();
 
-    expect(await screen.findByText("ChatMem v1.1.3")).toBeTruthy();
+    expect(await screen.findByText("v1.2.1")).toBeTruthy();
 
     fireEvent.click(await screen.findByRole("button", { name: "About us" }));
 
     expect(await screen.findByRole("heading", { name: "About ChatMem" })).toBeTruthy();
-    expect(screen.getByText("What changed in 1.1.3")).toBeTruthy();
-    expect(screen.getByText(/automatic recovery checkpoints opt-in/)).toBeTruthy();
-    expect(screen.getByText("Low-token continuation prompts")).toBeTruthy();
+    expect(screen.getByText("What changed in 1.2.1")).toBeTruthy();
+    expect(screen.getByText("Continuation briefs")).toBeTruthy();
     expect(screen.getByText("Trash actions stay visible")).toBeTruthy();
     expect(screen.getByText(/ZCode task history/)).toBeTruthy();
     expect(screen.getByText(/Markdown conversation reading/)).toBeTruthy();
@@ -419,9 +418,36 @@ describe("App", () => {
         remotePath: "chatmem",
         username: "",
         password: "",
+        deleteSyncBackup: false,
+        syncFolder: "",
       });
     });
     expect(window.confirm).not.toHaveBeenCalled();
+  });
+
+  it("lets users favorite a conversation and open the favorites list", async () => {
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
+    );
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Favorite Debug session" }));
+
+    const storedSettings = JSON.parse(localStorage.getItem("chatmem.settings") ?? "{}");
+    expect(storedSettings.favoriteConversations["claude:conv-001"]).toMatchObject({
+      id: "conv-001",
+      sourceAgent: "claude",
+      projectDir: "D:/VSP/demo",
+      summary: "Debug session",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Favorites" }));
+
+    expect(screen.getByText("Debug session")).toBeTruthy();
+    expect(screen.queryByText("Memory investigation")).toBeNull();
+    expect(document.querySelector(".utility-nav-count")?.textContent).toBe("1");
   });
 
   it("moves selected sidebar conversations to trash after one bulk confirmation card", async () => {
@@ -456,6 +482,8 @@ describe("App", () => {
         remotePath: "chatmem",
         username: "",
         password: "",
+        deleteSyncBackup: false,
+        syncFolder: "",
       });
       expect(mockInvoke).toHaveBeenCalledWith("trash_conversation", {
         agent: "claude",
@@ -468,6 +496,8 @@ describe("App", () => {
         remotePath: "chatmem",
         username: "",
         password: "",
+        deleteSyncBackup: false,
+        syncFolder: "",
       });
     });
     expect(window.confirm).not.toHaveBeenCalled();
@@ -826,7 +856,7 @@ describe("App", () => {
     expect(await screen.findByText("Current OPENCODE conversation")).toBeTruthy();
   });
 
-  it("uses one compact source selector with five top-level sources", async () => {
+  it("uses one compact source selector with six top-level sources", async () => {
     localStorage.setItem(
       "chatmem.settings",
       JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
@@ -873,6 +903,7 @@ describe("App", () => {
       "Gemini",
       "OpenCode",
       "ZCode",
+      "Hermes",
     ]);
     expect(screen.queryByRole("button", { name: "ZCode Claude" })).toBeNull();
 
@@ -1019,7 +1050,7 @@ describe("App", () => {
 
     renderApp();
 
-    const title = await screen.findByText(appVersionPattern);
+    const title = await screen.findByText(appTitlePattern);
     const topbar = title.closest(".app-topbar");
     expect(topbar).toBeTruthy();
 
@@ -1039,7 +1070,7 @@ describe("App", () => {
 
     const { container } = renderApp();
 
-    await screen.findByText(appVersionPattern);
+    await screen.findByText(appTitlePattern);
 
     await waitFor(() => {
       expect(container.querySelector(".app-shell")?.classList.contains("is-window-filled")).toBe(
@@ -1078,7 +1109,7 @@ describe("App", () => {
     expect(screen.getByText("Use ChatMem for cross-agent continuation")).toBeTruthy();
   });
 
-  it("copies a low-token continuation prompt without the raw transcript path", async () => {
+  it("copies the original low-token continuation prompt from the toolbar", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -1100,12 +1131,11 @@ describe("App", () => {
     });
 
     const prompt = writeText.mock.calls[0][0] as string;
+    expect(prompt).toContain("Use ChatMem to continue this project with low-token context.");
     expect(prompt).toContain("repo: D:/VSP/demo");
     expect(prompt).toContain("conversation: claude:conv-001");
     expect(prompt).toContain("get_project_context");
-    expect(prompt).toContain("read_history_conversation");
-    expect(prompt).toContain("Do not read the raw transcript");
-    expect(prompt).not.toContain("rollout-conv-001.jsonl");
+    expect(prompt).not.toContain("# Continuation Brief");
     expect(await screen.findByRole("button", { name: "Prompt copied" })).toBeTruthy();
   });
 
@@ -2318,6 +2348,49 @@ describe("App", () => {
       });
       expect(screen.getAllByText("Migrated session").length).toBeGreaterThan(0);
     });
+  });
+
+  it("offers summary-style migration as an additional Migrate modal option", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
+    );
+
+    renderApp();
+
+    fireEvent.click((await screen.findAllByText("Debug session"))[0]);
+    fireEvent.click(await screen.findByRole("button", { name: "Migrate" }));
+
+    expect(screen.getByText("完整对话迁移")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText(/总结式迁移/u));
+    fireEvent.click(await screen.findByRole("button", { name: "复制继续卡片" }));
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledTimes(1);
+    });
+
+    const prompt = writeText.mock.calls[0][0] as string;
+    expect(prompt).toContain("# Continuation Brief");
+    expect(prompt).toContain("repo: D:/VSP/demo");
+    expect(prompt).toContain("conversation: claude:conv-001");
+    expect(prompt).toContain("Evidence source: claude:conv-001");
+    expect(prompt).toContain("Token posture:");
+    expect(prompt).toContain("read_history_conversation");
+    expect(prompt).toContain("Do not replay the full transcript");
+    expect(prompt).not.toContain("rollout-conv-001.jsonl");
+    await waitFor(() => {
+      expect(screen.getByRole("status").textContent).toContain("Continuation card copied");
+      expect(screen.queryByText("迁移对话")).toBeNull();
+    });
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "migrate_conversation",
+      expect.anything(),
+    );
   });
 
   it("runs a manual update check from settings", async () => {

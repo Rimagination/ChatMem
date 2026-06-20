@@ -16,6 +16,7 @@ pub enum AgentKind {
     ZCodeCodex,
     ZCodeGemini,
     ZCodeOpenCode,
+    Hermes,
 }
 
 /// The role of a participant in a conversation turn.
@@ -96,6 +97,7 @@ impl Conversation {
             AgentKind::ZCodeCodex => "ZCode Codex",
             AgentKind::ZCodeGemini => "ZCode Gemini",
             AgentKind::ZCodeOpenCode => "ZCode OpenCode",
+            AgentKind::Hermes => "Hermes Agent",
         }
     }
 }

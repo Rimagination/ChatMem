@@ -527,6 +527,9 @@ impl AgentAdapter for ZCodeAdapter {
             AgentKind::OpenCode | AgentKind::ZCodeOpenCode => {
                 anyhow::bail!("ZCode OpenCode write is disabled until a native conversation store is detected")
             }
+            AgentKind::Hermes => {
+                anyhow::bail!("Hermes write is not supported (read-only adapter)")
+            }
             AgentKind::Claude | AgentKind::ZCode | AgentKind::ZCodeClaude => self
                 .claude_adapter()
                 .write_conversation(conv)

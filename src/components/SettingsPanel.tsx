@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import type { Locale } from "../i18n/types";
+import { open as openDialog } from "@tauri-apps/api/dialog";
 import {
   APP_FONT_OPTIONS,
   type AppFontFamily,
+  type SyncProvider,
   type SyncSettings,
 } from "../settings/storage";
 import type { UpdateState } from "../updater/updater";
@@ -41,6 +43,21 @@ export type WebDavVerificationInput = {
 export type WebDavSyncResult = {
   uploadedCount: number;
   remoteUrl: string;
+};
+
+export type LocalSyncStatusResult = {
+  available: boolean;
+  folder_path: string;
+  remote_conversation_count: number;
+  last_sync_info: string | null;
+};
+
+export type LocalSyncResult = {
+  uploaded: number;
+  downloaded: number;
+  skipped: number;
+  conflicts_resolved: number;
+  folder_path: string;
 };
 
 export type UpgradeReadinessCheck = {
@@ -115,6 +132,12 @@ type SettingsPanelProps = {
   onUninstallAgentIntegration: (agent: string) => Promise<AgentIntegrationOperationResult[]>;
   onLoadWebDavPassword: (username: string) => Promise<string | null>;
   onSaveWebDavPassword: (input: { username: string; password: string }) => Promise<void>;
+  onLocalSyncStatus: () => Promise<LocalSyncStatusResult>;
+  onSyncLocalNow: () => Promise<LocalSyncResult>;
+  autoBackupEnabled: boolean;
+  autoBackupIntervalMinutes: number;
+  onAutoBackupEnabledChange: (enabled: boolean) => void;
+  onAutoBackupIntervalChange: (minutes: number) => void;
   onCheckUpdates: () => void;
   onInstallUpdate: () => void;
 };
@@ -129,6 +152,13 @@ type WebDavSyncState =
   | { kind: "idle" }
   | { kind: "syncing" }
   | { kind: "success"; uploadedCount: number; remoteUrl: string }
+  | { kind: "error"; message: string };
+
+type LocalSyncState =
+  | { kind: "idle" }
+  | { kind: "loading" }
+  | { kind: "syncing" }
+  | { kind: "success"; uploaded: number; downloaded: number; folderPath: string }
   | { kind: "error"; message: string };
 
 type UpgradeCheckState =
@@ -195,6 +225,12 @@ export default function SettingsPanel({
   onUninstallAgentIntegration,
   onLoadWebDavPassword,
   onSaveWebDavPassword,
+  onLocalSyncStatus,
+  onSyncLocalNow,
+  autoBackupEnabled,
+  autoBackupIntervalMinutes,
+  onAutoBackupEnabledChange,
+  onAutoBackupIntervalChange,
   onCheckUpdates,
   onInstallUpdate,
 }: SettingsPanelProps) {
@@ -213,10 +249,15 @@ export default function SettingsPanel({
   const [integrationState, setIntegrationState] = useState<IntegrationState>({
     kind: "idle",
   });
+  const [localSyncStatus, setLocalSyncStatus] = useState<LocalSyncStatusResult | null>(null);
+  const [localSyncState, setLocalSyncState] = useState<LocalSyncState>({
+    kind: "idle",
+  });
   const isEnglish = locale === "en";
-  const fileSyncEnabled = syncSettings.provider === "webdav";
+  const isWebDav = syncSettings.provider === "webdav";
+  const isOneDrive = syncSettings.provider === "onedrive";
   const canVerifyWebDav =
-    fileSyncEnabled &&
+    isWebDav &&
     syncSettings.webdavHost.trim().length > 0 &&
     syncSettings.username.trim().length > 0 &&
     password.trim().length > 0;
@@ -279,6 +320,25 @@ export default function SettingsPanel({
         kind: "error",
         message: `${syncCopy.syncFailedPrefix}: ${message}`,
       });
+    }
+  };
+
+  const handleSyncLocalNow = async () => {
+    setLocalSyncState({ kind: "syncing" });
+    try {
+      const result = await onSyncLocalNow();
+      setLocalSyncState({
+        kind: "success",
+        uploaded: result.uploaded,
+        downloaded: result.downloaded,
+        folderPath: result.folder_path,
+      });
+      // Refresh status after sync
+      const status = await onLocalSyncStatus();
+      setLocalSyncStatus(status);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setLocalSyncState({ kind: "error", message });
     }
   };
 
@@ -421,7 +481,7 @@ export default function SettingsPanel({
   }, [open]);
 
   useEffect(() => {
-    if (!open || !fileSyncEnabled || !syncSettings.username.trim()) {
+    if (!open || !isWebDav || !syncSettings.username.trim()) {
       return;
     }
 
@@ -436,7 +496,32 @@ export default function SettingsPanel({
     return () => {
       cancelled = true;
     };
-  }, [fileSyncEnabled, onLoadWebDavPassword, open, syncSettings.username]);
+  }, [isWebDav, onLoadWebDavPassword, open, syncSettings.username]);
+
+  useEffect(() => {
+    if (!open || !isOneDrive) {
+      return;
+    }
+
+    let cancelled = false;
+    setLocalSyncState({ kind: "loading" });
+    void onLocalSyncStatus().then((status) => {
+      if (cancelled) {
+        return;
+      }
+      setLocalSyncStatus(status);
+      setLocalSyncState({ kind: "idle" });
+    }).catch(() => {
+      if (cancelled) {
+        return;
+      }
+      setLocalSyncState({ kind: "idle" });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOneDrive, onLocalSyncStatus, open]);
 
   if (!open) {
     return null;
@@ -647,23 +732,26 @@ export default function SettingsPanel({
           </div>
 
           <div className="sync-method-row">
-            <label className="sync-method-label">
-              <input
-                type="checkbox"
-                checked={fileSyncEnabled}
-                aria-label={syncCopy.methodLabel}
-                onChange={(event) =>
-                  handleSyncSettingsChange({
-                    provider: event.target.checked ? "webdav" : "off",
-                  })
-                }
-              />
+            <label className="sync-method-label" htmlFor="conversation-data-sync-method">
               <span>{syncCopy.methodLabel}</span>
             </label>
-            <span className="sync-method-value">{syncCopy.webdavLabel}</span>
+            <select
+              id="conversation-data-sync-method"
+              className="settings-select"
+              value={syncSettings.provider}
+              onChange={(event) =>
+                handleSyncSettingsChange({
+                  provider: event.target.value as SyncProvider,
+                })
+              }
+            >
+              <option value="off">{isEnglish ? "Off" : "关闭"}</option>
+              <option value="webdav">WebDAV</option>
+              <option value="onedrive">OneDrive</option>
+            </select>
           </div>
 
-          {fileSyncEnabled ? (
+          {isWebDav ? (
             <div className="webdav-settings-box">
               <div className="webdav-row webdav-url-row">
                 <span className="webdav-field-label">{syncCopy.serverPathLabel}</span>
@@ -766,6 +854,134 @@ export default function SettingsPanel({
 
               {webDavSync.kind === "error" ? (
                 <p className="settings-notice is-danger">{webDavSync.message}</p>
+              ) : null}
+            </div>
+          ) : null}
+
+          {isOneDrive ? (
+            <div className="local-sync-settings-box">
+              <div className="local-sync-info-row">
+                <span className="local-sync-label">
+                  {isEnglish ? "Sync folder" : "同步文件夹"}
+                </span>
+                <code className="local-sync-path">
+                  {syncSettings.syncFolder || localSyncStatus?.folder_path || (isEnglish ? "Not selected" : "未选择")}
+                </code>
+              </div>
+
+              <div className="webdav-verify-row" style={{ marginBottom: 8 }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={async () => {
+                    const selected = await openDialog({ directory: true, title: isEnglish ? "Select sync folder" : "选择同步文件夹" });
+                    if (selected && typeof selected === "string") {
+                      handleSyncSettingsChange({ syncFolder: selected });
+                    }
+                  }}
+                >
+                  {isEnglish ? "Select Folder" : "选择文件夹"}
+                </button>
+                {syncSettings.syncFolder ? (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ marginLeft: 8 }}
+                    onClick={() => handleSyncSettingsChange({ syncFolder: "" })}
+                  >
+                    {isEnglish ? "Clear" : "清除"}
+                  </button>
+                ) : null}
+              </div>
+
+              <div className="local-sync-info-row">
+                <span className="local-sync-label">
+                  {isEnglish ? "Conversations synced" : "已同步对话数"}
+                </span>
+                <span className="local-sync-count">
+                  {localSyncStatus?.remote_conversation_count ?? 0}
+                </span>
+              </div>
+
+              {!syncSettings.syncFolder ? (
+                <p className="settings-notice is-danger">
+                  {isEnglish
+                    ? "Please select a sync folder first."
+                    : "请先选择同步文件夹。"}
+                </p>
+              ) : !localSyncStatus?.available ? (
+                <p className="settings-notice is-danger">
+                  {isEnglish
+                    ? "Sync folder not accessible. Please check the path."
+                    : "同步文件夹不可访问，请检查路径。"}
+                </p>
+              ) : null}
+
+              <div className="webdav-verify-row">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => void handleSyncLocalNow()}
+                  disabled={localSyncState.kind === "syncing" || localSyncState.kind === "loading" || !syncSettings.syncFolder}
+                >
+                  {localSyncState.kind === "syncing"
+                    ? (isEnglish ? "Syncing..." : "正在同步...")
+                    : syncCopy.syncNowLabel}
+                </button>
+              </div>
+
+              {localSyncState.kind === "success" ? (
+                <div className="settings-notice is-success">
+                  <p>
+                    {isEnglish ? "Sync complete" : "同步完成"}: ↑{localSyncState.uploaded} ↓{localSyncState.downloaded}
+                  </p>
+                  <p className="settings-notice-detail">
+                    {syncCopy.syncTargetLabel}: {localSyncState.folderPath}
+                  </p>
+                </div>
+              ) : null}
+
+              {localSyncState.kind === "error" ? (
+                <p className="settings-notice is-danger">{localSyncState.message}</p>
+              ) : null}
+
+              <hr className="settings-divider" style={{ margin: "12px 0" }} />
+
+              <label className="settings-toggle-row">
+                <div className="settings-toggle-copy">
+                  <span className="settings-label">
+                    {isEnglish ? "Auto Backup" : "定时自动备份"}
+                  </span>
+                  <span className="settings-helper">
+                    {isEnglish
+                      ? "Periodically sync when cloud folder is idle"
+                      : "定期检测云盘空闲时自动同步"}
+                  </span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={autoBackupEnabled}
+                  onChange={(e) => onAutoBackupEnabledChange(e.target.checked)}
+                />
+              </label>
+
+              {autoBackupEnabled ? (
+                <div className="settings-field-row" style={{ marginTop: 8 }}>
+                  <span className="settings-label">
+                    {isEnglish ? "Interval (minutes)" : "同步间隔（分钟）"}
+                  </span>
+                  <select
+                    className="settings-select"
+                    value={autoBackupIntervalMinutes}
+                    onChange={(e) => onAutoBackupIntervalChange(Number(e.target.value))}
+                  >
+                    <option value={5}>5</option>
+                    <option value={15}>15</option>
+                    <option value={30}>30</option>
+                    <option value={60}>60</option>
+                    <option value={120}>120</option>
+                  </select>
+                </div>
               ) : null}
             </div>
           ) : null}

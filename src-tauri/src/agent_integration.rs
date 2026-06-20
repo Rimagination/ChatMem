@@ -25,6 +25,8 @@ enum IntegrationAgent {
     Codex,
     Gemini,
     OpenCode,
+    Hermes,
+    ZCode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,8 +57,8 @@ pub struct AgentIntegrationOperationResult {
 }
 
 impl IntegrationAgent {
-    fn all() -> [Self; 4] {
-        [Self::Claude, Self::Codex, Self::Gemini, Self::OpenCode]
+    fn all() -> [Self; 6] {
+        [Self::Claude, Self::Codex, Self::Gemini, Self::OpenCode, Self::Hermes, Self::ZCode]
     }
 
     fn from_key(key: &str) -> Option<Self> {
@@ -65,6 +67,8 @@ impl IntegrationAgent {
             "codex" => Some(Self::Codex),
             "gemini" => Some(Self::Gemini),
             "opencode" => Some(Self::OpenCode),
+            "hermes" => Some(Self::Hermes),
+            "zcode" => Some(Self::ZCode),
             _ => None,
         }
     }
@@ -75,6 +79,8 @@ impl IntegrationAgent {
             Self::Codex => "codex",
             Self::Gemini => "gemini",
             Self::OpenCode => "opencode",
+            Self::Hermes => "hermes",
+            Self::ZCode => "zcode",
         }
     }
 
@@ -84,6 +90,8 @@ impl IntegrationAgent {
             Self::Codex => "Codex",
             Self::Gemini => "Gemini",
             Self::OpenCode => "OpenCode",
+            Self::Hermes => "Hermes",
+            Self::ZCode => "ZCode",
         }
     }
 
@@ -97,6 +105,17 @@ impl IntegrationAgent {
                 .join(".config")
                 .join("opencode")
                 .join("opencode.json"),
+            Self::Hermes => {
+                let base = dirs::data_local_dir().unwrap_or_else(|| paths.home_dir.clone());
+                let appdata = base.join("hermes").join("config.yaml");
+                let home = paths.home_dir.join(".hermes").join("config.yaml");
+                if appdata.exists() || !home.exists() {
+                    appdata
+                } else {
+                    home
+                }
+            }
+            Self::ZCode => paths.home_dir.join(".zcode").join("v2").join("config.json"),
         }
     }
 
@@ -119,6 +138,22 @@ impl IntegrationAgent {
                 .home_dir
                 .join(".config")
                 .join("opencode")
+                .join("skills")
+                .join("chatmem")
+                .join("SKILL.md"),
+            Self::Hermes => {
+                let base = dirs::data_local_dir().unwrap_or_else(|| paths.home_dir.clone());
+                let appdata = base.join("hermes").join("skills").join("chatmem").join("SKILL.md");
+                let home = paths.home_dir.join(".hermes").join("skills").join("chatmem").join("SKILL.md");
+                if appdata.exists() || !home.exists() {
+                    appdata
+                } else {
+                    home
+                }
+            }
+            Self::ZCode => paths
+                .home_dir
+                .join(".zcode")
                 .join("skills")
                 .join("chatmem")
                 .join("SKILL.md"),
@@ -449,6 +484,82 @@ fn uninstall_opencode_config(path: &Path) -> Result<Option<PathBuf>, String> {
     write_json_value(path, &value)
 }
 
+fn chatmem_hermes_yaml(paths: &IntegrationPaths) -> String {
+    format!(
+        "  chatmem:\n    args:\n    - --mcp\n    command: {}\n    connect_timeout: 30\n",
+        path_to_string(&paths.executable_path)
+    )
+}
+
+fn hermes_config_has_chatmem(path: &Path) -> bool {
+    fs::read_to_string(path)
+        .map(|content| content.contains("chatmem:"))
+        .unwrap_or(false)
+}
+
+fn install_hermes_config(
+    path: &Path,
+    paths: &IntegrationPaths,
+) -> Result<Option<PathBuf>, String> {
+    if !path.exists() {
+        return Err(format!(
+            "Hermes config not found at {}. Please install Hermes Agent first.",
+            path.display()
+        ));
+    }
+
+    if hermes_config_has_chatmem(path) {
+        return Ok(None);
+    }
+
+    let existing = fs::read_to_string(path)
+        .map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
+
+    let chatmem_block = chatmem_hermes_yaml(paths);
+    let updated = if let Some(pos) = existing.find("plugins:") {
+        format!("{}{}{}\n", &existing[..pos], chatmem_block, &existing[pos..])
+    } else {
+        format!("{}{}", existing, chatmem_block)
+    };
+
+    write_text_if_changed(path, &updated)
+}
+
+fn uninstall_hermes_config(path: &Path) -> Result<Option<PathBuf>, String> {
+    if !path.exists() || !hermes_config_has_chatmem(path) {
+        return Ok(None);
+    }
+
+    let existing = fs::read_to_string(path)
+        .map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
+
+    let lines: Vec<&str> = existing.lines().collect();
+    let mut result = Vec::new();
+    let mut skip = false;
+
+    for line in &lines {
+        if line.trim() == "chatmem:" && line.starts_with("  ") {
+            skip = true;
+            continue;
+        }
+        if skip {
+            if !line.starts_with("    ") && !line.is_empty() {
+                skip = false;
+            } else {
+                continue;
+            }
+        }
+        result.push(*line);
+    }
+
+    let updated = result.join("\n");
+    if updated == existing {
+        return Ok(None);
+    }
+
+    write_text_if_changed(path, &updated)
+}
+
 fn read_codex_config(path: &Path) -> Result<DocumentMut, String> {
     if !path.exists() {
         return Ok(DocumentMut::new());
@@ -701,6 +812,12 @@ fn instructions_installed(agent: IntegrationAgent, paths: &IntegrationPaths) -> 
                     .map(|content| content.contains(MANAGED_BLOCK_START))
                     .unwrap_or(false)
         }
+        IntegrationAgent::Hermes => {
+            path.exists()
+        }
+        IntegrationAgent::ZCode => {
+            path.exists()
+        }
     }
 }
 
@@ -712,6 +829,12 @@ fn mcp_installed(agent: IntegrationAgent, paths: &IntegrationPaths) -> bool {
             .map(|value| json_has_server(&value, "mcpServers"))
             .unwrap_or(false),
         IntegrationAgent::OpenCode => read_json_object(&path)
+            .map(|value| json_has_server(&value, "mcp"))
+            .unwrap_or(false),
+        IntegrationAgent::Hermes => fs::read_to_string(&path)
+            .map(|content| content.contains("chatmem"))
+            .unwrap_or(false),
+        IntegrationAgent::ZCode => read_json_object(&path)
             .map(|value| json_has_server(&value, "mcp"))
             .unwrap_or(false),
     }
@@ -756,6 +879,12 @@ fn status_for_agent(agent: IntegrationAgent, paths: &IntegrationPaths) -> AgentI
             IntegrationAgent::OpenCode => {
                 details.push("ChatMem skill 和 OpenCode 全局 AGENTS.md 规则已安装。".to_string());
             }
+            IntegrationAgent::Hermes => {
+                details.push("Hermes config.yaml 中已配置 chatmem MCP 服务器。".to_string());
+            }
+            IntegrationAgent::ZCode => {
+                details.push("ZCode config.json 中已配置 chatmem MCP 服务器。".to_string());
+            }
         }
     } else {
         match agent {
@@ -772,6 +901,14 @@ fn status_for_agent(agent: IntegrationAgent, paths: &IntegrationPaths) -> AgentI
             ),
             IntegrationAgent::OpenCode => details.push(
                 "OpenCode 需要同时安装 ChatMem skill 和全局 AGENTS.md 规则；缺任一项都可能不会自动触发。"
+                    .to_string(),
+            ),
+            IntegrationAgent::Hermes => details.push(
+                "Hermes 需要在 config.yaml 中配置 chatmem MCP 服务器和 skill。"
+                    .to_string(),
+            ),
+            IntegrationAgent::ZCode => details.push(
+                "ZCode 需要在 config.json 中配置 chatmem MCP 服务器和 skill。"
                     .to_string(),
             ),
         }
@@ -811,6 +948,8 @@ fn install_one(
             install_json_server(&config_path, "mcpServers", chatmem_gemini_json(paths))?
         }
         IntegrationAgent::OpenCode => install_opencode_config(&config_path, paths)?,
+        IntegrationAgent::Hermes => install_hermes_config(&config_path, paths)?,
+        IntegrationAgent::ZCode => install_opencode_config(&config_path, paths)?,
     };
     backups.extend(config_backup);
 
@@ -830,6 +969,12 @@ fn install_one(
             let mut backups = install_skill_tree(agent, paths)?;
             backups.extend(install_managed_instructions(&opencode_rules_path(paths))?);
             backups
+        }
+        IntegrationAgent::Hermes => {
+            install_skill_tree(agent, paths)?
+        }
+        IntegrationAgent::ZCode => {
+            install_skill_tree(agent, paths)?
         }
     };
     backups.extend(instruction_backups);
@@ -858,6 +1003,8 @@ fn uninstall_one(
         }
         IntegrationAgent::Codex => uninstall_codex_config(&config_path)?,
         IntegrationAgent::OpenCode => uninstall_opencode_config(&config_path)?,
+        IntegrationAgent::Hermes => uninstall_hermes_config(&config_path)?,
+        IntegrationAgent::ZCode => uninstall_opencode_config(&config_path)?,
     };
     backups.extend(config_backup);
 
@@ -890,6 +1037,12 @@ fn uninstall_one(
                 removed = true;
             }
             removed
+        }
+        IntegrationAgent::Hermes => {
+            uninstall_skill_tree(agent, paths)?
+        }
+        IntegrationAgent::ZCode => {
+            uninstall_skill_tree(agent, paths)?
         }
     };
 

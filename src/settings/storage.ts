@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/tauri";
 import type { Locale } from "../i18n/types";
 
-export type SyncProvider = "off" | "webdav";
+export type SyncProvider = "off" | "webdav" | "onedrive";
 export type WebDavScheme = "https" | "http";
 export type DownloadMode = "on-sync" | "as-needed";
 export type AppFontFamily = "system" | "source-sans" | "source-serif" | "wenkai";
@@ -56,6 +56,16 @@ export type SyncSettings = {
   username: string;
   remotePath: string;
   downloadMode: DownloadMode;
+  syncFolder: string;
+};
+
+export type FavoriteConversationSnapshot = {
+  id: string;
+  sourceAgent: string;
+  projectDir: string;
+  createdAt: string;
+  updatedAt: string;
+  summary: string | null;
 };
 
 export type AppSettings = {
@@ -65,6 +75,11 @@ export type AppSettings = {
   autoCaptureMemory: boolean;
   trashRetentionDays: number;
   sync: SyncSettings;
+  autoBackupEnabled: boolean;
+  autoBackupIntervalMinutes: number;
+  machineGroupNames: Record<string, string>;
+  machineGroupOverrides: Record<string, string>;
+  favoriteConversations: Record<string, FavoriteConversationSnapshot>;
 };
 
 export const SETTINGS_STORAGE_KEY = "chatmem.settings";
@@ -77,6 +92,7 @@ export const DEFAULT_SYNC_SETTINGS: SyncSettings = {
   username: "",
   remotePath: "chatmem",
   downloadMode: "on-sync",
+  syncFolder: "",
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -86,6 +102,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoCaptureMemory: false,
   trashRetentionDays: 14,
   sync: DEFAULT_SYNC_SETTINGS,
+  autoBackupEnabled: false,
+  autoBackupIntervalMinutes: 30,
+  machineGroupNames: {},
+  machineGroupOverrides: {},
+  favoriteConversations: {},
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -105,7 +126,7 @@ export function normalizeSyncSettings(value: unknown): SyncSettings {
   const parsedUrl = splitWebDavUrl(parsed.webdavUrl);
 
   return {
-    provider: parsed.provider === "webdav" ? "webdav" : "off",
+    provider: parsed.provider === "webdav" || parsed.provider === "onedrive" ? parsed.provider : "off",
     webdavScheme:
       parsed.webdavScheme === "http" || parsed.webdavScheme === "https"
         ? parsed.webdavScheme
@@ -117,6 +138,7 @@ export function normalizeSyncSettings(value: unknown): SyncSettings {
     username: typeof parsed.username === "string" ? parsed.username : "",
     remotePath: typeof parsed.remotePath === "string" && parsed.remotePath.trim() ? parsed.remotePath : "chatmem",
     downloadMode: parsed.downloadMode === "as-needed" ? "as-needed" : "on-sync",
+    syncFolder: typeof parsed.syncFolder === "string" ? parsed.syncFolder : "",
   };
 }
 
@@ -145,6 +167,43 @@ function splitWebDavUrl(value: unknown): Pick<SyncSettings, "webdavScheme" | "we
   }
 }
 
+function normalizeFavoriteConversations(value: unknown): Record<string, FavoriteConversationSnapshot> {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([key, rawSnapshot]) => {
+      if (!isRecord(rawSnapshot)) {
+        return [];
+      }
+
+      const snapshot = rawSnapshot as Partial<FavoriteConversationSnapshot>;
+      if (
+        typeof key !== "string" ||
+        typeof snapshot.id !== "string" ||
+        typeof snapshot.sourceAgent !== "string"
+      ) {
+        return [];
+      }
+
+      return [
+        [
+          key,
+          {
+            id: snapshot.id,
+            sourceAgent: snapshot.sourceAgent,
+            projectDir: typeof snapshot.projectDir === "string" ? snapshot.projectDir : "",
+            createdAt: typeof snapshot.createdAt === "string" ? snapshot.createdAt : "",
+            updatedAt: typeof snapshot.updatedAt === "string" ? snapshot.updatedAt : "",
+            summary: typeof snapshot.summary === "string" ? snapshot.summary : null,
+          },
+        ],
+      ];
+    }),
+  );
+}
+
 export function normalizeAppSettings(value: unknown): AppSettings {
   if (!isRecord(value)) {
     return DEFAULT_SETTINGS;
@@ -166,6 +225,26 @@ export function normalizeAppSettings(value: unknown): AppSettings {
     autoCaptureMemory: parsed.autoCaptureMemory === true,
     trashRetentionDays: Math.min(365, Math.max(1, parsedRetention)),
     sync: normalizeSyncSettings(parsed.sync),
+    autoBackupEnabled: parsed.autoBackupEnabled === true,
+    autoBackupIntervalMinutes:
+      typeof parsed.autoBackupIntervalMinutes === "number" && parsed.autoBackupIntervalMinutes >= 5
+        ? parsed.autoBackupIntervalMinutes
+        : 30,
+    machineGroupNames: isRecord(parsed.machineGroupNames)
+      ? Object.fromEntries(
+          Object.entries(parsed.machineGroupNames).filter(
+            ([key, value]) => typeof key === "string" && typeof value === "string",
+          ),
+        )
+      : {},
+    machineGroupOverrides: isRecord(parsed.machineGroupOverrides)
+      ? Object.fromEntries(
+          Object.entries(parsed.machineGroupOverrides).filter(
+            ([key, value]) => typeof key === "string" && typeof value === "string",
+          ),
+        )
+      : {},
+    favoriteConversations: normalizeFavoriteConversations(parsed.favoriteConversations),
   };
 }
 

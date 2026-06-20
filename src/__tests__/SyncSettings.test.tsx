@@ -53,8 +53,8 @@ describe("Sync settings", () => {
     fireEvent.click(await screen.findByRole("button", { name: "About us" }));
     expect(await screen.findByRole("heading", { name: "About ChatMem" })).toBeTruthy();
     expect(screen.getByText(/local-first memory and migration layer/i)).toBeTruthy();
-    expect(screen.getByText("What changed in 1.1.3")).toBeTruthy();
-    expect(screen.getByText("Low-token continuation prompts")).toBeTruthy();
+    expect(screen.getByText("What changed in 1.2.1")).toBeTruthy();
+    expect(screen.getByText("Continuation briefs")).toBeTruthy();
     expect(screen.getByText("Trash actions stay visible")).toBeTruthy();
     expect(screen.getByText("ZCode task history")).toBeTruthy();
     expect(screen.getByText("Markdown conversation reading")).toBeTruthy();
@@ -73,9 +73,12 @@ describe("Sync settings", () => {
     expect(screen.queryByText(/Use a generic WebDAV server/)).toBeNull();
     expect(screen.queryByText(/Account details/)).toBeNull();
 
-    fireEvent.click(screen.getByLabelText("Conversation data sync method:"));
-    const webdavLabel = screen.getByText("WebDAV");
-    expect(webdavLabel.closest("select")).toBeNull();
+    const methodSelect = screen.getByLabelText(
+      "Conversation data sync method:",
+    ) as HTMLSelectElement;
+    fireEvent.change(methodSelect, { target: { value: "webdav" } });
+    expect(methodSelect.value).toBe("webdav");
+    expect(screen.getByRole("option", { name: "WebDAV" }).closest("select")).toBe(methodSelect);
     expect(screen.queryByText(/Passwords are kept/)).toBeNull();
     fireEvent.change(screen.getByLabelText("Protocol"), {
       target: { value: "https" },
@@ -102,6 +105,7 @@ describe("Sync settings", () => {
         webdavPath: "webdav",
         username: "liang@example.com",
         remotePath: "chatmem",
+        syncFolder: "",
         downloadMode: "as-needed",
       });
       expect(saved.sync.password).toBeUndefined();
@@ -139,8 +143,8 @@ describe("Sync settings", () => {
 
     await waitFor(() => {
       expect(
-        (screen.getByLabelText("Conversation data sync method:") as HTMLInputElement).checked,
-      ).toBe(true);
+        (screen.getByLabelText("Conversation data sync method:") as HTMLSelectElement).value,
+      ).toBe("webdav");
       expect((screen.getByLabelText("Server and path") as HTMLInputElement).value).toBe(
         "dav.example.com/remote.php/dav/files/liang",
       );
@@ -164,6 +168,7 @@ describe("Sync settings", () => {
       webdavPath: "remote.php/dav/files/liang",
       username: "liang@example.com",
       remotePath: "chatmem",
+      syncFolder: "",
       downloadMode: "as-needed",
     });
   });
@@ -172,7 +177,9 @@ describe("Sync settings", () => {
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
-    fireEvent.click(await screen.findByLabelText("Conversation data sync method:"));
+    fireEvent.change(await screen.findByLabelText("Conversation data sync method:"), {
+      target: { value: "webdav" },
+    });
     fireEvent.change(screen.getByLabelText("Protocol"), {
       target: { value: "https" },
     });
@@ -210,7 +217,9 @@ describe("Sync settings", () => {
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
-    fireEvent.click(await screen.findByLabelText("Conversation data sync method:"));
+    fireEvent.change(await screen.findByLabelText("Conversation data sync method:"), {
+      target: { value: "webdav" },
+    });
     fireEvent.change(screen.getByLabelText("Protocol"), {
       target: { value: "https" },
     });

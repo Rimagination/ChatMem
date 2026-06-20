@@ -72,16 +72,16 @@ describe("chatmem integration manifests", () => {
     expect(skillOpenAiYaml).toContain('value: "chatmem"');
   });
 
-  it("allows native window controls for the frameless ChatMem window", () => {
-    expect(tauriConfig.tauri.windows[0].decorations).toBe(false);
-    expect(tauriConfig.tauri.windows[0].transparent).toBe(true);
+  it("uses native window decorations for macOS 26 compatibility", () => {
+    expect(tauriConfig.tauri.windows[0].decorations).toBe(true);
+    expect(tauriConfig.tauri.windows[0].transparent).toBe(false);
     expect(tauriConfig.tauri.allowlist.window?.all).toBe(true);
   });
 
   it("keeps the desktop shell fixed while sidebar and workspace scroll independently", () => {
     expect(appStyles).toMatch(/html,\s*body,\s*#root\s*\{[\s\S]*height:\s*100%;[\s\S]*overflow:\s*hidden;/);
-    expect(appStyles).toMatch(/#root\s*\{[\s\S]*background:\s*transparent;/);
-    expect(appStyles).toMatch(/\.app-shell\s*\{[\s\S]*width:\s*calc\(100% - 16px\);[\s\S]*height:\s*calc\(100% - 16px\);[\s\S]*margin:\s*8px;[\s\S]*overflow:\s*hidden;[\s\S]*border-radius:\s*12px;/);
+    expect(appStyles).toMatch(/#root\s*\{[\s\S]*background:\s*var\(--bg-app\);/);
+    expect(appStyles).toMatch(/\.app-shell\s*\{[\s\S]*width:\s*100%;[\s\S]*height:\s*100%;[\s\S]*margin:\s*0;[\s\S]*overflow:\s*hidden;[\s\S]*border-radius:\s*0;/);
     expect(appStyles).toMatch(/\.app-shell\.is-window-filled\s*\{[\s\S]*width:\s*100%;[\s\S]*height:\s*100%;[\s\S]*margin:\s*0;[\s\S]*border-radius:\s*0;/);
     expect(appStyles).toMatch(/\.sidebar-scroll\s*\{[\s\S]*overflow-y:\s*auto;/);
     expect(appStyles).toMatch(/\.workspace-surface\s*\{[\s\S]*overflow-y:\s*auto;/);
