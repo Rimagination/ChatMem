@@ -346,6 +346,10 @@ type ShellCopy = {
   duplicateRecommended: string;
   duplicateMoveOthersToTrash: string;
   duplicateReviewEmpty: string;
+  duplicatePreview: string;
+  duplicatePreviewLoading: string;
+  duplicatePreviewEmpty: string;
+  duplicatePreviewFailed: string;
   trash: string;
   bulkSelect: string;
   cancelBulkSelect: string;
@@ -411,8 +415,17 @@ type DuplicateConversationGroup = {
   recommendedKeepKey: string;
 };
 
+type DuplicatePreviewState = {
+  status: "loading" | "ready" | "error";
+  conversation?: Conversation;
+  error?: string;
+};
+
 const COPY_RESET_DELAY_MS = 1800;
 const INITIAL_CONVERSATION_MESSAGE_LIMIT = 80;
+const DUPLICATE_PREVIEW_MESSAGE_LIMIT = 6;
+const DUPLICATE_PREVIEW_VISIBLE_MESSAGE_COUNT = 3;
+const DUPLICATE_PREVIEW_TEXT_LIMIT = 240;
 const DUPLICATE_BUCKET_SEPARATOR = "\u241f";
 const AGENT_OPTIONS: { value: AgentType; label: string }[] = [
   { value: "claude", label: "Claude" },
@@ -790,6 +803,29 @@ function getConversationKey(
   return `${conversation.source_agent}:${conversation.id}`;
 }
 
+function truncateDuplicatePreviewText(value: string) {
+  const normalized = value.split(/\s+/).join(" ").trim();
+  if (normalized.length <= DUPLICATE_PREVIEW_TEXT_LIMIT) {
+    return normalized;
+  }
+  return `${normalized.slice(0, DUPLICATE_PREVIEW_TEXT_LIMIT - 1).trimEnd()}...`;
+}
+
+function getMessageRoleLabel(role: string, locale: Locale) {
+  const normalized = role.toLowerCase();
+  if (locale === "en") {
+    if (normalized === "assistant") return "Assistant";
+    if (normalized === "system") return "System";
+    if (normalized === "tool") return "Tool";
+    return "User";
+  }
+
+  if (normalized === "assistant") return "助手";
+  if (normalized === "system") return "系统";
+  if (normalized === "tool") return "工具";
+  return "用户";
+}
+
 function normalizeDuplicateTitle(summary: string | null) {
   const title = normalizeConversationTitle(summary);
   const normalized = title.split(/\s+/).join(" ").trim().toLowerCase();
@@ -1070,6 +1106,10 @@ function getShellCopy(locale: Locale): ShellCopy {
       duplicateRecommended: "Suggested",
       duplicateMoveOthersToTrash: "Move unkept conversations to Trash",
       duplicateReviewEmpty: "No possible duplicates in the current source.",
+      duplicatePreview: "Preview",
+      duplicatePreviewLoading: "Loading preview...",
+      duplicatePreviewEmpty: "No previewable messages.",
+      duplicatePreviewFailed: "Could not load preview.",
       trash: "Trash",
       bulkSelect: "Select conversations",
       cancelBulkSelect: "Cancel selection",
@@ -1241,6 +1281,10 @@ function getShellCopy(locale: Locale): ShellCopy {
     duplicateRecommended: "建议保留",
     duplicateMoveOthersToTrash: "把未保留项移到垃圾箱",
     duplicateReviewEmpty: "当前来源没有发现疑似重复。",
+    duplicatePreview: "预览",
+    duplicatePreviewLoading: "正在加载预览...",
+    duplicatePreviewEmpty: "没有可预览的消息。",
+    duplicatePreviewFailed: "预览加载失败。",
     trash: "垃圾箱",
     collapseSidebar: "\u6536\u8d77\u5de6\u4fa7\u5217\u8868",
     showSidebar: "\u663e\u793a\u5de6\u4fa7\u5217\u8868",
@@ -1658,6 +1702,11 @@ function App() {
   const [restoringTrashId, setRestoringTrashId] = useState<string | null>(null);
   const [duplicateReviewOpen, setDuplicateReviewOpen] = useState(false);
   const [duplicateKeepSelections, setDuplicateKeepSelections] = useState<Record<string, string>>({});
+  const [duplicatePreviewSelections, setDuplicatePreviewSelections] = useState<Record<string, string>>({});
+  const [duplicatePreviewStateByKey, setDuplicatePreviewStateByKey] = useState<
+    Record<string, DuplicatePreviewState>
+  >({});
+  const [suppressedConversationKeys, setSuppressedConversationKeys] = useState<string[]>([]);
   const [appNotice, setAppNotice] = useState<AppNotice>(null);
   const [memoryLoading, setMemoryLoading] = useState(false);
   const [repoMemoryHealth, setRepoMemoryHealth] = useState<RepoMemoryHealth | null>(null);
@@ -1708,6 +1757,8 @@ function App() {
   const repoScanActiveCountRef = useRef(0);
   const conversationDetailCacheRef = useRef<Record<string, Conversation>>({});
   const conversationDetailRequestIdRef = useRef(0);
+  const duplicatePreviewLoadingKeysRef = useRef<Set<string>>(new Set());
+  const suppressedConversationKeysRef = useRef<Set<string>>(new Set());
   const autoCaptureInFlightRef = useRef<string | null>(null);
   const lastAutoCaptureKeyRef = useRef<string | null>(null);
   const autoBootstrapAttemptedReposRef = useRef<Record<string, true>>({});
@@ -1827,6 +1878,16 @@ function App() {
     const availableKeys = new Set(conversations.map(getConversationKey));
     setSelectedConversationKeys((current) => current.filter((key) => availableKeys.has(key)));
   }, [conversations]);
+
+  useEffect(() => {
+    if (suppressedConversationKeys.length === 0) {
+      return;
+    }
+    const suppressedKeys = new Set(suppressedConversationKeys);
+    setConversations((current) =>
+      current.filter((conversation) => !suppressedKeys.has(getConversationKey(conversation))),
+    );
+  }, [suppressedConversationKeys]);
 
   useEffect(() => {
     setCopyState({ target: null, status: "idle" });
@@ -2169,6 +2230,68 @@ function App() {
     [runRepoScan],
   );
 
+  const filterSuppressedConversationSummaries = (items: ConversationSummary[]) =>
+    items.filter((conversation) => !suppressedConversationKeysRef.current.has(getConversationKey(conversation)));
+
+  const suppressConversationKeys = (keys: Iterable<string>) => {
+    const next = new Set(suppressedConversationKeysRef.current);
+    let changed = false;
+    Array.from(keys).forEach((key) => {
+      if (!next.has(key)) {
+        next.add(key);
+        changed = true;
+      }
+    });
+    if (!changed) {
+      return;
+    }
+    suppressedConversationKeysRef.current = next;
+    setSuppressedConversationKeys(Array.from(next));
+  };
+
+  const unsuppressConversationKeys = (keys: Iterable<string>) => {
+    const next = new Set(suppressedConversationKeysRef.current);
+    let changed = false;
+    Array.from(keys).forEach((key) => {
+      if (next.delete(key)) {
+        changed = true;
+      }
+    });
+    if (!changed) {
+      return;
+    }
+    suppressedConversationKeysRef.current = next;
+    setSuppressedConversationKeys(Array.from(next));
+  };
+
+  const removeConversationsFromVisibleState = (
+    targets: Array<Pick<ConversationSummary, "id" | "source_agent"> | Pick<Conversation, "id" | "source_agent">>,
+  ) => {
+    const targetKeys = new Set(targets.map(getConversationKey));
+    if (targetKeys.size === 0) {
+      return;
+    }
+
+    suppressConversationKeys(targetKeys);
+    setConversations((current) => current.filter((conversation) => !targetKeys.has(getConversationKey(conversation))));
+    setSelectedConversationKeys((current) => current.filter((key) => !targetKeys.has(key)));
+    setDuplicateKeepSelections((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(([, key]) => !targetKeys.has(key)),
+      ),
+    );
+    setDuplicatePreviewSelections((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(([, key]) => !targetKeys.has(key)),
+      ),
+    );
+    setDuplicatePreviewStateByKey((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(([key]) => !targetKeys.has(key)),
+      ),
+    );
+  };
+
   const loadConversations = async (query = searchQuery, agent = selectedAgent) => {
     setListLoading(true);
     try {
@@ -2179,7 +2302,7 @@ function App() {
             query: trimmedQuery,
           })
         : await invoke<ConversationSummary[]>("list_conversations", { agent });
-      setConversations(result.map(normalizeConversationProject));
+      setConversations(filterSuppressedConversationSummaries(result.map(normalizeConversationProject)));
     } catch (error) {
       console.error("Failed to load conversations:", error);
     } finally {
@@ -2403,6 +2526,66 @@ function App() {
     return group.recommendedKeepKey;
   };
 
+  const loadDuplicateConversationPreview = async (conversation: ConversationSummary) => {
+    const key = getConversationKey(conversation);
+    const cached = duplicatePreviewStateByKey[key];
+    if (
+      cached?.status === "loading" ||
+      cached?.status === "ready" ||
+      duplicatePreviewLoadingKeysRef.current.has(key)
+    ) {
+      return;
+    }
+
+    duplicatePreviewLoadingKeysRef.current.add(key);
+    setDuplicatePreviewStateByKey((current) => ({
+      ...current,
+      [key]: { status: "loading" },
+    }));
+
+    try {
+      const result = await invoke<Conversation>("read_conversation", {
+        agent: getTopLevelAgent(conversation.source_agent || selectedAgent),
+        id: conversation.id,
+        messageLimit: DUPLICATE_PREVIEW_MESSAGE_LIMIT,
+      });
+      setDuplicatePreviewStateByKey((current) => ({
+        ...current,
+        [key]: {
+          status: "ready",
+          conversation: normalizeConversationProject(result),
+        },
+      }));
+    } catch (error) {
+      console.warn("Failed to load duplicate conversation preview:", error);
+      setDuplicatePreviewStateByKey((current) => ({
+        ...current,
+        [key]: {
+          status: "error",
+          error: String(error),
+        },
+      }));
+    } finally {
+      duplicatePreviewLoadingKeysRef.current.delete(key);
+    }
+  };
+
+  const handleDuplicateCandidateSelection = (
+    groupId: string,
+    conversation: ConversationSummary,
+  ) => {
+    const key = getConversationKey(conversation);
+    setDuplicateKeepSelections((current) => ({
+      ...current,
+      [groupId]: key,
+    }));
+    setDuplicatePreviewSelections((current) => ({
+      ...current,
+      [groupId]: key,
+    }));
+    void loadDuplicateConversationPreview(conversation);
+  };
+
   const handleMoveDuplicateSelectionsToTrash = () => {
     const targets: ConversationSummary[] = [];
     const seen = new Set<string>();
@@ -2499,6 +2682,7 @@ function App() {
         kind: "success",
         message: isBulk ? shell.trashSuccessBulk(targets.length) : shell.trashSuccessSingle,
       });
+      removeConversationsFromVisibleState(targets);
       if (deletingSelectedConversation) {
         setSelectedConversation(null);
       }
@@ -3679,9 +3863,18 @@ function App() {
     setEmptyTrashConfirm({ busy: true, error: null });
     try {
       const result = await invoke<EmptyTrashResponse>("empty_trash");
+      const removedTrashIds = new Set(result.removedTrashIds);
+      const removedOriginalTargets = trashedConversations
+        .filter((item) => removedTrashIds.size === 0 || removedTrashIds.has(item.trashId))
+        .map((item) => ({
+          id: item.originalId,
+          source_agent: item.sourceAgent,
+        }));
+      removeConversationsFromVisibleState(removedOriginalTargets);
       setTrashedConversations([]);
       setEmptyTrashConfirm(null);
       await loadTrashConversations();
+      await loadConversations();
       setAppNotice({
         kind: "success",
         message: shell.emptyTrashSuccess(result.removedCount),
@@ -3698,7 +3891,11 @@ function App() {
   const handleRestoreTrashConversation = async (trashId: string) => {
     setRestoringTrashId(trashId);
     try {
+      const record = trashedConversations.find((item) => item.trashId === trashId);
       await invoke("restore_trashed_conversation", { trashId });
+      if (record) {
+        unsuppressConversationKeys([`${record.sourceAgent}:${record.originalId}`]);
+      }
       setAppNotice({ kind: "success", message: shell.restoreSuccess });
       await loadTrashConversations();
       await loadConversations();
@@ -5331,17 +5528,22 @@ function App() {
                         const title = normalizeConversationTitle(conversation.summary) || conversation.id;
                         const isRecommended = key === group.recommendedKeepKey;
                         return (
-                          <label key={key} className="duplicate-review-option">
+                          <label
+                            key={key}
+                            className="duplicate-review-option"
+                            onClick={() => {
+                              setDuplicatePreviewSelections((current) => ({
+                                ...current,
+                                [group.id]: key,
+                              }));
+                              void loadDuplicateConversationPreview(conversation);
+                            }}
+                          >
                             <input
                               type="radio"
                               name={`duplicate-keep-${group.id}`}
                               checked={keepKey === key}
-                              onChange={() =>
-                                setDuplicateKeepSelections((current) => ({
-                                  ...current,
-                                  [group.id]: key,
-                                }))
-                              }
+                              onChange={() => handleDuplicateCandidateSelection(group.id, conversation)}
                             />
                             <span className="duplicate-review-option-main">
                               <span className="duplicate-review-option-title" title={title}>
@@ -5367,6 +5569,51 @@ function App() {
                         );
                       })}
                     </div>
+                    {(() => {
+                      const previewKey = duplicatePreviewSelections[group.id];
+                      const previewConversationSummary = previewKey
+                        ? group.conversations.find((conversation) => getConversationKey(conversation) === previewKey)
+                        : null;
+                      const previewState = previewKey ? duplicatePreviewStateByKey[previewKey] : null;
+                      const previewTitle = previewConversationSummary
+                        ? normalizeConversationTitle(previewConversationSummary.summary) || previewConversationSummary.id
+                        : "";
+                      const previewMessages = previewState?.conversation?.messages
+                        .filter((message) => message.content.trim().length > 0)
+                        .slice(0, DUPLICATE_PREVIEW_VISIBLE_MESSAGE_COUNT) ?? [];
+
+                      if (!previewKey || !previewState) {
+                        return null;
+                      }
+
+                      return (
+                        <div className="duplicate-preview-panel" aria-live="polite">
+                          <div className="duplicate-preview-heading">
+                            <strong>{shell.duplicatePreview}</strong>
+                            {previewTitle ? <span title={previewTitle}>{previewTitle}</span> : null}
+                          </div>
+                          {previewState.status === "loading" ? (
+                            <div className="duplicate-preview-status">{shell.duplicatePreviewLoading}</div>
+                          ) : previewState.status === "error" ? (
+                            <div className="duplicate-preview-status">
+                              {shell.duplicatePreviewFailed}
+                              {previewState.error ? ` ${previewState.error}` : ""}
+                            </div>
+                          ) : previewMessages.length === 0 ? (
+                            <div className="duplicate-preview-status">{shell.duplicatePreviewEmpty}</div>
+                          ) : (
+                            <div className="duplicate-preview-message-list">
+                              {previewMessages.map((message) => (
+                                <div key={message.id} className="duplicate-preview-message">
+                                  <span>{getMessageRoleLabel(message.role, locale)}</span>
+                                  <p>{truncateDuplicatePreviewText(message.content)}</p>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </section>
                 );
               })}

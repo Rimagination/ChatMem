@@ -946,6 +946,36 @@ fn remove_empty_trash_agent_dirs() -> Result<(), String> {
     Ok(())
 }
 
+fn read_trashed_conversation_keys() -> Result<std::collections::HashSet<(String, String)>, String> {
+    let mut keys = std::collections::HashSet::new();
+    for path in list_trash_record_paths()? {
+        if let Ok(record) = read_trash_record(&path) {
+            keys.insert((record.source_agent, record.original_id));
+        }
+    }
+    Ok(keys)
+}
+
+fn is_conversation_trashed(
+    trashed_keys: &std::collections::HashSet<(String, String)>,
+    agent: &str,
+    id: &str,
+) -> bool {
+    trashed_keys.contains(&(agent.to_string(), id.to_string()))
+}
+
+fn filter_trashed_conversation_responses(
+    conversations: Vec<ConversationSummaryResponse>,
+    trashed_keys: &std::collections::HashSet<(String, String)>,
+) -> Vec<ConversationSummaryResponse> {
+    conversations
+        .into_iter()
+        .filter(|conversation| {
+            !is_conversation_trashed(trashed_keys, &conversation.source_agent, &conversation.id)
+        })
+        .collect()
+}
+
 fn read_app_settings_from_disk() -> Result<Option<AppSettingsPayload>, String> {
     let path = app_settings_path()?;
     if !path.exists() {
@@ -1655,6 +1685,8 @@ async fn sync_webdav_now(
 #[command]
 async fn list_conversations(agent: String) -> Result<Vec<ConversationSummaryResponse>, String> {
     let adapter = get_adapter(&agent)?;
+    let _ = remove_expired_trash_records();
+    let trashed_keys = read_trashed_conversation_keys().unwrap_or_default();
 
     // Get adapter conversations (local native storage)
     let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1663,8 +1695,12 @@ async fn list_conversations(agent: String) -> Result<Vec<ConversationSummaryResp
     if adapter.is_available() {
         if let Ok(conversations) = adapter.list_conversations() {
             for summary in conversations {
-                seen_ids.insert(summary.id.clone());
-                results.push(convert_summary(summary));
+                let response = convert_summary(summary);
+                if is_conversation_trashed(&trashed_keys, &response.source_agent, &response.id) {
+                    continue;
+                }
+                seen_ids.insert(response.id.clone());
+                results.push(response);
             }
         }
     }
@@ -1676,8 +1712,7 @@ async fn list_conversations(agent: String) -> Result<Vec<ConversationSummaryResp
                 if seen_ids.contains(&source_id) {
                     continue;
                 }
-                seen_ids.insert(source_id.clone());
-                results.push(ConversationSummaryResponse {
+                let response = ConversationSummaryResponse {
                     id: source_id,
                     source_agent: agent.clone(),
                     project_dir: repo_root,
@@ -1686,29 +1721,52 @@ async fn list_conversations(agent: String) -> Result<Vec<ConversationSummaryResp
                     summary,
                     message_count: msg_count,
                     file_count: 0,
-                });
+                };
+                if is_conversation_trashed(&trashed_keys, &response.source_agent, &response.id) {
+                    continue;
+                }
+                seen_ids.insert(response.id.clone());
+                results.push(response);
             }
         }
     }
 
     // After memory store reading, read sync folder directly
     let settings = read_app_settings_from_disk().ok().flatten();
-    let sync_folder = settings.as_ref().map(|s| s.sync.sync_folder.clone()).unwrap_or_default();
+    let sync_folder = settings
+        .as_ref()
+        .map(|s| s.sync.sync_folder.clone())
+        .unwrap_or_default();
     if !sync_folder.is_empty() {
         let remote = local_sync::read_remote_conversations(std::path::Path::new(&sync_folder));
         for ((remote_agent, remote_id), (updated_at, body)) in &remote {
-            if remote_agent != &agent { continue; }
-            if seen_ids.contains(remote_id) { continue; }
-            let (project_dir, summary, msg_count) = if let Ok(val) = serde_json::from_slice::<serde_json::Value>(body) {
-                let pd = val.get("project_dir").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let sm = val.get("summary").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let mc = val.get("messages").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-                (pd, sm, mc)
-            } else {
-                (String::new(), None, 0)
-            };
-            seen_ids.insert(remote_id.clone());
-            results.push(ConversationSummaryResponse {
+            if remote_agent != &agent {
+                continue;
+            }
+            if seen_ids.contains(remote_id) {
+                continue;
+            }
+            let (project_dir, summary, msg_count) =
+                if let Ok(val) = serde_json::from_slice::<serde_json::Value>(body) {
+                    let pd = val
+                        .get("project_dir")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let sm = val
+                        .get("summary")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let mc = val
+                        .get("messages")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.len())
+                        .unwrap_or(0);
+                    (pd, sm, mc)
+                } else {
+                    (String::new(), None, 0)
+                };
+            let response = ConversationSummaryResponse {
                 id: remote_id.clone(),
                 source_agent: agent.clone(),
                 project_dir,
@@ -1717,11 +1775,19 @@ async fn list_conversations(agent: String) -> Result<Vec<ConversationSummaryResp
                 summary,
                 message_count: msg_count,
                 file_count: 0,
-            });
+            };
+            if is_conversation_trashed(&trashed_keys, &response.source_agent, &response.id) {
+                continue;
+            }
+            seen_ids.insert(response.id.clone());
+            results.push(response);
         }
     }
 
-    Ok(results)
+    Ok(filter_trashed_conversation_responses(
+        results,
+        &trashed_keys,
+    ))
 }
 
 #[command]
@@ -1735,6 +1801,8 @@ async fn search_conversations(
     }
 
     let adapter = get_adapter(&agent)?;
+    let _ = remove_expired_trash_records();
+    let trashed_keys = read_trashed_conversation_keys().unwrap_or_default();
 
     if !adapter.is_available() {
         return Ok(vec![]);
@@ -1746,8 +1814,15 @@ async fn search_conversations(
     let mut matches = Vec::new();
 
     for summary in summaries {
+        if is_conversation_trashed(&trashed_keys, &agent, &summary.id) {
+            continue;
+        }
+
         if summary_matches_query(&summary, &normalized_query) {
-            matches.push(convert_summary(summary));
+            let response = convert_summary(summary);
+            if !is_conversation_trashed(&trashed_keys, &response.source_agent, &response.id) {
+                matches.push(response);
+            }
             continue;
         }
 
@@ -1756,11 +1831,17 @@ async fn search_conversations(
             .map_err(|e| e.to_string())?;
 
         if conversation_matches_query(&conversation, &normalized_query) {
-            matches.push(convert_summary(summary));
+            let response = convert_summary(summary);
+            if !is_conversation_trashed(&trashed_keys, &response.source_agent, &response.id) {
+                matches.push(response);
+            }
         }
     }
 
-    Ok(matches)
+    Ok(filter_trashed_conversation_responses(
+        matches,
+        &trashed_keys,
+    ))
 }
 
 #[command]
@@ -3047,5 +3128,39 @@ mod tests {
             &conversation,
             "你还记得奥特曼打猪猪侠的项目吗？"
         ));
+    }
+
+    #[test]
+    fn conversation_list_filters_items_already_in_trash() {
+        let mut trashed = std::collections::HashSet::new();
+        trashed.insert(("zcode".to_string(), "claude:p1:old-task".to_string()));
+
+        let conversations = vec![
+            super::ConversationSummaryResponse {
+                id: "claude:p1:old-task".to_string(),
+                source_agent: "zcode".to_string(),
+                project_dir: "D:/VSP/chatmem".to_string(),
+                created_at: "2026-05-10T08:00:00Z".to_string(),
+                updated_at: "2026-05-10T09:00:00Z".to_string(),
+                summary: Some("Investigate duplicated ZCode task".to_string()),
+                message_count: 2,
+                file_count: 0,
+            },
+            super::ConversationSummaryResponse {
+                id: "claude:p1:new-task".to_string(),
+                source_agent: "zcode".to_string(),
+                project_dir: "D:/VSP/chatmem".to_string(),
+                created_at: "2026-05-10T08:00:00Z".to_string(),
+                updated_at: "2026-05-10T09:03:00Z".to_string(),
+                summary: Some("Investigate duplicated ZCode task".to_string()),
+                message_count: 4,
+                file_count: 0,
+            },
+        ];
+
+        let filtered = super::filter_trashed_conversation_responses(conversations, &trashed);
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "claude:p1:new-task");
     }
 }

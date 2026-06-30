@@ -38,11 +38,11 @@ jobs:
           releaseName: ChatMem ${{ github.ref_name }}
           releaseBody: |
             ChatMem ${{ github.ref_name }} release:
-            - Detects possible duplicate conversations in the sidebar and asks users which copy to keep.
-            - Moves unkept duplicate candidates through the existing Trash confirmation flow instead of deleting automatically.
-            - Stops local-history import from silently choosing between migrated ZCode duplicate snapshots.
-            - Keeps ZCode task-index, rollout history, and GLM/ZCode discovery improvements from v1.2.2.
-            - Keeps the spacious in-app update card with Install update and Not this time actions.
+            - Adds lightweight message previews inside duplicate review so users can inspect candidates before choosing which copy to keep.
+            - Keeps duplicate previews bounded to a small message window to avoid slowing down long conversations.
+            - Immediately removes moved or emptied Trash candidates from the sidebar and duplicate detector.
+            - Excludes conversations that are still in Trash from list/search merge results, including adapter, sync folder, and memory-store sources.
+            - Keeps the manual duplicate workflow from v1.2.3: ChatMem asks users to choose and does not auto-delete duplicates.
 
             推荐下载 / Recommended downloads:
             - Windows installer: download the `.exe` installer if you want the normal install flow.
@@ -121,11 +121,11 @@ jobs:
           releaseName: ChatMem ${{ github.ref_name }}
           releaseBody: |
             ChatMem ${{ github.ref_name }} release:
-            - Detects possible duplicate conversations in the sidebar and asks users which copy to keep.
-            - Moves unkept duplicate candidates through the existing Trash confirmation flow instead of deleting automatically.
-            - Stops local-history import from silently choosing between migrated ZCode duplicate snapshots.
-            - Keeps ZCode task-index, rollout history, and GLM/ZCode discovery improvements from v1.2.2.
-            - Keeps the spacious in-app update card with Install update and Not this time actions.
+            - Adds lightweight message previews inside duplicate review so users can inspect candidates before choosing which copy to keep.
+            - Keeps duplicate previews bounded to a small message window to avoid slowing down long conversations.
+            - Immediately removes moved or emptied Trash candidates from the sidebar and duplicate detector.
+            - Excludes conversations that are still in Trash from list/search merge results, including adapter, sync folder, and memory-store sources.
+            - Keeps the manual duplicate workflow from v1.2.3: ChatMem asks users to choose and does not auto-delete duplicates.
 
             推荐下载 / Recommended downloads:
             - Windows installer: download the `.exe` installer if you want the normal install flow.

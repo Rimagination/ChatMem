@@ -1,7 +1,7 @@
 {
   "name": "chatmem",
   "private": true,
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "Local-first memory for AI coding agents",
   "type": "module",
   "scripts": {

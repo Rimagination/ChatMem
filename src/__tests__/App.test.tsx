@@ -1104,6 +1104,185 @@ describe("App", () => {
     });
   });
 
+  it("loads a lightweight preview when a duplicate candidate is selected", async () => {
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
+    );
+    mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
+      if (command === "list_conversations") {
+        if (payload?.agent === "zcode") {
+          return [
+            {
+              id: "claude:p1:old-task",
+              source_agent: "zcode",
+              project_dir: "D:/VSP/chatmem",
+              created_at: "2026-05-10T08:00:00Z",
+              updated_at: "2026-05-10T09:00:00Z",
+              summary: "Investigate duplicated ZCode task",
+              message_count: 2,
+              file_count: 0,
+            },
+            {
+              id: "claude:p1:new-task",
+              source_agent: "zcode",
+              project_dir: "D:/VSP/chatmem",
+              created_at: "2026-05-10T08:00:00Z",
+              updated_at: "2026-05-10T09:03:00Z",
+              summary: "Investigate duplicated ZCode task",
+              message_count: 4,
+              file_count: 0,
+            },
+          ];
+        }
+
+        return [];
+      }
+
+      if (command === "read_conversation") {
+        expect(payload).toEqual(
+          expect.objectContaining({
+            agent: "zcode",
+            id: "claude:p1:old-task",
+            messageLimit: 6,
+          }),
+        );
+        return {
+          id: payload?.id,
+          source_agent: "zcode",
+          project_dir: "D:/VSP/chatmem",
+          created_at: "2026-05-10T08:00:00Z",
+          updated_at: "2026-05-10T09:00:00Z",
+          summary: "Investigate duplicated ZCode task",
+          total_message_count: 2,
+          messages: [
+            {
+              id: "preview-user",
+              timestamp: "2026-05-10T08:00:00Z",
+              role: "user",
+              content: "Can you investigate the duplicated ZCode task?",
+              tool_calls: [],
+              metadata: {},
+            },
+            {
+              id: "preview-assistant",
+              timestamp: "2026-05-10T08:01:00Z",
+              role: "assistant",
+              content: "I found the older migrated copy.",
+              tool_calls: [],
+              metadata: {},
+            },
+          ],
+          file_changes: [],
+        };
+      }
+
+      if (
+        command === "list_memory_candidates" ||
+        command === "list_handoffs" ||
+        command === "list_checkpoints" ||
+        command === "list_runs" ||
+        command === "list_artifacts" ||
+        command === "list_episodes" ||
+        command === "list_repo_memories" ||
+        command === "list_trashed_conversations"
+      ) {
+        return [];
+      }
+
+      return [];
+    });
+
+    renderApp();
+    await selectConversationSource("zcode");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review duplicates" }));
+    const dialog = await screen.findByRole("dialog", { name: "Review possible duplicates" });
+
+    fireEvent.click(within(dialog).getByLabelText(/old-task/));
+
+    expect(await within(dialog).findByText("Can you investigate the duplicated ZCode task?")).toBeTruthy();
+    expect(within(dialog).getByText("I found the older migrated copy.")).toBeTruthy();
+  });
+
+  it("removes duplicate candidates from the sidebar immediately after moving them to trash", async () => {
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
+    );
+    const duplicateConversations = [
+      {
+        id: "claude:p1:old-task",
+        source_agent: "zcode",
+        project_dir: "D:/VSP/chatmem",
+        created_at: "2026-05-10T08:00:00Z",
+        updated_at: "2026-05-10T09:00:00Z",
+        summary: "Investigate duplicated ZCode task",
+        message_count: 2,
+        file_count: 0,
+      },
+      {
+        id: "claude:p1:new-task",
+        source_agent: "zcode",
+        project_dir: "D:/VSP/chatmem",
+        created_at: "2026-05-10T08:00:00Z",
+        updated_at: "2026-05-10T09:03:00Z",
+        summary: "Investigate duplicated ZCode task",
+        message_count: 4,
+        file_count: 0,
+      },
+    ];
+    mockInvoke.mockImplementation(async (command: string, payload?: Record<string, unknown>) => {
+      if (command === "list_conversations") {
+        return payload?.agent === "zcode" ? duplicateConversations : [];
+      }
+
+      if (command === "trash_conversation") {
+        return {
+          trashId: "trash-duplicate-old",
+          originalId: payload?.id,
+          sourceAgent: payload?.agent,
+          projectDir: "D:/VSP/chatmem",
+          summary: "Investigate duplicated ZCode task",
+          trashedAt: "2026-05-10T10:00:00Z",
+          expiresAt: "2026-05-24T10:00:00Z",
+          remoteBackupDeleted: false,
+          warnings: [],
+        };
+      }
+
+      if (
+        command === "list_memory_candidates" ||
+        command === "list_handoffs" ||
+        command === "list_checkpoints" ||
+        command === "list_runs" ||
+        command === "list_artifacts" ||
+        command === "list_episodes" ||
+        command === "list_repo_memories" ||
+        command === "list_trashed_conversations"
+      ) {
+        return [];
+      }
+
+      return [];
+    });
+
+    renderApp();
+    await selectConversationSource("zcode");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review duplicates" }));
+    const dialog = await screen.findByRole("dialog", { name: "Review possible duplicates" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Move unkept conversations to Trash" }));
+
+    const trashDialog = await screen.findByRole("dialog", { name: "Move this conversation to Trash?" });
+    fireEvent.click(within(trashDialog).getByRole("button", { name: "Move to Trash" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Review duplicates" })).toBeNull();
+      expect(screen.queryByText(/possible duplicate group/i)).toBeNull();
+    });
+  });
+
   it("switches local history into an independent workspace view", async () => {
     localStorage.setItem(
       "chatmem.settings",

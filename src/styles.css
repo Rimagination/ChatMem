@@ -4972,6 +4972,70 @@ button {
   color: var(--accent-strong);
 }
 
+.duplicate-preview-panel {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(58, 143, 100, 0.14);
+  border-radius: 10px;
+  background: rgba(247, 252, 249, 0.86);
+}
+
+.duplicate-preview-heading {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.duplicate-preview-heading strong {
+  color: var(--accent-strong);
+}
+
+.duplicate-preview-heading span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.duplicate-preview-status {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.duplicate-preview-message-list {
+  display: grid;
+  gap: 6px;
+}
+
+.duplicate-preview-message {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.duplicate-preview-message span {
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.duplicate-preview-message p {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
 .trash-confirm-modal .modal-content > p:not(.page-eyebrow):not(.modal-helper-text):not(.settings-notice):not(.trash-remote-note) {
   margin: 0;
   color: var(--text-secondary);
