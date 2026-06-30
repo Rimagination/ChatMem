@@ -38,11 +38,11 @@ jobs:
           releaseName: ChatMem ${{ github.ref_name }}
           releaseBody: |
             ChatMem ${{ github.ref_name }} release:
-            - Finds current ZCode task-index and rollout history, including GLM/ZCode conversations older builds could miss.
-            - Deduplicates migrated ZCode conversations during import and keeps the newer or more complete copy.
-            - Adds a spacious in-app update card with Install update and Not this time actions.
-            - Keeps conversation loading ordered from the earliest message and improves large-conversation loading behavior.
-            - Preserves the sidebar/header layout fixes and Settings-hosted About page.
+            - Detects possible duplicate conversations in the sidebar and asks users which copy to keep.
+            - Moves unkept duplicate candidates through the existing Trash confirmation flow instead of deleting automatically.
+            - Stops local-history import from silently choosing between migrated ZCode duplicate snapshots.
+            - Keeps ZCode task-index, rollout history, and GLM/ZCode discovery improvements from v1.2.2.
+            - Keeps the spacious in-app update card with Install update and Not this time actions.
 
             推荐下载 / Recommended downloads:
             - Windows installer: download the `.exe` installer if you want the normal install flow.
@@ -121,11 +121,11 @@ jobs:
           releaseName: ChatMem ${{ github.ref_name }}
           releaseBody: |
             ChatMem ${{ github.ref_name }} release:
-            - Finds current ZCode task-index and rollout history, including GLM/ZCode conversations older builds could miss.
-            - Deduplicates migrated ZCode conversations during import and keeps the newer or more complete copy.
-            - Adds a spacious in-app update card with Install update and Not this time actions.
-            - Keeps conversation loading ordered from the earliest message and improves large-conversation loading behavior.
-            - Preserves the sidebar/header layout fixes and Settings-hosted About page.
+            - Detects possible duplicate conversations in the sidebar and asks users which copy to keep.
+            - Moves unkept duplicate candidates through the existing Trash confirmation flow instead of deleting automatically.
+            - Stops local-history import from silently choosing between migrated ZCode duplicate snapshots.
+            - Keeps ZCode task-index, rollout history, and GLM/ZCode discovery improvements from v1.2.2.
+            - Keeps the spacious in-app update card with Install update and Not this time actions.
 
             推荐下载 / Recommended downloads:
             - Windows installer: download the `.exe` installer if you want the normal install flow.

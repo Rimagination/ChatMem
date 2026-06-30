@@ -30,6 +30,7 @@ pub struct MemoryStore {
     db_path: PathBuf,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct ConversationSnapshotQuality {
     message_count: usize,
@@ -37,6 +38,7 @@ struct ConversationSnapshotQuality {
     updated_at: DateTime<Utc>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct ConversationContentSignature {
     summary: String,
@@ -44,6 +46,7 @@ struct ConversationContentSignature {
     updated_at: DateTime<Utc>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct ConversationDuplicateCandidate {
     conversation_id: String,
@@ -109,6 +112,7 @@ fn normalize_auto_checkpoint_metadata(metadata_json: Option<&str>) -> Result<Str
     Ok(serde_json::to_string(&value)?)
 }
 
+#[allow(dead_code)]
 fn incoming_conversation_quality(conversation: &Conversation) -> ConversationSnapshotQuality {
     ConversationSnapshotQuality {
         message_count: conversation.messages.len(),
@@ -117,12 +121,14 @@ fn incoming_conversation_quality(conversation: &Conversation) -> ConversationSna
     }
 }
 
+#[allow(dead_code)]
 fn parse_snapshot_updated_at(value: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(value)
         .map(|timestamp| timestamp.with_timezone(&Utc))
         .unwrap_or_else(|_| DateTime::<Utc>::from(std::time::UNIX_EPOCH))
 }
 
+#[allow(dead_code)]
 fn compare_snapshot_quality(
     left: &ConversationSnapshotQuality,
     right: &ConversationSnapshotQuality,
@@ -133,6 +139,7 @@ fn compare_snapshot_quality(
         .then_with(|| left.updated_at.cmp(&right.updated_at))
 }
 
+#[allow(dead_code)]
 fn normalize_duplicate_storage_path(path: Option<&str>) -> Option<String> {
     let trimmed = path?.trim().trim_matches('"').trim_matches('\'').trim();
     if trimmed.is_empty() {
@@ -147,12 +154,14 @@ fn normalize_duplicate_storage_path(path: Option<&str>) -> Option<String> {
     )
 }
 
+#[allow(dead_code)]
 fn is_shared_database_storage_path(normalized_path: &str) -> bool {
     normalized_path.ends_with(".db")
         || normalized_path.ends_with(".sqlite")
         || normalized_path.ends_with(".sqlite3")
 }
 
+#[allow(dead_code)]
 fn is_zcode_memory_agent(agent: &str) -> bool {
     matches!(
         agent,
@@ -160,6 +169,7 @@ fn is_zcode_memory_agent(agent: &str) -> bool {
     )
 }
 
+#[allow(dead_code)]
 fn zcode_duplicate_key(agent: &str, source_conversation_id: &str) -> Option<String> {
     match agent {
         "zcode" => {
@@ -185,6 +195,7 @@ fn zcode_duplicate_key(agent: &str, source_conversation_id: &str) -> Option<Stri
     }
 }
 
+#[allow(dead_code)]
 fn normalize_duplicate_text(value: &str) -> Option<String> {
     let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
     let normalized = normalized.trim().to_lowercase();
@@ -195,6 +206,7 @@ fn normalize_duplicate_text(value: &str) -> Option<String> {
     }
 }
 
+#[allow(dead_code)]
 fn normalize_duplicate_summary(summary: Option<&str>) -> Option<String> {
     let normalized = normalize_duplicate_text(summary?)?;
     let character_count = normalized.chars().count();
@@ -208,6 +220,7 @@ fn normalize_duplicate_summary(summary: Option<&str>) -> Option<String> {
     }
 }
 
+#[allow(dead_code)]
 fn normalize_duplicate_first_message(content: &str) -> Option<String> {
     let normalized = normalize_duplicate_text(content)?;
     if normalized.chars().count() < 16 {
@@ -216,6 +229,7 @@ fn normalize_duplicate_first_message(content: &str) -> Option<String> {
     Some(normalized.chars().take(512).collect())
 }
 
+#[allow(dead_code)]
 fn zcode_content_signature_from_parts(
     agent: &str,
     summary: Option<&str>,
@@ -233,6 +247,7 @@ fn zcode_content_signature_from_parts(
     })
 }
 
+#[allow(dead_code)]
 fn zcode_content_signature_for_conversation(
     agent: &str,
     conversation: &Conversation,
@@ -250,6 +265,7 @@ fn zcode_content_signature_for_conversation(
     )
 }
 
+#[allow(dead_code)]
 fn zcode_content_signature_for_candidate(
     candidate: &ConversationDuplicateCandidate,
 ) -> Option<ConversationContentSignature> {
@@ -261,10 +277,12 @@ fn zcode_content_signature_for_candidate(
     )
 }
 
+#[allow(dead_code)]
 fn timestamps_are_close(left: DateTime<Utc>, right: DateTime<Utc>, max_seconds: i64) -> bool {
     left.signed_duration_since(right).num_seconds().abs() <= max_seconds
 }
 
+#[allow(dead_code)]
 fn zcode_content_signatures_match(
     left: &ConversationContentSignature,
     right: &ConversationContentSignature,
@@ -279,6 +297,7 @@ fn zcode_content_signatures_match(
     }
 }
 
+#[allow(dead_code)]
 fn conversation_exists_tx(conn: &Connection, conversation_id: &str) -> Result<bool> {
     let exists = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM conversations WHERE conversation_id = ?1)",
@@ -288,6 +307,7 @@ fn conversation_exists_tx(conn: &Connection, conversation_id: &str) -> Result<bo
     Ok(exists != 0)
 }
 
+#[allow(dead_code)]
 fn conversation_duplicate_candidates_tx(
     conn: &Connection,
     repo_id: &str,
@@ -380,6 +400,7 @@ fn conversation_duplicate_candidates_tx(
     Ok(duplicates)
 }
 
+#[allow(dead_code)]
 fn delete_duplicate_conversation_snapshot_tx(
     conn: &Connection,
     repo_id: &str,
@@ -651,55 +672,6 @@ impl MemoryStore {
         let conversation_id = format!("{agent}:{}", conversation.id);
         let mut conn = self.conn()?;
         let tx = conn.transaction()?;
-        let duplicate_candidates = conversation_duplicate_candidates_tx(
-            &tx,
-            &repo_id,
-            &conversation_id,
-            agent,
-            conversation,
-            storage_path.as_deref(),
-        )?;
-
-        if let Some(best_existing) = duplicate_candidates
-            .iter()
-            .max_by(|left, right| compare_snapshot_quality(&left.quality, &right.quality))
-            .cloned()
-        {
-            let incoming_quality = incoming_conversation_quality(conversation);
-            if compare_snapshot_quality(&incoming_quality, &best_existing.quality)
-                != Ordering::Greater
-            {
-                for candidate in &duplicate_candidates {
-                    if candidate.conversation_id != best_existing.conversation_id {
-                        delete_duplicate_conversation_snapshot_tx(
-                            &tx,
-                            &repo_id,
-                            &candidate.conversation_id,
-                            &best_existing.conversation_id,
-                        )?;
-                    }
-                }
-                if conversation_exists_tx(&tx, &conversation_id)? {
-                    delete_duplicate_conversation_snapshot_tx(
-                        &tx,
-                        &repo_id,
-                        &conversation_id,
-                        &best_existing.conversation_id,
-                    )?;
-                }
-                tx.commit()?;
-                return Ok(repo_id);
-            }
-
-            for candidate in &duplicate_candidates {
-                delete_duplicate_conversation_snapshot_tx(
-                    &tx,
-                    &repo_id,
-                    &candidate.conversation_id,
-                    &conversation_id,
-                )?;
-            }
-        }
 
         tx.execute(
             "INSERT INTO conversations (
@@ -6815,7 +6787,7 @@ mod tests {
     }
 
     #[test]
-    fn conversation_snapshot_dedupes_zcode_duplicate_storage_path() {
+    fn conversation_snapshot_keeps_zcode_duplicate_storage_path_candidates_for_user_review() {
         let store = new_store();
         let repo_root = "d:/vsp";
         let now = Utc::now();
@@ -6892,45 +6864,50 @@ mod tests {
                 |row| row.get::<_, i64>(0),
             )
             .unwrap();
-        assert_eq!(stored_count, 1);
+        assert_eq!(stored_count, 2);
 
-        let (conversation_id, source_agent, source_conversation_id, message_count) = conn
-            .query_row(
+        let mut stmt = conn
+            .prepare(
                 "SELECT c.conversation_id, c.source_agent, c.source_conversation_id,
                         (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.conversation_id)
                  FROM conversations c
-                 WHERE c.repo_id = ?1",
-                [repo_id.clone()],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
-                },
+                 WHERE c.repo_id = ?1
+                 ORDER BY c.conversation_id ASC",
             )
             .unwrap();
-        assert_eq!(conversation_id, "zcode:codex:profile-1:thread-1");
-        assert_eq!(source_agent, "zcode");
-        assert_eq!(source_conversation_id, "codex:profile-1:thread-1");
-        assert_eq!(message_count, 2);
-
-        let stale_subsource_docs = conn
-            .query_row(
-                "SELECT COUNT(*)
-                 FROM search_documents
-                 WHERE repo_id = ?1
-                   AND doc_ref_id LIKE 'zcode-codex:%'",
-                [repo_id],
-                |row| row.get::<_, i64>(0),
-            )
+        let rows = stmt
+            .query_map([repo_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(stale_subsource_docs, 0);
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "zcode-codex:profile-1:thread-1".to_string(),
+                    "zcode-codex".to_string(),
+                    "profile-1:thread-1".to_string(),
+                    1,
+                ),
+                (
+                    "zcode:codex:profile-1:thread-1".to_string(),
+                    "zcode".to_string(),
+                    "codex:profile-1:thread-1".to_string(),
+                    2,
+                ),
+            ]
+        );
     }
 
     #[test]
-    fn conversation_snapshot_dedupes_zcode_migrated_copy_by_signature() {
+    fn conversation_snapshot_keeps_zcode_migrated_copy_candidates_for_user_review() {
         let store = new_store();
         let repo_root = "d:/vsp";
         let now = Utc::now();
@@ -7015,20 +6992,29 @@ mod tests {
                 |row| row.get::<_, i64>(0),
             )
             .unwrap();
-        assert_eq!(stored_count, 1);
+        assert_eq!(stored_count, 2);
 
-        let (conversation_id, message_count) = conn
-            .query_row(
+        let mut stmt = conn
+            .prepare(
                 "SELECT c.conversation_id,
                         (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.conversation_id)
                  FROM conversations c
-                 WHERE c.repo_id = ?1",
-                [repo_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                 WHERE c.repo_id = ?1
+                 ORDER BY c.conversation_id ASC",
             )
             .unwrap();
-        assert_eq!(conversation_id, "zcode:claude:new-task-id");
-        assert_eq!(message_count, 3);
+        let rows = stmt
+            .query_map([repo_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("zcode-claude:legacy-thread-1".to_string(), 1),
+                ("zcode:claude:new-task-id".to_string(), 3),
+            ]
+        );
     }
 
     #[test]

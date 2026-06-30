@@ -337,6 +337,15 @@ type ShellCopy = {
   favoriteConversation: (title: string) => string;
   unfavoriteConversation: (title: string) => string;
   noFavoritesBody: string;
+  duplicateReviewTitle: (groupCount: number, duplicateCount: number) => string;
+  duplicateReviewBody: string;
+  duplicateReviewAction: string;
+  duplicateReviewModalTitle: string;
+  duplicateReviewModalBody: string;
+  duplicateKeepThis: string;
+  duplicateRecommended: string;
+  duplicateMoveOthersToTrash: string;
+  duplicateReviewEmpty: string;
   trash: string;
   bulkSelect: string;
   cancelBulkSelect: string;
@@ -394,8 +403,17 @@ type ProjectGroup = {
   cliLabel?: string;
 };
 
+type DuplicateConversationGroup = {
+  id: string;
+  title: string;
+  projectDir: string;
+  conversations: ConversationSummary[];
+  recommendedKeepKey: string;
+};
+
 const COPY_RESET_DELAY_MS = 1800;
 const INITIAL_CONVERSATION_MESSAGE_LIMIT = 80;
+const DUPLICATE_BUCKET_SEPARATOR = "\u241f";
 const AGENT_OPTIONS: { value: AgentType; label: string }[] = [
   { value: "claude", label: "Claude" },
   { value: "codex", label: "Codex" },
@@ -772,6 +790,74 @@ function getConversationKey(
   return `${conversation.source_agent}:${conversation.id}`;
 }
 
+function normalizeDuplicateTitle(summary: string | null) {
+  const title = normalizeConversationTitle(summary);
+  const normalized = title.split(/\s+/).join(" ").trim().toLowerCase();
+  if (normalized.length < 6) {
+    return null;
+  }
+
+  if (["new chat", "untitled", "\u65b0\u5efa\u5bf9\u8bdd", "\u65e0\u6807\u9898"].includes(normalized)) {
+    return null;
+  }
+
+  return normalized;
+}
+
+function compareDuplicateKeepCandidate(left: ConversationSummary, right: ConversationSummary) {
+  return (
+    left.message_count - right.message_count ||
+    left.file_count - right.file_count ||
+    left.updated_at.localeCompare(right.updated_at)
+  );
+}
+
+function buildDuplicateConversationGroups(conversations: ConversationSummary[]) {
+  const buckets = new Map<string, ConversationSummary[]>();
+
+  conversations.forEach((conversation) => {
+    const projectDir = getConversationProjectDir(conversation);
+    const title = normalizeDuplicateTitle(conversation.summary);
+    if (!projectDir || !title) {
+      return;
+    }
+
+    const bucketKey = `${projectPathKey(projectDir)}${DUPLICATE_BUCKET_SEPARATOR}${title}`;
+    const bucket = buckets.get(bucketKey);
+    if (bucket) {
+      bucket.push(normalizeConversationProject(conversation));
+    } else {
+      buckets.set(bucketKey, [normalizeConversationProject(conversation)]);
+    }
+  });
+
+  return Array.from(buckets.entries())
+    .flatMap(([bucketKey, bucket]) => {
+      const uniqueByKey = Array.from(
+        new Map(bucket.map((conversation) => [getConversationKey(conversation), conversation])).values(),
+      );
+      if (uniqueByKey.length < 2) {
+        return [];
+      }
+
+      const sorted = [...uniqueByKey].sort((left, right) =>
+        compareDuplicateKeepCandidate(right, left),
+      );
+      const recommended = sorted[0];
+      const [, title] = bucketKey.split(DUPLICATE_BUCKET_SEPARATOR);
+      return [
+        {
+          id: bucketKey,
+          title: normalizeConversationTitle(recommended.summary) || title,
+          projectDir: getConversationProjectDir(recommended),
+          conversations: sorted,
+          recommendedKeepKey: getConversationKey(recommended),
+        },
+      ];
+    })
+    .sort((left, right) => right.conversations[0].updated_at.localeCompare(left.conversations[0].updated_at));
+}
+
 function getTopLevelAgent(sourceAgent: string): AgentType {
   const normalized = sourceAgent.toLowerCase();
   if (AGENT_OPTIONS.some((agent) => agent.value === normalized)) {
@@ -972,6 +1058,18 @@ function getShellCopy(locale: Locale): ShellCopy {
       favoriteConversation: (title) => `Favorite ${title}`,
       unfavoriteConversation: (title) => `Remove ${title} from Favorites`,
       noFavoritesBody: "Favorite important conversations and they will appear here.",
+      duplicateReviewTitle: (groupCount, duplicateCount) =>
+        `${groupCount} possible duplicate ${groupCount === 1 ? "group" : "groups"} · ${duplicateCount} extra ${duplicateCount === 1 ? "conversation" : "conversations"}`,
+      duplicateReviewBody:
+        "Review the candidates first. ChatMem will not choose for you or remove anything automatically.",
+      duplicateReviewAction: "Review duplicates",
+      duplicateReviewModalTitle: "Review possible duplicates",
+      duplicateReviewModalBody:
+        "Choose the conversation to keep in each group. The other selected candidates will be moved to Trash, where they can still be restored.",
+      duplicateKeepThis: "Keep this",
+      duplicateRecommended: "Suggested",
+      duplicateMoveOthersToTrash: "Move unkept conversations to Trash",
+      duplicateReviewEmpty: "No possible duplicates in the current source.",
       trash: "Trash",
       bulkSelect: "Select conversations",
       cancelBulkSelect: "Cancel selection",
@@ -1131,6 +1229,18 @@ function getShellCopy(locale: Locale): ShellCopy {
     favoriteConversation: (title) => `收藏 ${title}`,
     unfavoriteConversation: (title) => `取消收藏 ${title}`,
     noFavoritesBody: "把重要对话标记为收藏后，会集中显示在这里。",
+    duplicateReviewTitle: (groupCount, duplicateCount) =>
+      `发现 ${groupCount} 组疑似重复 · 可处理 ${duplicateCount} 条`,
+    duplicateReviewBody:
+      "先比较后处理。ChatMem 不会替你决定，也不会自动删除任何对话。",
+    duplicateReviewAction: "处理重复",
+    duplicateReviewModalTitle: "处理疑似重复对话",
+    duplicateReviewModalBody:
+      "每组选择要保留的一条，其余候选会移到垃圾箱，保留期内仍可恢复。",
+    duplicateKeepThis: "保留这条",
+    duplicateRecommended: "建议保留",
+    duplicateMoveOthersToTrash: "把未保留项移到垃圾箱",
+    duplicateReviewEmpty: "当前来源没有发现疑似重复。",
     trash: "垃圾箱",
     collapseSidebar: "\u6536\u8d77\u5de6\u4fa7\u5217\u8868",
     showSidebar: "\u663e\u793a\u5de6\u4fa7\u5217\u8868",
@@ -1546,6 +1656,8 @@ function App() {
   const [trashedConversations, setTrashedConversations] = useState<TrashedConversation[]>([]);
   const [trashLoading, setTrashLoading] = useState(false);
   const [restoringTrashId, setRestoringTrashId] = useState<string | null>(null);
+  const [duplicateReviewOpen, setDuplicateReviewOpen] = useState(false);
+  const [duplicateKeepSelections, setDuplicateKeepSelections] = useState<Record<string, string>>({});
   const [appNotice, setAppNotice] = useState<AppNotice>(null);
   const [memoryLoading, setMemoryLoading] = useState(false);
   const [repoMemoryHealth, setRepoMemoryHealth] = useState<RepoMemoryHealth | null>(null);
@@ -2283,6 +2395,38 @@ function App() {
     });
   };
 
+  const getDuplicateKeepKey = (group: DuplicateConversationGroup) => {
+    const selectedKey = duplicateKeepSelections[group.id];
+    if (selectedKey && group.conversations.some((conversation) => getConversationKey(conversation) === selectedKey)) {
+      return selectedKey;
+    }
+    return group.recommendedKeepKey;
+  };
+
+  const handleMoveDuplicateSelectionsToTrash = () => {
+    const targets: ConversationSummary[] = [];
+    const seen = new Set<string>();
+
+    duplicateConversationGroups.forEach((group) => {
+      const keepKey = getDuplicateKeepKey(group);
+      group.conversations.forEach((conversation) => {
+        const key = getConversationKey(conversation);
+        if (key === keepKey || seen.has(key)) {
+          return;
+        }
+        seen.add(key);
+        targets.push(conversation);
+      });
+    });
+
+    if (targets.length === 0) {
+      return;
+    }
+
+    setDuplicateReviewOpen(false);
+    moveConversationsToTrash(targets);
+  };
+
   const confirmMoveConversationsToTrash = async () => {
     if (!trashConfirm || trashConfirm.targets.length === 0) {
       return;
@@ -2913,6 +3057,19 @@ function App() {
   );
 
   const displayedConversations = showFavorites ? favoriteConversations : filteredConversations;
+
+  const duplicateConversationGroups = useMemo(
+    () => (showFavorites ? [] : buildDuplicateConversationGroups(sortedConversations)),
+    [showFavorites, sortedConversations],
+  );
+  const duplicateConversationExtraCount = useMemo(
+    () =>
+      duplicateConversationGroups.reduce(
+        (total, group) => total + Math.max(0, group.conversations.length - 1),
+        0,
+      ),
+    [duplicateConversationGroups],
+  );
 
   const selectedConversationKeySet = useMemo(
     () => new Set(selectedConversationKeys),
@@ -5132,6 +5289,112 @@ function App() {
     </div>
   );
 
+  const renderDuplicateReviewModal = () => {
+    if (!duplicateReviewOpen) {
+      return null;
+    }
+
+    return (
+      <div className="modal-overlay" onClick={() => setDuplicateReviewOpen(false)}>
+        <div
+          className="modal duplicate-review-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="duplicate-review-title"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <header className="duplicate-review-header">
+            <div>
+              <p className="page-eyebrow">{shell.duplicateReviewAction}</p>
+              <h3 id="duplicate-review-title">{shell.duplicateReviewModalTitle}</h3>
+              <p>{shell.duplicateReviewModalBody}</p>
+            </div>
+          </header>
+
+          {duplicateConversationGroups.length === 0 ? (
+            <div className="inline-empty-state">
+              <div className="inline-empty-body">{shell.duplicateReviewEmpty}</div>
+            </div>
+          ) : (
+            <div className="duplicate-review-group-list">
+              {duplicateConversationGroups.map((group) => {
+                const keepKey = getDuplicateKeepKey(group);
+                return (
+                  <section key={group.id} className="duplicate-review-group">
+                    <div className="duplicate-review-group-heading">
+                      <h4 title={group.title}>{group.title}</h4>
+                      <span title={group.projectDir}>{group.projectDir}</span>
+                    </div>
+                    <div className="duplicate-review-options">
+                      {group.conversations.map((conversation) => {
+                        const key = getConversationKey(conversation);
+                        const title = normalizeConversationTitle(conversation.summary) || conversation.id;
+                        const isRecommended = key === group.recommendedKeepKey;
+                        return (
+                          <label key={key} className="duplicate-review-option">
+                            <input
+                              type="radio"
+                              name={`duplicate-keep-${group.id}`}
+                              checked={keepKey === key}
+                              onChange={() =>
+                                setDuplicateKeepSelections((current) => ({
+                                  ...current,
+                                  [group.id]: key,
+                                }))
+                              }
+                            />
+                            <span className="duplicate-review-option-main">
+                              <span className="duplicate-review-option-title" title={title}>
+                                {title}
+                              </span>
+                              <span className="duplicate-review-option-meta">
+                                {conversation.source_agent} · {conversation.message_count} messages ·{" "}
+                                {formatDateTime(conversation.updated_at)}
+                              </span>
+                              <span className="duplicate-review-option-id" title={conversation.id}>
+                                {conversation.id}
+                              </span>
+                            </span>
+                            <span className="duplicate-review-option-side">
+                              {isRecommended ? (
+                                <span className="duplicate-review-badge">
+                                  {shell.duplicateRecommended}
+                                </span>
+                              ) : null}
+                              <span>{shell.duplicateKeepThis}</span>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </section>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="modal-actions">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setDuplicateReviewOpen(false)}
+            >
+              {shell.cancel}
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={handleMoveDuplicateSelectionsToTrash}
+              disabled={duplicateConversationGroups.length === 0}
+            >
+              {shell.duplicateMoveOthersToTrash}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderTrashConfirmModal = () => {
     if (!trashConfirm) {
       return null;
@@ -5889,6 +6152,27 @@ function App() {
                 </div>
               ) : null}
 
+              {!showFavorites && duplicateConversationGroups.length > 0 ? (
+                <div className="duplicate-review-banner" role="status">
+                  <div>
+                    <strong>
+                      {shell.duplicateReviewTitle(
+                        duplicateConversationGroups.length,
+                        duplicateConversationExtraCount,
+                      )}
+                    </strong>
+                    <p>{shell.duplicateReviewBody}</p>
+                  </div>
+                  <button
+                    type="button"
+                    className="duplicate-review-button"
+                    onClick={() => setDuplicateReviewOpen(true)}
+                  >
+                    {shell.duplicateReviewAction}
+                  </button>
+                </div>
+              ) : null}
+
               {bulkSelectionMode ? (
                 <div
                   className="bulk-selection-bar"
@@ -6210,6 +6494,7 @@ function App() {
       </div>
 
       {renderMemoryDrawer()}
+      {renderDuplicateReviewModal()}
       {renderTrashConfirmModal()}
       {renderEmptyTrashConfirmModal()}
 
