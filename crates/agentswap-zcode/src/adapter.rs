@@ -99,6 +99,23 @@ struct ParsedZCodeTask {
 }
 
 #[derive(Debug, Clone)]
+struct ZCodeIndexedTask {
+    task_id: String,
+    workspace_key: String,
+    workspace_key_encoded: String,
+    provider: String,
+    acp_session_id: Option<String>,
+    project_dir: String,
+    title: Option<String>,
+    model: Option<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    searchable_text: String,
+    db_path: PathBuf,
+    rollout_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
 struct PendingClaudeTool {
     message_index: usize,
     tool_index: usize,
@@ -132,9 +149,18 @@ impl ZCodeAdapter {
     pub fn storage_path_for_id(&self, id: &str) -> Option<String> {
         let (engine, raw_id) = split_zcode_cli_id(id)?;
         if let Some((profile_id, task_id)) = split_task_id(raw_id) {
-            return self
-                .find_task_path(profile_id, task_id)
-                .map(|path| normalize_storage_path(path.to_string_lossy().as_ref()));
+            if let Some(path) = self.find_task_path(profile_id, task_id) {
+                return Some(normalize_storage_path(path.to_string_lossy().as_ref()));
+            }
+            if let Ok(Some(task)) = self.find_indexed_task(profile_id, task_id) {
+                let path = if task.rollout_path.is_file() {
+                    task.rollout_path
+                } else {
+                    task.db_path
+                };
+                return Some(normalize_storage_path(path.to_string_lossy().as_ref()));
+            }
+            return None;
         }
         match engine {
             CLAUDE_ENGINE => self.claude_adapter().storage_path_for_id(raw_id),
@@ -167,8 +193,20 @@ impl ZCodeAdapter {
         zcode_v2_dir(&self.root_dir).join("sessions")
     }
 
+    fn task_index_path(&self) -> PathBuf {
+        zcode_v2_dir(&self.root_dir).join("tasks-index.sqlite")
+    }
+
+    fn rollout_dir(&self) -> PathBuf {
+        zcode_cli_rollout_dir(&self.root_dir)
+    }
+
     fn list_task_paths(&self) -> Vec<ZCodeTaskPath> {
         list_zcode_task_paths(&self.task_sessions_dir())
+    }
+
+    fn list_indexed_tasks(&self) -> Result<Vec<ZCodeIndexedTask>> {
+        list_zcode_indexed_tasks(&self.task_index_path(), &self.rollout_dir())
     }
 
     fn find_task_path(&self, profile_id: &str, task_id: &str) -> Option<PathBuf> {
@@ -183,17 +221,34 @@ impl ZCodeAdapter {
             })
     }
 
+    fn find_indexed_task(
+        &self,
+        workspace_key_encoded: &str,
+        task_id: &str,
+    ) -> Result<Option<ZCodeIndexedTask>> {
+        find_zcode_indexed_task(
+            &self.task_index_path(),
+            &self.rollout_dir(),
+            workspace_key_encoded,
+            task_id,
+        )
+    }
+
     fn read_task_conversation(
         &self,
         provider: &str,
-        profile_id: &str,
+        profile_or_workspace: &str,
         task_id: &str,
         full_id: &str,
     ) -> Result<Conversation> {
-        let path = self
-            .find_task_path(profile_id, task_id)
-            .ok_or_else(|| anyhow::anyhow!("ZCode task session not found: {profile_id}:{task_id}"))?;
-        let mut conversation = parse_zcode_task_conversation(&path, profile_id)?;
+        let mut conversation =
+            if let Some(path) = self.find_task_path(profile_or_workspace, task_id) {
+                parse_zcode_task_conversation(&path, profile_or_workspace)?
+            } else if let Some(task) = self.find_indexed_task(profile_or_workspace, task_id)? {
+                parse_zcode_indexed_task_conversation(&task)?
+            } else {
+                anyhow::bail!("ZCode task session not found: {profile_or_workspace}:{task_id}");
+            };
         conversation.id = full_id.to_string();
         for message in &mut conversation.messages {
             message
@@ -450,21 +505,47 @@ impl AgentAdapter for ZCodeAdapter {
                 || self.codex_adapter().is_available()
                 || self.gemini_adapter().is_available()
                 || self.opencode_adapter().is_available()
-                || self.task_sessions_dir().is_dir())
+                || self.task_sessions_dir().is_dir()
+                || self.task_index_path().is_file())
     }
 
     fn list_conversations(&self) -> Result<Vec<ConversationSummary>> {
         let mut summaries = Vec::new();
         let mut task_backed_cli_ids = HashSet::new();
+        let mut task_backed_raw_ids = HashSet::new();
+        match self.list_indexed_tasks() {
+            Ok(tasks) => {
+                for task in tasks {
+                    if !should_list_indexed_task(&task) {
+                        continue;
+                    }
+                    task_backed_raw_ids.insert((task.provider.clone(), task.task_id.clone()));
+                    if let Some(acp_session_id) = &task.acp_session_id {
+                        task_backed_raw_ids.insert((task.provider.clone(), acp_session_id.clone()));
+                    }
+                    summaries.push(zcode_indexed_task_summary(&task));
+                }
+            }
+            Err(error) => eprintln!(
+                "Warning: failed to inspect ZCode task index {}: {error}",
+                self.task_index_path().display()
+            ),
+        }
         for task_path in self.list_task_paths() {
             match parse_zcode_task(&task_path) {
                 Ok(task) => {
+                    if task_backed_raw_ids.contains(&(task.provider.clone(), task.task_id.clone()))
+                    {
+                        continue;
+                    }
                     if let Some(acp_session_id) = &task.acp_session_id {
                         task_backed_cli_ids.insert(encode_zcode_cli_id(
                             &task.provider,
                             &encode_profile_id(&task.profile_id, acp_session_id),
                         ));
+                        task_backed_raw_ids.insert((task.provider.clone(), acp_session_id.clone()));
                     }
+                    task_backed_raw_ids.insert((task.provider.clone(), task.task_id.clone()));
                     summaries.push(zcode_task_summary(&task));
                 }
                 Err(error) => eprintln!(
@@ -481,6 +562,15 @@ impl AgentAdapter for ZCodeAdapter {
             if task_backed_cli_ids.contains(&summary.id) {
                 continue;
             }
+            if let Some((_, cli_raw_id)) = split_zcode_cli_id(&summary.id) {
+                if let Some((_, raw_id)) = split_profile_id(cli_raw_id) {
+                    if task_backed_raw_ids
+                        .contains(&(CLAUDE_ENGINE.to_string(), raw_id.to_string()))
+                    {
+                        continue;
+                    }
+                }
+            }
             summary.source_agent = AgentKind::ZCode;
             summaries.push(summary);
         }
@@ -488,6 +578,14 @@ impl AgentAdapter for ZCodeAdapter {
             summary.id = encode_zcode_cli_id(CODEX_ENGINE, &summary.id);
             if task_backed_cli_ids.contains(&summary.id) {
                 continue;
+            }
+            if let Some((_, cli_raw_id)) = split_zcode_cli_id(&summary.id) {
+                if let Some((_, raw_id)) = split_profile_id(cli_raw_id) {
+                    if task_backed_raw_ids.contains(&(CODEX_ENGINE.to_string(), raw_id.to_string()))
+                    {
+                        continue;
+                    }
+                }
             }
             summary.source_agent = AgentKind::ZCode;
             summaries.push(summary);
@@ -541,10 +639,13 @@ impl AgentAdapter for ZCodeAdapter {
         let (engine, raw_id) = split_zcode_cli_id(id)
             .ok_or_else(|| anyhow::anyhow!("Invalid ZCode conversation id: {id}"))?;
         if let Some((profile_id, task_id)) = split_task_id(raw_id) {
-            let path = self.find_task_path(profile_id, task_id).ok_or_else(|| {
-                anyhow::anyhow!("ZCode task session not found: {profile_id}:{task_id}")
-            })?;
-            return move_path_to_trash(&path);
+            if let Some(path) = self.find_task_path(profile_id, task_id) {
+                return move_path_to_trash(&path);
+            }
+            if self.find_indexed_task(profile_id, task_id)?.is_some() {
+                anyhow::bail!("Deleting indexed ZCode tasks is not supported yet: {id}");
+            }
+            anyhow::bail!("ZCode task session not found: {profile_id}:{task_id}");
         }
         match engine {
             CLAUDE_ENGINE => self.claude_adapter().delete_conversation(raw_id),
@@ -801,6 +902,18 @@ fn zcode_v2_dir(root_dir: &Path) -> PathBuf {
     root_dir.to_path_buf()
 }
 
+fn zcode_base_dir(root_dir: &Path) -> PathBuf {
+    let v2_dir = zcode_v2_dir(root_dir);
+    if v2_dir.file_name().and_then(|name| name.to_str()) == Some("v2") {
+        return v2_dir.parent().map(Path::to_path_buf).unwrap_or(v2_dir);
+    }
+    v2_dir
+}
+
+fn zcode_cli_rollout_dir(root_dir: &Path) -> PathBuf {
+    zcode_base_dir(root_dir).join("cli").join("rollout")
+}
+
 fn profile_dirs(engine_dir: &Path) -> Vec<(String, PathBuf)> {
     let mut profiles = match fs::read_dir(engine_dir) {
         Ok(entries) => entries
@@ -854,6 +967,97 @@ fn list_zcode_task_paths(sessions_dir: &Path) -> Vec<ZCodeTaskPath> {
     };
     tasks.sort_by(|left, right| left.path.cmp(&right.path));
     tasks
+}
+
+fn list_zcode_indexed_tasks(db_path: &Path, rollout_dir: &Path) -> Result<Vec<ZCodeIndexedTask>> {
+    if !db_path.is_file() {
+        return Ok(Vec::new());
+    }
+    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("Failed to open ZCode task index: {}", db_path.display()))?;
+    let mut stmt = conn.prepare(
+        "SELECT workspace_key, workspace_path, task_id, title, provider, acp_session_id,
+                model, created_at, updated_at, searchable_text
+         FROM tasks
+         WHERE COALESCE(deleted, 0) = 0
+         ORDER BY updated_at DESC",
+    )?;
+    let rows = stmt.query_map([], |row| indexed_task_from_row(row, db_path, rollout_dir))?;
+
+    let mut tasks = Vec::new();
+    for row in rows {
+        tasks.push(row?);
+    }
+    Ok(tasks)
+}
+
+fn find_zcode_indexed_task(
+    db_path: &Path,
+    rollout_dir: &Path,
+    workspace_key_encoded: &str,
+    task_id: &str,
+) -> Result<Option<ZCodeIndexedTask>> {
+    if !db_path.is_file() {
+        return Ok(None);
+    }
+    let Some(workspace_key) = decode_hex(workspace_key_encoded) else {
+        return Ok(None);
+    };
+    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("Failed to open ZCode task index: {}", db_path.display()))?;
+    let mut stmt = conn.prepare(
+        "SELECT workspace_key, workspace_path, task_id, title, provider, acp_session_id,
+                model, created_at, updated_at, searchable_text
+         FROM tasks
+         WHERE workspace_key = ?1 AND task_id = ?2 AND COALESCE(deleted, 0) = 0
+         LIMIT 1",
+    )?;
+    match stmt.query_row([workspace_key.as_str(), task_id], |row| {
+        indexed_task_from_row(row, db_path, rollout_dir)
+    }) {
+        Ok(task) => Ok(Some(task)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn indexed_task_from_row(
+    row: &rusqlite::Row<'_>,
+    db_path: &Path,
+    rollout_dir: &Path,
+) -> rusqlite::Result<ZCodeIndexedTask> {
+    let workspace_key: String = row.get(0)?;
+    let workspace_path: String = row.get(1)?;
+    let task_id: String = row.get(2)?;
+    let title: String = row.get(3)?;
+    let provider: Option<String> = row.get(4)?;
+    let acp_session_id: Option<String> = row.get(5)?;
+    let model: Option<String> = row.get(6)?;
+    let created_at: i64 = row.get(7)?;
+    let updated_at: i64 = row.get(8)?;
+    let searchable_text: String = row.get(9)?;
+    let project_dir = if workspace_path.trim().is_empty() {
+        workspace_key.clone()
+    } else {
+        workspace_path
+    };
+    let title = title.trim().to_string();
+
+    Ok(ZCodeIndexedTask {
+        task_id: task_id.clone(),
+        workspace_key_encoded: encode_hex(&workspace_key),
+        workspace_key,
+        provider: normalize_zcode_task_provider(provider.as_deref()),
+        acp_session_id,
+        project_dir: normalize_project_dir(&project_dir),
+        title: is_meaningful_task_text(&title).then_some(title),
+        model,
+        created_at: ms_to_datetime(created_at),
+        updated_at: ms_to_datetime(updated_at),
+        searchable_text,
+        db_path: db_path.to_path_buf(),
+        rollout_path: rollout_dir.join(format!("model-io-{task_id}.jsonl")),
+    })
 }
 
 fn parse_zcode_task(task_path: &ZCodeTaskPath) -> Result<ParsedZCodeTask> {
@@ -931,6 +1135,25 @@ fn zcode_task_summary(task: &ParsedZCodeTask) -> ConversationSummary {
     }
 }
 
+fn zcode_indexed_task_summary(task: &ZCodeIndexedTask) -> ConversationSummary {
+    ConversationSummary {
+        id: encode_zcode_task_id(&task.provider, &task.workspace_key_encoded, &task.task_id),
+        source_agent: AgentKind::ZCode,
+        project_dir: task.project_dir.clone(),
+        created_at: task.created_at,
+        updated_at: task.updated_at,
+        summary: task.title.clone().or_else(|| {
+            first_meaningful_line(&task.searchable_text).map(|text| truncate_str(&text, 100))
+        }),
+        message_count: indexed_task_message_count(task),
+        file_count: 0,
+    }
+}
+
+fn should_list_indexed_task(task: &ZCodeIndexedTask) -> bool {
+    task.rollout_path.is_file() || !matches!(task.provider.as_str(), CLAUDE_ENGINE | CODEX_ENGINE)
+}
+
 fn parse_zcode_task_conversation(path: &Path, profile_id: &str) -> Result<Conversation> {
     let task_path = ZCodeTaskPath {
         task_id: path
@@ -944,7 +1167,11 @@ fn parse_zcode_task_conversation(path: &Path, profile_id: &str) -> Result<Conver
     let task = parse_zcode_task(&task_path)?;
     let mut messages = Vec::new();
 
-    if let Some(task_messages) = task.value.get("messages").and_then(|value| value.as_array()) {
+    if let Some(task_messages) = task
+        .value
+        .get("messages")
+        .and_then(|value| value.as_array())
+    {
         for (index, message_value) in task_messages.iter().enumerate() {
             let role = task_role(message_value);
             let content = task_message_content(message_value);
@@ -1007,6 +1234,144 @@ fn parse_zcode_task_conversation(path: &Path, profile_id: &str) -> Result<Conver
         messages,
         file_changes,
     })
+}
+
+fn parse_zcode_indexed_task_conversation(task: &ZCodeIndexedTask) -> Result<Conversation> {
+    let mut messages = if task.rollout_path.is_file() {
+        parse_zcode_rollout_messages(task)?
+    } else {
+        Vec::new()
+    };
+    if messages.is_empty() {
+        if let Some(content) = task_index_fallback_text(task) {
+            let mut metadata = indexed_task_metadata(task);
+            metadata.insert("zcode_index_fallback".to_string(), json!(true));
+            messages.push(Message {
+                id: stable_uuid(&format!(
+                    "zcode-indexed-task:{}:{}:fallback",
+                    task.workspace_key, task.task_id
+                )),
+                timestamp: task.updated_at,
+                role: Role::User,
+                content,
+                tool_calls: Vec::new(),
+                metadata,
+            });
+        }
+    }
+
+    Ok(Conversation {
+        id: encode_zcode_task_id(&task.provider, &task.workspace_key_encoded, &task.task_id),
+        source_agent: AgentKind::ZCode,
+        project_dir: task.project_dir.clone(),
+        created_at: task.created_at,
+        updated_at: task.updated_at,
+        summary: task.title.clone().or_else(|| {
+            first_meaningful_line(&task.searchable_text).map(|text| truncate_str(&text, 100))
+        }),
+        messages,
+        file_changes: Vec::new(),
+    })
+}
+
+fn parse_zcode_rollout_messages(task: &ZCodeIndexedTask) -> Result<Vec<Message>> {
+    let file = fs::File::open(&task.rollout_path).with_context(|| {
+        format!(
+            "Failed to open ZCode rollout file: {}",
+            task.rollout_path.display()
+        )
+    })?;
+    let reader = BufReader::new(file);
+    let mut messages = Vec::new();
+    let mut seen = HashSet::new();
+
+    for (line_index, line) in reader.lines().enumerate() {
+        let line = line.with_context(|| {
+            format!(
+                "Failed to read ZCode rollout file: {}",
+                task.rollout_path.display()
+            )
+        })?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: Value = serde_json::from_str(&line).with_context(|| {
+            format!(
+                "Failed to parse ZCode rollout line {} in {}",
+                line_index + 1,
+                task.rollout_path.display()
+            )
+        })?;
+        if value_string(&value, "type").as_deref() != Some("model_io")
+            || value_string(&value, "querySource").as_deref() != Some("main_turn")
+        {
+            continue;
+        }
+
+        let request_timestamp = rollout_datetime(
+            value_string(&value, "startedAt").as_deref(),
+            task.created_at,
+        );
+        if let Some(request_messages) = rollout_request_messages(&value) {
+            for (message_index, message_value) in request_messages.iter().enumerate() {
+                let Some(role) = rollout_message_role(message_value) else {
+                    continue;
+                };
+                if role == Role::System {
+                    continue;
+                }
+                let content =
+                    rollout_content_text(message_value.get("content").unwrap_or(&Value::Null));
+                if !is_meaningful_task_text(&content) {
+                    continue;
+                }
+                let dedupe_key = format!("{role:?}\u{0}{content}");
+                if !seen.insert(dedupe_key) {
+                    continue;
+                }
+                let mut metadata = indexed_task_metadata(task);
+                metadata.insert("zcode_rollout_line".to_string(), json!(line_index + 1));
+                messages.push(Message {
+                    id: stable_uuid(&format!(
+                        "zcode-rollout:{}:{}:{}:{}",
+                        task.workspace_key, task.task_id, line_index, message_index
+                    )),
+                    timestamp: request_timestamp,
+                    role,
+                    content,
+                    tool_calls: Vec::new(),
+                    metadata,
+                });
+            }
+        }
+
+        let response = value.get("response").unwrap_or(&Value::Null);
+        let response_text = value_string(response, "text").unwrap_or_default();
+        let response_tool_calls = rollout_response_tool_calls(response);
+        if is_meaningful_task_text(&response_text) || !response_tool_calls.is_empty() {
+            let dedupe_key = format!("{:?}\u{0}{response_text}", Role::Assistant);
+            if seen.insert(dedupe_key) {
+                let mut metadata = indexed_task_metadata(task);
+                metadata.insert("zcode_rollout_line".to_string(), json!(line_index + 1));
+                messages.push(Message {
+                    id: stable_uuid(&format!(
+                        "zcode-rollout:{}:{}:{}:response",
+                        task.workspace_key, task.task_id, line_index
+                    )),
+                    timestamp: rollout_datetime(
+                        value_string(&value, "completedAt").as_deref(),
+                        request_timestamp,
+                    ),
+                    role: Role::Assistant,
+                    content: response_text,
+                    tool_calls: response_tool_calls,
+                    metadata,
+                });
+            }
+        }
+    }
+
+    Ok(messages)
 }
 
 fn classify_claude_session(
@@ -1471,6 +1836,26 @@ fn stable_uuid(source: &str) -> Uuid {
     Uuid::new_v5(&Uuid::NAMESPACE_URL, source.as_bytes())
 }
 
+fn encode_hex(value: &str) -> String {
+    value
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn decode_hex(value: &str) -> Option<String> {
+    if value.len() % 2 != 0 {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(value.len() / 2);
+    for index in (0..value.len()).step_by(2) {
+        let byte = u8::from_str_radix(&value[index..index + 2], 16).ok()?;
+        bytes.push(byte);
+    }
+    String::from_utf8(bytes).ok()
+}
+
 fn encode_profile_id(profile_id: &str, raw_id: &str) -> String {
     format!("{profile_id}:{raw_id}")
 }
@@ -1557,7 +1942,12 @@ fn is_visible_claude_assistant_text(value: &str) -> bool {
 }
 
 fn normalize_zcode_task_provider(provider: Option<&str>) -> String {
-    match provider.unwrap_or("unknown").trim().to_ascii_lowercase().as_str() {
+    match provider
+        .unwrap_or("unknown")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
         CLAUDE_ENGINE => CLAUDE_ENGINE.to_string(),
         CODEX_ENGINE => CODEX_ENGINE.to_string(),
         GEMINI_ENGINE => GEMINI_ENGINE.to_string(),
@@ -1606,9 +1996,7 @@ fn task_part_text(value: &Value) -> Option<String> {
 
 fn is_meaningful_task_text(value: &str) -> bool {
     let trimmed = value.trim();
-    !trimmed.is_empty()
-        && trimmed != "No response requested."
-        && !is_claude_control_text(trimmed)
+    !trimmed.is_empty() && trimmed != "No response requested." && !is_claude_control_text(trimmed)
 }
 
 fn task_message_is_visible(value: &Value) -> bool {
@@ -1627,6 +2015,177 @@ fn first_task_user_message(value: &Value) -> Option<String> {
         .filter(|message| task_role(message) == Role::User)
         .map(task_message_content)
         .find(|content| is_meaningful_task_text(content))
+}
+
+fn first_meaningful_line(value: &str) -> Option<String> {
+    value
+        .lines()
+        .map(str::trim)
+        .find(|line| is_meaningful_task_text(line))
+        .map(ToString::to_string)
+}
+
+fn indexed_task_message_count(task: &ZCodeIndexedTask) -> usize {
+    let count = task
+        .searchable_text
+        .lines()
+        .filter(|line| is_meaningful_task_text(line))
+        .count();
+    if count > 0 {
+        count
+    } else if task.title.is_some() {
+        1
+    } else {
+        0
+    }
+}
+
+fn task_index_fallback_text(task: &ZCodeIndexedTask) -> Option<String> {
+    if is_meaningful_task_text(&task.searchable_text) {
+        Some(task.searchable_text.clone())
+    } else {
+        task.title.clone()
+    }
+}
+
+fn indexed_task_metadata(task: &ZCodeIndexedTask) -> HashMap<String, Value> {
+    let mut metadata = HashMap::new();
+    metadata.insert("zcode_engine".to_string(), json!(&task.provider));
+    metadata.insert("zcode_cli".to_string(), json!(&task.provider));
+    metadata.insert(
+        "zcode_workspace_key".to_string(),
+        json!(&task.workspace_key),
+    );
+    metadata.insert(
+        "zcode_workspace_key_encoded".to_string(),
+        json!(&task.workspace_key_encoded),
+    );
+    metadata.insert("zcode_task_id".to_string(), json!(&task.task_id));
+    metadata.insert(
+        "zcode_storage_path".to_string(),
+        json!(normalize_storage_path(
+            if task.rollout_path.is_file() {
+                task.rollout_path.to_string_lossy()
+            } else {
+                task.db_path.to_string_lossy()
+            }
+            .as_ref()
+        )),
+    );
+    if let Some(acp_session_id) = &task.acp_session_id {
+        metadata.insert("zcode_acp_session_id".to_string(), json!(acp_session_id));
+    }
+    if let Some(model) = &task.model {
+        metadata.insert("model".to_string(), json!(model));
+    }
+    metadata
+}
+
+fn rollout_datetime(value: Option<&str>, fallback: DateTime<Utc>) -> DateTime<Utc> {
+    value
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+        .unwrap_or(fallback)
+}
+
+fn rollout_request_messages(value: &Value) -> Option<&Vec<Value>> {
+    value
+        .get("request")
+        .and_then(|request| request.get("messages"))
+        .and_then(|messages| messages.as_array())
+        .or_else(|| {
+            value
+                .get("request")
+                .and_then(|request| request.get("body"))
+                .and_then(|body| body.get("messages"))
+                .and_then(|messages| messages.as_array())
+        })
+}
+
+fn rollout_message_role(value: &Value) -> Option<Role> {
+    match value.get("role").and_then(|role| role.as_str()) {
+        Some("assistant") => Some(Role::Assistant),
+        Some("system") => Some(Role::System),
+        Some("user") => Some(Role::User),
+        _ => None,
+    }
+}
+
+fn rollout_content_text(value: &Value) -> String {
+    if let Some(text) = value.as_str() {
+        return text.to_string();
+    }
+    value
+        .as_array()
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|part| {
+                    let part_type = part.get("type").and_then(|value| value.as_str());
+                    if part_type.is_some() && part_type != Some("text") {
+                        return None;
+                    }
+                    part.get("text")
+                        .or_else(|| part.get("content"))
+                        .and_then(|text| text.as_str())
+                        .map(ToString::to_string)
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+fn rollout_response_tool_calls(response: &Value) -> Vec<ToolCall> {
+    response
+        .get("toolCalls")
+        .and_then(|calls| calls.as_array())
+        .map(|calls| {
+            calls
+                .iter()
+                .enumerate()
+                .map(|(index, call)| rollout_response_tool_call(call, index))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn rollout_response_tool_call(call: &Value, index: usize) -> ToolCall {
+    let name = value_string(call, "toolName")
+        .or_else(|| value_string(call, "name"))
+        .or_else(|| value_string(call, "tool_name"))
+        .unwrap_or_else(|| format!("tool {}", index + 1));
+    let input = call
+        .get("input")
+        .or_else(|| call.get("args"))
+        .or_else(|| call.get("arguments"))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let output = call
+        .get("result")
+        .or_else(|| call.get("output"))
+        .or_else(|| call.get("text"))
+        .or_else(|| call.get("content"))
+        .map(value_to_text);
+    let status = if call.get("error").is_some() {
+        ToolStatus::Error
+    } else {
+        ToolStatus::Success
+    };
+
+    ToolCall {
+        name,
+        input,
+        output,
+        status,
+    }
+}
+
+fn value_to_text(value: &Value) -> String {
+    value
+        .as_str()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| value.to_string())
 }
 
 fn task_tool_calls(value: &Value) -> Vec<ToolCall> {
@@ -2105,10 +2664,7 @@ mod tests {
     fn zcode_top_level_adapter_reads_task_session_json_with_chinese_messages() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-        let task_path = root
-            .join("sessions")
-            .join("p1")
-            .join("task-1.json");
+        let task_path = root.join("sessions").join("p1").join("task-1.json");
         fs::create_dir_all(task_path.parent().unwrap()).unwrap();
         let task_json = json!({
             "meta": {
@@ -2236,6 +2792,113 @@ mod tests {
             conversation.messages[1].tool_calls[0].output.as_deref(),
             Some("README")
         );
+    }
+
+    #[test]
+    fn zcode_top_level_adapter_reads_tasks_index_with_glm_rollout() {
+        let tmp = TempDir::new().unwrap();
+        let zcode_home = tmp.path().join(".zcode");
+        let root = zcode_home.join("v2").join("acp-config");
+        let v2_dir = zcode_home.join("v2");
+        fs::create_dir_all(&root).unwrap();
+
+        let conn = Connection::open(v2_dir.join("tasks-index.sqlite")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+                workspace_key TEXT NOT NULL,
+                workspace_path TEXT NOT NULL,
+                workspace_identity TEXT,
+                task_id TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                task_status TEXT,
+                provider TEXT,
+                acp_session_id TEXT,
+                mode TEXT NOT NULL DEFAULT 'default',
+                model TEXT,
+                migration_source TEXT,
+                forked_from_task_id TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                unread_at INTEGER,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                meta_json TEXT NOT NULL DEFAULT '{}',
+                searchable_text TEXT NOT NULL DEFAULT '',
+                title_overridden INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (workspace_key, task_id)
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks (
+                workspace_key, workspace_path, task_id, title, task_status, provider, model,
+                created_at, updated_at, archived, deleted, meta_json, searchable_text
+            ) VALUES (?1, ?1, ?2, ?3, 'idle', 'glm', 'glm-4.5', ?4, ?5, 0, 0, '{}', ?6)",
+            params![
+                r"D:\ZCodeProject",
+                "sess_test",
+                "新的 ZCode 对话",
+                1778859901472_i64,
+                1778859920861_i64,
+                "用户真正问题\n助手回答",
+            ],
+        )
+        .unwrap();
+
+        write_jsonl(
+            &zcode_home
+                .join("cli")
+                .join("rollout")
+                .join("model-io-sess_test.jsonl"),
+            &[&json!({
+                "type": "model_io",
+                "querySource": "main_turn",
+                "sessionId": "sess_test",
+                "startedAt": "2026-05-15T07:45:01.472Z",
+                "completedAt": "2026-05-15T07:45:20.861Z",
+                "request": {
+                    "messages": [
+                        {"role": "system", "content": "You are ZCode."},
+                        {"role": "user", "content": "<system-reminder>noise</system-reminder>"},
+                        {"role": "user", "content": "用户真正问题"}
+                    ]
+                },
+                "response": {
+                    "text": "助手回答",
+                    "toolCalls": [
+                        {
+                            "toolName": "Read",
+                            "input": {"path": "README.md"},
+                            "result": "README contents"
+                        }
+                    ]
+                }
+            })
+            .to_string()],
+        );
+
+        let adapter = ZCodeAdapter::with_root_dir(root);
+        assert!(adapter.is_available());
+
+        let summaries = adapter.list_conversations().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].source_agent, AgentKind::ZCode);
+        assert_eq!(summaries[0].project_dir, r"D:\ZCodeProject");
+        assert_eq!(summaries[0].summary.as_deref(), Some("新的 ZCode 对话"));
+        assert_eq!(summaries[0].message_count, 2);
+        assert!(summaries[0].id.starts_with("glm:task:"));
+
+        let conversation = adapter.read_conversation(&summaries[0].id).unwrap();
+        assert_eq!(conversation.source_agent, AgentKind::ZCode);
+        assert_eq!(conversation.project_dir, r"D:\ZCodeProject");
+        assert_eq!(conversation.messages.len(), 2);
+        assert_eq!(conversation.messages[0].role, Role::User);
+        assert_eq!(conversation.messages[0].content, "用户真正问题");
+        assert_eq!(conversation.messages[1].role, Role::Assistant);
+        assert_eq!(conversation.messages[1].content, "助手回答");
+        assert_eq!(conversation.messages[1].tool_calls.len(), 1);
+        assert_eq!(conversation.messages[1].tool_calls[0].name, "Read");
     }
 
     #[test]

@@ -239,6 +239,13 @@ function readableError(error: unknown) {
   }
 }
 
+function formatTemplate(template: string, values: Record<string, string>) {
+  return Object.entries(values).reduce(
+    (result, [key, value]) => result.split(`{${key}}`).join(value),
+    template,
+  );
+}
+
 type ShellCopy = {
   nav: Record<TopPage, string>;
   navAria: string;
@@ -5482,6 +5489,19 @@ function App() {
     setAppSettings(nextSettings);
   };
 
+  const handleInstallAvailableUpdate = useCallback(
+    async (version: string) => {
+      setUpdateState({ kind: "installing", version });
+      try {
+        const nextState = await installAvailableUpdate(version);
+        setUpdateState(nextState);
+      } catch {
+        setUpdateState({ kind: "error", message: t("settings.updateError") });
+      }
+    },
+    [t],
+  );
+
   const handleTopbarMouseDown = (event: ReactMouseEvent<HTMLElement>) => {
     if (event.button !== 0) {
       return;
@@ -5494,6 +5514,72 @@ function App() {
 
     event.preventDefault();
     void appWindow.startDragging();
+  };
+
+  const renderUpdateCard = () => {
+    if (updateState.kind !== "available") {
+      return null;
+    }
+
+    const currentVersion = packageInfo.version;
+    const versionLabel = formatTemplate(t("settings.updateCardVersion"), {
+      version: updateState.version,
+    });
+    const currentVersionLabel = formatTemplate(t("settings.updateCardCurrent"), {
+      version: currentVersion,
+    });
+    const publishedLabel = updateState.publishedAt
+      ? formatTemplate(t("settings.updateCardPublished"), {
+          date: formatDateTime(updateState.publishedAt),
+        })
+      : null;
+
+    return (
+      <section
+        className="update-card"
+        role="status"
+        aria-live="polite"
+        aria-label={t("settings.updateCardAria")}
+      >
+        <div className="update-card-header">
+          <span className="update-card-icon" aria-hidden="true">
+            <svg viewBox="0 0 20 20">
+              <path d="M10 3.5v8" />
+              <path d="m6.8 8.6 3.2 3.2 3.2-3.2" />
+              <path d="M4.5 14.5h11" />
+            </svg>
+          </span>
+          <div className="update-card-heading">
+            <p>{currentVersionLabel}</p>
+            <h2>{t("settings.updateCardTitle")}</h2>
+          </div>
+        </div>
+
+        <div className="update-card-version-row">
+          <strong>{versionLabel}</strong>
+          {publishedLabel ? <span>{publishedLabel}</span> : null}
+        </div>
+
+        {updateState.notes ? <p className="update-card-notes">{updateState.notes}</p> : null}
+
+        <div className="update-card-actions">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => setUpdateState({ kind: "idle" })}
+          >
+            {t("settings.updateIgnoreThisTime")}
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => void handleInstallAvailableUpdate(updateState.version)}
+          >
+            {t("settings.updateNow")}
+          </button>
+        </div>
+      </section>
+    );
   };
 
   const renderSettingsPanel = () => (
@@ -5584,13 +5670,7 @@ function App() {
           return;
         }
 
-        setUpdateState({ kind: "installing", version: updateState.version });
-        try {
-          const nextState = await installAvailableUpdate(updateState.version);
-          setUpdateState(nextState);
-        } catch {
-          setUpdateState({ kind: "error", message: t("settings.updateError") });
-        }
+        await handleInstallAvailableUpdate(updateState.version);
       }}
       aboutContent={renderAboutWorkspace({ embedded: true })}
     />
@@ -6139,31 +6219,7 @@ function App() {
         </div>
       ) : null}
 
-      {updateState.kind === "available" && (
-        <div className="update-toast" role="status" aria-live="polite">
-          <div className="update-toast-copy">
-            <strong>
-              {t("settings.updateAvailablePrefix")} {updateState.version}
-            </strong>
-            {updateState.notes ? <p>{updateState.notes}</p> : null}
-          </div>
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={async () => {
-              setUpdateState({ kind: "installing", version: updateState.version });
-              try {
-                const nextState = await installAvailableUpdate(updateState.version);
-                setUpdateState(nextState);
-              } catch {
-                setUpdateState({ kind: "error", message: t("settings.updateError") });
-              }
-            }}
-          >
-            {t("settings.updateNow")}
-          </button>
-        </div>
-      )}
+      {renderUpdateCard()}
 
       {showMigrateModal && selectedConversation ? (
         <MigrateModal

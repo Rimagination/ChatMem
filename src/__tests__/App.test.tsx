@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import { I18nProvider } from "../i18n/I18nProvider";
 import { truncateSidebarTitle, truncateWorkspaceTitle } from "../utils/titleUtils";
+import packageInfo from "../../package.json";
 
 const mockInvoke = vi.fn();
 const mockCheckUpdate = vi.fn();
@@ -366,7 +367,7 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "Choose a conversation" })).toBeTruthy();
   });
 
-  it("renders the 1.1.4 version and updated About section from Settings", async () => {
+  it("renders the package version and updated About section from Settings", async () => {
     localStorage.setItem(
       "chatmem.settings",
       JSON.stringify({ locale: "en", autoCheckUpdates: false, autoCaptureMemory: false }),
@@ -374,7 +375,7 @@ describe("App", () => {
 
     renderApp();
 
-    expect(await screen.findByText("v1.1.4")).toBeTruthy();
+    expect(await screen.findByText(`v${packageInfo.version}`)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "About us" })).toBeNull();
 
     fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
@@ -2535,5 +2536,40 @@ describe("App", () => {
 
     expect(mockCheckUpdate).toHaveBeenCalledTimes(1);
     expect(screen.getAllByText(/1\.0\.0/).length).toBeGreaterThan(0);
+  });
+
+  it("shows a spacious update card and lets the user ignore it for this session", async () => {
+    vi.useFakeTimers();
+    localStorage.setItem(
+      "chatmem.settings",
+      JSON.stringify({ locale: "en", autoCheckUpdates: true, autoCaptureMemory: false }),
+    );
+    mockCheckUpdate.mockResolvedValue({
+      shouldUpdate: true,
+      manifest: {
+        version: "1.2.3",
+        date: "2026-06-30T12:00:00Z",
+        body: "Improves ZCode discovery and import performance.",
+      },
+    });
+
+    renderApp();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3600);
+    });
+
+    const card = screen.getByRole("status", { name: "Software update available" });
+    expect(within(card).getByText("Update available")).toBeTruthy();
+    expect(within(card).getByText("Version 1.2.3 is ready")).toBeTruthy();
+    expect(
+      within(card).getByText("Improves ZCode discovery and import performance."),
+    ).toBeTruthy();
+    expect(within(card).getByText(/Published/)).toBeTruthy();
+
+    fireEvent.click(within(card).getByRole("button", { name: "Not this time" }));
+
+    expect(screen.queryByRole("status", { name: "Software update available" })).toBeNull();
+    expect(mockInstallUpdate).not.toHaveBeenCalled();
   });
 });

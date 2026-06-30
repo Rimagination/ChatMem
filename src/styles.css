@@ -2709,7 +2709,7 @@ button {
 .radio-text small,
 .modal-helper-text,
 .settings-notice,
-.update-toast-copy p,
+.update-card p,
 .message-content {
   margin: 0;
   color: var(--text-secondary);
@@ -4625,24 +4625,117 @@ button {
   line-height: 1.45;
 }
 
-.update-toast {
+.update-card {
   position: fixed;
-  right: 18px;
-  bottom: 18px;
-  width: min(360px, calc(100vw - 32px));
-  padding: 16px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.98);
-  border: 1px solid rgba(58, 143, 100, 0.16);
-  box-shadow: var(--shadow-float);
+  right: 24px;
+  bottom: 24px;
+  width: min(480px, calc(100vw - 32px));
+  padding: 20px;
+  border-radius: 14px;
+  background: rgba(252, 254, 250, 0.98);
+  border: 1px solid rgba(58, 143, 100, 0.18);
+  box-shadow: 0 24px 64px rgba(18, 26, 20, 0.18);
   display: grid;
-  gap: 12px;
+  gap: 16px;
   z-index: 1100;
 }
 
-.update-toast-copy {
+.update-card-header {
   display: grid;
-  gap: 6px;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+}
+
+.update-card-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-strong);
+  background: rgba(58, 143, 100, 0.1);
+  border: 1px solid rgba(58, 143, 100, 0.18);
+}
+
+.update-card-icon svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.update-card-heading {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.update-card-heading p {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.update-card-heading h2 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.update-card-version-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: rgba(22, 32, 24, 0.04);
+  border: 1px solid rgba(22, 32, 24, 0.06);
+}
+
+.update-card-version-row strong {
+  color: var(--text-primary);
+  font-size: 15px;
+}
+
+.update-card-version-row span,
+.update-card-notes {
+  color: var(--text-secondary);
+}
+
+.update-card-notes {
+  max-height: 120px;
+  overflow: auto;
+  padding-right: 4px;
+  line-height: 1.65;
+}
+
+.update-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+@media (max-width: 620px) {
+  .update-card {
+    right: 16px;
+    bottom: 16px;
+    padding: 16px;
+  }
+
+  .update-card-actions {
+    justify-content: stretch;
+  }
+
+  .update-card-actions .btn {
+    flex: 1 1 0;
+  }
 }
 
 .app-notice-toast {

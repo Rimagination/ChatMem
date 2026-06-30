@@ -38,11 +38,11 @@ jobs:
           releaseName: ChatMem ${{ github.ref_name }}
           releaseBody: |
             ChatMem ${{ github.ref_name }} release:
-            - Shows conversations from the first message, then loads following messages progressively.
-            - Loads small conversations fully and uses message windows only for larger conversations.
-            - Moves the sidebar collapse control next to the logo and keeps the maximized conversation surface inset.
-            - Moves About ChatMem into Settings.
-            - Keeps summary-style migration and Favorites available.
+            - Finds current ZCode task-index and rollout history, including GLM/ZCode conversations older builds could miss.
+            - Deduplicates migrated ZCode conversations during import and keeps the newer or more complete copy.
+            - Adds a spacious in-app update card with Install update and Not this time actions.
+            - Keeps conversation loading ordered from the earliest message and improves large-conversation loading behavior.
+            - Preserves the sidebar/header layout fixes and Settings-hosted About page.
 
             推荐下载 / Recommended downloads:
             - Windows installer: download the `.exe` installer if you want the normal install flow.
@@ -121,11 +121,11 @@ jobs:
           releaseName: ChatMem ${{ github.ref_name }}
           releaseBody: |
             ChatMem ${{ github.ref_name }} release:
-            - Shows conversations from the first message, then loads following messages progressively.
-            - Loads small conversations fully and uses message windows only for larger conversations.
-            - Moves the sidebar collapse control next to the logo and keeps the maximized conversation surface inset.
-            - Moves About ChatMem into Settings.
-            - Keeps summary-style migration and Favorites available.
+            - Finds current ZCode task-index and rollout history, including GLM/ZCode conversations older builds could miss.
+            - Deduplicates migrated ZCode conversations during import and keeps the newer or more complete copy.
+            - Adds a spacious in-app update card with Install update and Not this time actions.
+            - Keeps conversation loading ordered from the earliest message and improves large-conversation loading behavior.
+            - Preserves the sidebar/header layout fixes and Settings-hosted About page.
 
             推荐下载 / Recommended downloads:
             - Windows installer: download the `.exe` installer if you want the normal install flow.
