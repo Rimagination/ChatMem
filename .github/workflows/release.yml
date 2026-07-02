@@ -37,16 +37,19 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: ChatMem ${{ github.ref_name }}
           releaseBody: |
-            ChatMem ${{ github.ref_name }} release:
-            - Adds lightweight message previews inside duplicate review so users can inspect candidates before choosing which copy to keep.
-            - Keeps duplicate previews bounded to a small message window to avoid slowing down long conversations.
-            - Immediately removes moved or emptied Trash candidates from the sidebar and duplicate detector.
-            - Excludes conversations that are still in Trash from list/search merge results, including adapter, sync folder, and memory-store sources.
-            - Keeps the manual duplicate workflow from v1.2.3: ChatMem asks users to choose and does not auto-delete duplicates.
+            ChatMem ${{ github.ref_name }}
 
-            推荐下载 / Recommended downloads:
-            - Windows installer: download the `.exe` installer if you want the normal install flow.
-            - Windows portable: download `ChatMem-${{ github.ref_name }}-portable.zip` if you want a no-install portable build.
+            This release makes ChatMem easier to set up, easier to understand, and quieter to use:
+            - Cleaner Settings pages with focused sections for sync, agent setup, updates, and About.
+            - Simpler memory management: the desktop app is for viewing or deleting suggestions and rules; supported agents save useful suggestions as rules.
+            - Better Agent Integration setup for Claude, Codex, Gemini, OpenCode, ZCode, and Hermes.
+            - Fixed duplicate Codex ChatMem entries by keeping the shared skill in `.agents/skills/chatmem`.
+            - Faster project recall through the `recall_project_work` MCP entrypoint.
+            - Clearer local-history sources, update checks, and local data checks.
+
+            Recommended downloads:
+            - Windows installer: download the `.exe` installer for the normal install flow.
+            - Windows portable: download `ChatMem-${{ github.ref_name }}-portable.zip` for a no-install build.
             - macOS Apple Silicon (M1/M2/M3/M4): download `ChatMem-${{ github.ref_name }}-macOS-Apple-Silicon.dmg`.
             - macOS Intel: download `ChatMem-${{ github.ref_name }}-macOS-Intel.dmg`.
 
@@ -120,16 +123,19 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: ChatMem ${{ github.ref_name }}
           releaseBody: |
-            ChatMem ${{ github.ref_name }} release:
-            - Adds lightweight message previews inside duplicate review so users can inspect candidates before choosing which copy to keep.
-            - Keeps duplicate previews bounded to a small message window to avoid slowing down long conversations.
-            - Immediately removes moved or emptied Trash candidates from the sidebar and duplicate detector.
-            - Excludes conversations that are still in Trash from list/search merge results, including adapter, sync folder, and memory-store sources.
-            - Keeps the manual duplicate workflow from v1.2.3: ChatMem asks users to choose and does not auto-delete duplicates.
+            ChatMem ${{ github.ref_name }}
 
-            推荐下载 / Recommended downloads:
-            - Windows installer: download the `.exe` installer if you want the normal install flow.
-            - Windows portable: download `ChatMem-${{ github.ref_name }}-portable.zip` if you want a no-install portable build.
+            This release makes ChatMem easier to set up, easier to understand, and quieter to use:
+            - Cleaner Settings pages with focused sections for sync, agent setup, updates, and About.
+            - Simpler memory management: the desktop app is for viewing or deleting suggestions and rules; supported agents save useful suggestions as rules.
+            - Better Agent Integration setup for Claude, Codex, Gemini, OpenCode, ZCode, and Hermes.
+            - Fixed duplicate Codex ChatMem entries by keeping the shared skill in `.agents/skills/chatmem`.
+            - Faster project recall through the `recall_project_work` MCP entrypoint.
+            - Clearer local-history sources, update checks, and local data checks.
+
+            Recommended downloads:
+            - Windows installer: download the `.exe` installer for the normal install flow.
+            - Windows portable: download `ChatMem-${{ github.ref_name }}-portable.zip` for a no-install build.
             - macOS Apple Silicon (M1/M2/M3/M4): download `ChatMem-${{ github.ref_name }}-macOS-Apple-Silicon.dmg`.
             - macOS Intel: download `ChatMem-${{ github.ref_name }}-macOS-Intel.dmg`.
 

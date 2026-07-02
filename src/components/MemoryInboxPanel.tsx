@@ -1,7 +1,7 @@
 import type { MemoryCandidate } from "../chatmem-memory/types";
 import type { Locale } from "../i18n/types";
 
-export type MemoryCandidateApprovalDraft = {
+export type MemoryCandidateDisplayDraft = {
   title: string;
   value: string;
   usageHint: string;
@@ -11,9 +11,7 @@ type MemoryInboxPanelProps = {
   candidates: MemoryCandidate[];
   loading: boolean;
   locale: Locale;
-  onApprove: (candidate: MemoryCandidate, reviewDraft?: MemoryCandidateApprovalDraft) => void;
-  onApproveMerge: (candidate: MemoryCandidate) => void;
-  onReject: (candidateId: string) => void;
+  onDelete: (candidateId: string) => void;
 };
 
 const knownChineseCandidateText = new Map<string, string>([
@@ -35,7 +33,7 @@ const knownChineseCandidateText = new Map<string, string>([
   ],
   [
     "Do not auto-approve candidate writes",
-    "\u4e0d\u8981\u81ea\u52a8\u6279\u51c6\u5019\u9009\u8bb0\u5fc6\u5199\u5165\u3002",
+    "\u4e0d\u8981\u81ea\u52a8\u5199\u5165\u5019\u9009\u8bb0\u5fc6\u3002",
   ],
 ]);
 
@@ -64,22 +62,29 @@ function localizeCandidateText(text: string, locale: Locale) {
 }
 
 function localizeUsageHint(candidate: MemoryCandidate, locale: Locale) {
-  if (locale === "en" || hasCjk(candidate.why_it_matters)) {
+  if (locale === "en") {
     return candidate.why_it_matters;
   }
 
-  if (/automatically extracted/i.test(candidate.why_it_matters)) {
-    return "\u4ece\u660e\u786e\u7684\u957f\u671f\u8bb0\u5fc6\u63aa\u8f9e\u81ea\u52a8\u62bd\u53d6\u3002\u6279\u51c6\u524d\u8bf7\u786e\u8ba4\u5b83\u786e\u5b9e\u9002\u5408\u6bcf\u6b21\u542f\u52a8\u90fd\u5e26\u4e0a\u3002";
+  if (
+    /automatically extracted/i.test(candidate.why_it_matters) ||
+    (isAutoExtracted(candidate) && /批准|审批|确认/.test(candidate.why_it_matters))
+  ) {
+    return "\u4ece\u660e\u786e\u7684\u957f\u671f\u8bb0\u5fc6\u63aa\u8f9e\u81ea\u52a8\u62bd\u53d6\u3002\u662f\u5426\u5199\u5165\u542f\u52a8\u89c4\u5219\uff0c\u8bf7\u4ea4\u7ed9 agent \u7ed3\u5408\u4e0a\u4e0b\u6587\u5904\u7406\u3002";
   }
 
-  if (/human review/i.test(candidate.why_it_matters)) {
-    return "\u9700\u8981\u4eba\u5de5\u786e\u8ba4\u540e\u624d\u4f1a\u6210\u4e3a\u542f\u52a8\u89c4\u5219\u3002";
+  if (/human review/i.test(candidate.why_it_matters) || /人工/.test(candidate.why_it_matters)) {
+    return "\u9700\u8981 agent \u901a\u8fc7 MCP \u6216 skill \u5224\u65ad\u662f\u5426\u5199\u5165\u89c4\u5219\u3002";
   }
 
-  return "\u8fd9\u662f\u4ece\u5386\u53f2\u5bf9\u8bdd\u4e2d\u62bd\u53d6\u7684\u542f\u52a8\u89c4\u5219\u5019\u9009\u3002\u6279\u51c6\u540e\u4f1a\u5728\u540e\u7eed\u4efb\u52a1\u5f00\u59cb\u65f6\u63d0\u4f9b\u7ed9 agent\uff0c\u8bf7\u5148\u786e\u8ba4\u5b83\u662f\u957f\u671f\u7a33\u5b9a\u7684\u89c4\u5219\u3002";
+  if (hasCjk(candidate.why_it_matters)) {
+    return candidate.why_it_matters;
+  }
+
+  return "\u8fd9\u662f\u4ece\u5386\u53f2\u5bf9\u8bdd\u4e2d\u62bd\u53d6\u7684\u8bb0\u5fc6\u5efa\u8bae\u3002\u8f6f\u4ef6\u91cc\u53ea\u5c55\u793a\u548c\u5220\u9664\uff1b\u5199\u5165\u89c4\u5219\u8bf7\u4ea4\u7ed9 agent \u5904\u7406\u3002";
 }
 
-function buildApprovalDraft(candidate: MemoryCandidate, locale: Locale): MemoryCandidateApprovalDraft {
+function buildDisplayDraft(candidate: MemoryCandidate, locale: Locale): MemoryCandidateDisplayDraft {
   return {
     title: localizeCandidateText(candidate.summary, locale),
     value: localizeCandidateText(candidate.value, locale),
@@ -87,7 +92,7 @@ function buildApprovalDraft(candidate: MemoryCandidate, locale: Locale): MemoryC
   };
 }
 
-function draftDiffers(candidate: MemoryCandidate, draft: MemoryCandidateApprovalDraft) {
+function draftDiffers(candidate: MemoryCandidate, draft: MemoryCandidateDisplayDraft) {
   return (
     draft.title !== candidate.summary ||
     draft.value !== candidate.value ||
@@ -124,12 +129,12 @@ function formatProposedBy(proposedBy: string, isEnglish: boolean) {
 
 function formatOrigin(candidate: MemoryCandidate, isEnglish: boolean) {
   if (isAutoExtracted(candidate)) {
-    return isEnglish ? "Source: auto-extracted suggestion · not enabled" : "\u6765\u6e90\uff1a\u81ea\u52a8\u62bd\u53d6 \u00b7 \u5c1a\u672a\u542f\u7528";
+    return isEnglish ? "Source: automatic suggestion - view only" : "来源：自动建议 · 仅供查看";
   }
 
   return isEnglish
-    ? `Source: ${candidate.proposed_by} · not enabled`
-    : `\u6765\u6e90\uff1a${formatProposedBy(candidate.proposed_by, isEnglish)} \u63d0\u8bae \u00b7 \u5c1a\u672a\u542f\u7528`;
+    ? `Source: ${candidate.proposed_by} - view only`
+    : `\u6765\u6e90\uff1a${formatProposedBy(candidate.proposed_by, isEnglish)} \u63d0\u8bae \u00b7 \u4ec5\u4f9b\u67e5\u770b`;
 }
 
 function formatStatus(status: string, isEnglish: boolean) {
@@ -138,8 +143,8 @@ function formatStatus(status: string, isEnglish: boolean) {
   }
 
   const labels: Record<string, string> = {
-    pending_review: "\u672a\u542f\u7528",
-    approved: "\u5df2\u6279\u51c6",
+    pending_review: "\u5efa\u8bae",
+    approved: "\u5df2\u5199\u5165",
     rejected: "\u5df2\u62d2\u7edd",
     snoozed: "\u5df2\u6682\u7f13",
   };
@@ -181,26 +186,24 @@ export default function MemoryInboxPanel({
   candidates,
   loading,
   locale,
-  onApprove,
-  onApproveMerge,
-  onReject,
+  onDelete,
 }: MemoryInboxPanelProps) {
   const isEnglish = locale === "en";
   const copy = {
     empty: isEnglish
-      ? "No pending startup rule candidates for this repository."
-      : "\u8fd9\u4e2a\u4ed3\u5e93\u6682\u65e0\u5f85\u786e\u8ba4\u5efa\u8bae\u3002",
-    heading: isEnglish ? "Review Suggestions" : "\u5f85\u786e\u8ba4\u5efa\u8bae",
+      ? "No memory suggestions for this repository."
+      : "\u8fd9\u4e2a\u4ed3\u5e93\u6682\u65e0\u8bb0\u5fc6\u5efa\u8bae\u3002",
+    heading: isEnglish ? "Memory Suggestions" : "\u8bb0\u5fc6\u5efa\u8bae",
     subtitle: isEnglish
-      ? "These are suggestions from automation or agents; approval turns them into startup rules. Local history remains searchable without approval."
-      : "\u8fd9\u91cc\u53ea\u653e\u81ea\u52a8\u6216 agent \u63d0\u51fa\u7684\u5efa\u8bae\uff1b\u6279\u51c6\u540e\u624d\u4f1a\u6210\u4e3a\u542f\u52a8\u89c4\u5219\u3002\u672c\u5730\u5386\u53f2\u4e0d\u9700\u8981\u6279\u51c6\u4e5f\u80fd\u68c0\u7d22\u3002",
-    noEvidence: isEnglish ? "No linked evidence yet" : "\u6682\u65e0\u5173\u8054\u8bc1\u636e",
-    oneEvidence: isEnglish ? "1 linked evidence reference" : "1 \u6761\u5173\u8054\u8bc1\u636e",
-    evidenceReady: isEnglish ? "Evidence ready" : "\u8bc1\u636e\u5c31\u7eea",
-    evidenceExcerpt: isEnglish ? "Evidence excerpt" : "\u8bc1\u636e\u539f\u6587",
-    needsEvidence: isEnglish ? "Needs evidence" : "\u9700\u8981\u8bc1\u636e",
-    conflictReview: isEnglish ? "Conflict review" : "\u51b2\u7a81\u5ba1\u6838",
-    mergeReview: isEnglish ? "Merge-aware review" : "\u5408\u5e76\u5ba1\u6838",
+      ? "Review or delete suggestions here. Supported agents can turn useful suggestions into startup rules."
+      : "你可以在这里查看或删除建议。有用的建议可由支持的 Agent 写入启动规则。",
+    noEvidence: isEnglish ? "No linked source yet" : "暂无关联来源",
+    oneEvidence: isEnglish ? "1 linked source" : "1 条关联来源",
+    evidenceReady: isEnglish ? "Source ready" : "来源就绪",
+    evidenceExcerpt: isEnglish ? "Source excerpt" : "来源片段",
+    needsEvidence: isEnglish ? "Needs source" : "需要来源",
+    conflictReview: isEnglish ? "Possible conflict" : "可能冲突",
+    mergeReview: isEnglish ? "Related suggestion" : "相关建议",
     netNew: isEnglish ? "New suggestion" : "\u65b0\u589e\u5efa\u8bae",
     possibleConflict: isEnglish ? "Possible conflict with" : "\u53ef\u80fd\u4e0e",
     conflictSuffix: isEnglish ? "." : "\u51b2\u7a81\u3002",
@@ -212,13 +215,11 @@ export default function MemoryInboxPanel({
     mergedUsage: isEnglish ? "Usage hint" : "\u4f7f\u7528\u63d0\u793a",
     originalCandidate: isEnglish ? "Original text" : "\u539f\u6587",
     englishOriginal: isEnglish
-      ? "English original. Rewrite it before approving if this should be a Chinese startup rule."
-      : "\u82f1\u6587\u539f\u6587\uff0c\u5efa\u8bae\u6539\u5199\u6210\u4e2d\u6587\u540e\u518d\u6279\u51c6\u3002",
+      ? "English original. Ask an agent to rewrite or promote it if it should become a Chinese startup rule."
+      : "\u82f1\u6587\u539f\u6587\u3002\u5982\u679c\u5b83\u5e94\u8be5\u6210\u4e3a\u4e2d\u6587\u542f\u52a8\u89c4\u5219\uff0c\u8bf7\u8ba9 agent \u6539\u5199\u6216\u5199\u5165\u3002",
     trigger: isEnglish ? "Trigger" : "\u89e6\u53d1\u8bcd",
-    batchRejectAuto: isEnglish ? "Reject auto suggestions" : "\u6279\u91cf\u5ffd\u7565\u81ea\u52a8\u5efa\u8bae",
-    approveMerge: isEnglish ? "Approve merge" : "\u6279\u51c6\u5408\u5e76",
-    approve: isEnglish ? "Approve startup rule" : "\u6279\u51c6\u4e3a\u542f\u52a8\u89c4\u5219",
-    reject: isEnglish ? "Reject" : "\u5ffd\u7565\u5019\u9009",
+    batchRejectAuto: isEnglish ? "Delete auto suggestions" : "\u6279\u91cf\u5220\u9664\u81ea\u52a8\u5efa\u8bae",
+    reject: isEnglish ? "Delete suggestion" : "\u5220\u9664\u5efa\u8bae",
   };
   const autoSuggestionIds = candidates
     .filter((candidate) => candidate.status === "pending_review" && isAutoExtracted(candidate))
@@ -234,8 +235,8 @@ export default function MemoryInboxPanel({
     }
 
     return isEnglish
-      ? `${candidate.evidence_refs.length} linked evidence references`
-      : `${candidate.evidence_refs.length} \u6761\u5173\u8054\u8bc1\u636e`;
+      ? `${candidate.evidence_refs.length} linked sources`
+      : `${candidate.evidence_refs.length} 条关联来源`;
   };
 
   if (loading) {
@@ -270,7 +271,7 @@ export default function MemoryInboxPanel({
           <button
             type="button"
             className="btn btn-secondary memory-batch-action"
-            onClick={() => autoSuggestionIds.forEach((candidateId) => onReject(candidateId))}
+            onClick={() => autoSuggestionIds.forEach((candidateId) => onDelete(candidateId))}
           >
             {copy.batchRejectAuto}
           </button>
@@ -278,7 +279,7 @@ export default function MemoryInboxPanel({
       </div>
       <div className="memory-card-list">
         {candidates.map((candidate) => {
-          const draft = buildApprovalDraft(candidate, locale);
+          const draft = buildDisplayDraft(candidate, locale);
           const hasReviewDraft = draftDiffers(candidate, draft);
           const trigger = detectTrigger(candidate);
 
@@ -382,22 +383,10 @@ export default function MemoryInboxPanel({
                 </div>
               )}
               <div className="memory-card-actions">
-                {candidate.merge_suggestion?.proposed_value ? (
-                  <button type="button" className="btn btn-primary" onClick={() => onApproveMerge(candidate)}>
-                    {copy.approveMerge}
-                  </button>
-                ) : null}
                 <button
                   type="button"
-                  className="btn btn-primary"
-                  onClick={() => onApprove(candidate, locale === "en" ? undefined : draft)}
-                >
-                  {copy.approve}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => onReject(candidate.candidate_id)}
+                  className="btn btn-danger"
+                  onClick={() => onDelete(candidate.candidate_id)}
                 >
                   {copy.reject}
                 </button>

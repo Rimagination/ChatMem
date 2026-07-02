@@ -6,7 +6,6 @@ type RepoMemoryPanelProps = {
   memories: ApprovedMemory[];
   loading: boolean;
   locale: Locale;
-  onReverify: (memoryId: string) => void;
   onRetire: (memoryId: string) => void;
   onRetireMany?: (memoryIds: string[]) => void;
   autoFocusFirstMemory?: boolean;
@@ -21,7 +20,7 @@ function formatFreshnessLabel(status: string, locale: Locale) {
   }
 
   if (status === "needs_review") {
-    return isEnglish ? "needs review" : "\u9700\u590d\u6838";
+    return isEnglish ? "needs agent review" : "\u9700 agent \u5904\u7406";
   }
 
   if (status === "stale") {
@@ -43,7 +42,7 @@ function formatStatusLabel(status: string, locale: Locale) {
   }
 
   if (status === "retired") {
-    return isEnglish ? "retired" : "\u505c\u7528";
+    return isEnglish ? "deleted" : "\u5df2\u5220\u9664";
   }
 
   return status;
@@ -53,7 +52,7 @@ function formatVerifiedLabel(memory: ApprovedMemory, locale: Locale) {
   const isEnglish = locale === "en";
 
   if (isAutoQuarantinedMemory(memory)) {
-    return isEnglish ? "Waiting for human confirmation" : "\u7b49\u5f85\u4eba\u5de5\u786e\u8ba4";
+    return isEnglish ? "Waiting for agent handling" : "\u7b49\u5f85 agent \u5904\u7406";
   }
 
   if (!memory.last_verified_at) {
@@ -75,7 +74,6 @@ export default function RepoMemoryPanel({
   memories,
   loading,
   locale,
-  onReverify,
   onRetire,
   onRetireMany,
   autoFocusFirstMemory = false,
@@ -86,22 +84,21 @@ export default function RepoMemoryPanel({
   const isEnglish = locale === "en";
   const copy = {
     empty: isEnglish
-      ? "No approved startup rules yet."
-      : "\u6682\u65e0\u5df2\u6279\u51c6\u7684\u542f\u52a8\u89c4\u5219\u3002",
-    heading: isEnglish ? "Approved Startup Rules" : "\u5df2\u6279\u51c6\u542f\u52a8\u89c4\u5219",
+      ? "No startup rules yet."
+      : "\u6682\u65e0\u542f\u52a8\u89c4\u5219\u3002",
+    heading: isEnglish ? "Startup Rules" : "\u542f\u52a8\u89c4\u5219",
     subtitle: isEnglish
-      ? "These durable rules are injected at task startup. Local history stays available separately through search evidence."
-      : "\u8fd9\u4e9b\u662f\u4efb\u52a1\u5f00\u59cb\u65f6\u8981\u5e26\u4e0a\u7684\u7a33\u5b9a\u89c4\u5219\u3002\u672c\u5730\u5386\u53f2\u4ecd\u7136\u901a\u8fc7\u68c0\u7d22\u5355\u72ec\u63d0\u4f9b\u8bc1\u636e\u3002",
+      ? "Review or delete existing rules here. Supported agents handle creating and updating rules."
+      : "你可以在这里查看或删除已有规则。新增和更新规则由支持的 Agent 完成。",
     freshnessScore: isEnglish ? "Freshness score" : "\u65b0\u9c9c\u5ea6\u5206\u6570",
-    confirmValid: isEnglish ? "Confirm still valid" : "\u786e\u8ba4\u4ecd\u6709\u6548",
-    retire: isEnglish ? "Retire rule" : "\u505c\u7528\u89c4\u5219",
+    retire: isEnglish ? "Delete rule" : "\u5220\u9664\u89c4\u5219",
     retireLegacyAutoRules: (count: number) =>
       isEnglish
-        ? `Retire legacy auto rules ${count}`
-        : `\u5168\u90e8\u505c\u7528\u65e7\u7248\u81ea\u52a8\u89c4\u5219 ${count}`,
+        ? `Delete low-confidence rules ${count}`
+        : `删除低置信度规则 ${count}`,
     autoQuarantineNote: isEnglish
-      ? "Legacy auto-extracted rule with weak evidence. It will be used as a startup rule only after you confirm it."
-      : "\u65e7\u7248\u81ea\u52a8\u62bd\u53d6\uff0c\u8bc1\u636e\u4e0d\u8db3\uff1b\u786e\u8ba4\u540e\u624d\u4f1a\u4f5c\u4e3a\u542f\u52a8\u89c4\u5219\u4f7f\u7528\u3002",
+      ? "This older rule has too little source context. Ask an agent to update it before relying on it."
+      : "这条旧规则的来源不足。依赖它之前，请让 Agent 更新一次。",
   };
 
   useEffect(() => {
@@ -224,13 +221,6 @@ export default function RepoMemoryPanel({
               </div>
             )}
             <div className="memory-card-actions">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => onReverify(memory.memory_id)}
-              >
-                {copy.confirmValid}
-              </button>
               <button
                 type="button"
                 className="btn btn-danger"

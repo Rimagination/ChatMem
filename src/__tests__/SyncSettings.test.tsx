@@ -1,5 +1,6 @@
 ﻿import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { within } from "@testing-library/react";
 import App from "../App";
 import { I18nProvider } from "../i18n/I18nProvider";
 import { SETTINGS_STORAGE_KEY } from "../settings/storage";
@@ -35,6 +36,18 @@ function renderApp() {
   );
 }
 
+function clickSegmentedOption(groupName: string, optionName: string) {
+  const group = screen.getByRole("radiogroup", { name: groupName });
+  fireEvent.click(within(group).getByRole("radio", { name: optionName }));
+}
+
+function expectSegmentedOptionSelected(groupName: string, optionName: string) {
+  const group = screen.getByRole("radiogroup", { name: groupName });
+  expect(within(group).getByRole("radio", { name: optionName }).getAttribute("aria-checked")).toBe(
+    "true",
+  );
+}
+
 describe("Sync settings", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -53,31 +66,31 @@ describe("Sync settings", () => {
     expect(screen.queryByRole("button", { name: "About us" })).toBeNull();
 
     fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    expect(await screen.findByRole("heading", { name: "General" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "About ChatMem" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "About" }));
     expect(await screen.findByRole("heading", { name: "About ChatMem" })).toBeTruthy();
-    expect(screen.getByText(/local-first memory and migration layer/i)).toBeTruthy();
-    expect(screen.getByText("What changed in 1.1.4")).toBeTruthy();
-    expect(screen.getByText("Continuation briefs")).toBeTruthy();
-    expect(screen.getByText("Trash actions stay visible")).toBeTruthy();
-    expect(screen.getByText("ZCode task history")).toBeTruthy();
-    expect(screen.getByText("Markdown conversation reading")).toBeTruthy();
+    expect(screen.getByText(/keeps local project memory organized/i)).toBeTruthy();
+    expect(screen.getByText(/Current version v/)).toBeTruthy();
+    expect(screen.getByText("Cleaner settings")).toBeTruthy();
+    expect(screen.getByText("Smoother agent handoff")).toBeTruthy();
+    expect(screen.queryByText("What changed in 1.1.4")).toBeNull();
     expect(screen.getByText("Rimagination/ChatMem")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Acknowledgements" })).toBeNull();
-    expect(screen.getByText("Design references and acknowledgements")).toBeTruthy();
+    expect(screen.getByText("References")).toBeTruthy();
     expect(screen.getByText(/mem0/)).toBeTruthy();
     expect(screen.getByText(/Letta/)).toBeTruthy();
     expect(screen.getByText(/Zep/)).toBeTruthy();
     expect(screen.getByText(/LLM Wiki/)).toBeTruthy();
 
+    fireEvent.click(screen.getByRole("button", { name: "Conversation Data Sync" }));
     expect(await screen.findByRole("heading", { name: "Conversation Data Sync" })).toBeTruthy();
     expect(screen.queryByText(/Use a generic WebDAV server/)).toBeNull();
     expect(screen.queryByText(/Account details/)).toBeNull();
 
-    const methodSelect = screen.getByLabelText(
-      "Conversation data sync method:",
-    ) as HTMLSelectElement;
-    fireEvent.change(methodSelect, { target: { value: "webdav" } });
-    expect(methodSelect.value).toBe("webdav");
-    expect(screen.getByRole("option", { name: "WebDAV" }).closest("select")).toBe(methodSelect);
+    clickSegmentedOption("Conversation data sync method:", "WebDAV");
+    expectSegmentedOptionSelected("Conversation data sync method:", "WebDAV");
     expect(screen.queryByText(/Passwords are kept/)).toBeNull();
     fireEvent.change(screen.getByLabelText("Protocol"), {
       target: { value: "https" },
@@ -91,9 +104,8 @@ describe("Sync settings", () => {
     fireEvent.change(screen.getByLabelText("Password"), {
       target: { value: "local-secret" },
     });
-    fireEvent.change(screen.getByLabelText("Download files"), {
-      target: { value: "as-needed" },
-    });
+    clickSegmentedOption("Download files", "As needed");
+    expectSegmentedOptionSelected("Download files", "As needed");
 
     await waitFor(() => {
       const saved = JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY) ?? "{}");
@@ -139,11 +151,10 @@ describe("Sync settings", () => {
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Conversation Data Sync" }));
 
     await waitFor(() => {
-      expect(
-        (screen.getByLabelText("Conversation data sync method:") as HTMLSelectElement).value,
-      ).toBe("webdav");
+      expectSegmentedOptionSelected("Conversation data sync method:", "WebDAV");
       expect((screen.getByLabelText("Server and path") as HTMLInputElement).value).toBe(
         "dav.example.com/remote.php/dav/files/liang",
       );
@@ -151,9 +162,7 @@ describe("Sync settings", () => {
         "liang@example.com",
       );
       expect((screen.getByLabelText("Password") as HTMLInputElement).value).toBe("saved-secret");
-      expect((screen.getByLabelText("Download files") as HTMLSelectElement).value).toBe(
-        "as-needed",
-      );
+      expectSegmentedOptionSelected("Download files", "As needed");
     });
 
     expect(mockInvoke).toHaveBeenCalledWith("load_app_settings");
@@ -176,9 +185,8 @@ describe("Sync settings", () => {
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
-    fireEvent.change(await screen.findByLabelText("Conversation data sync method:"), {
-      target: { value: "webdav" },
-    });
+    fireEvent.click(screen.getByRole("button", { name: "Conversation Data Sync" }));
+    clickSegmentedOption("Conversation data sync method:", "WebDAV");
     fireEvent.change(screen.getByLabelText("Protocol"), {
       target: { value: "https" },
     });
@@ -216,9 +224,8 @@ describe("Sync settings", () => {
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
-    fireEvent.change(await screen.findByLabelText("Conversation data sync method:"), {
-      target: { value: "webdav" },
-    });
+    fireEvent.click(screen.getByRole("button", { name: "Conversation Data Sync" }));
+    clickSegmentedOption("Conversation data sync method:", "WebDAV");
     fireEvent.change(screen.getByLabelText("Protocol"), {
       target: { value: "https" },
     });
@@ -257,28 +264,28 @@ describe("Sync settings", () => {
       if (command === "run_upgrade_readiness_check") {
         return Promise.resolve({
           status: "warning",
-          summary: "Upgrade check found 1 item that needs attention.",
+          summary: "Data check found 1 item that needs attention.",
           checks: [
             {
               key: "settings",
-              label: "Native settings file",
+              label: "App settings",
               status: "ok",
-              detail: "Settings file is available.",
+              detail: "Settings are available.",
             },
             {
               key: "webdav_password",
               label: "WebDAV password",
               status: "warning",
-              detail: "Password is not in the OS credential store.",
+              detail: "Password is missing.",
             },
             {
               key: "memory_store",
-              label: "Memory database",
+              label: "Local memory",
               status: "ok",
-              detail: "Memory database can be opened.",
+              detail: "Local memory can be opened.",
             },
           ],
-          warnings: ["Password is not in the OS credential store."],
+          warnings: ["Password is missing."],
         });
       }
       return Promise.resolve([]);
@@ -287,14 +294,15 @@ describe("Sync settings", () => {
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Run upgrade check" }));
+    fireEvent.click(screen.getByRole("button", { name: "Updates" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Check data" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("run_upgrade_readiness_check");
-      expect(screen.getByText("Upgrade check found 1 item that needs attention.")).toBeTruthy();
-      expect(screen.getByText("Native settings file")).toBeTruthy();
+      expect(screen.getByText("Data check found 1 item that needs attention.")).toBeTruthy();
+      expect(screen.getByText("App settings")).toBeTruthy();
       expect(screen.getByText("WebDAV password")).toBeTruthy();
-      expect(screen.getByText("Memory database")).toBeTruthy();
+      expect(screen.getByText("Local memory")).toBeTruthy();
     });
   });
 
@@ -306,9 +314,10 @@ describe("Sync settings", () => {
             agent: "codex",
             label: "Codex",
             configPath: "C:/Users/demo/.codex/config.toml",
-            instructionsPath: "C:/Users/demo/.codex/skills/chatmem/SKILL.md",
+            instructionsPath: "C:/Users/demo/.agents/skills/chatmem/SKILL.md",
             mcpInstalled: false,
             instructionsInstalled: false,
+            instructionsOutdated: false,
             configExists: true,
             status: "not_installed",
             statusLabel: "Not installed",
@@ -334,6 +343,7 @@ describe("Sync settings", () => {
               instructionsPath: "C:/Users/demo/.agents/skills/chatmem/SKILL.md",
               mcpInstalled: true,
               instructionsInstalled: true,
+              instructionsOutdated: false,
               configExists: true,
               status: "ready",
               statusLabel: "Ready",
@@ -350,17 +360,60 @@ describe("Sync settings", () => {
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agent integration" }));
     expect(await screen.findByRole("heading", { name: "Agent integration" })).toBeTruthy();
     expect((await screen.findAllByText("Codex")).length).toBeGreaterThan(0);
-    expect(screen.getByText(/MCP plus each agent's native guidance entry/)).toBeTruthy();
-    expect(screen.getAllByText("Guidance").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Connect supported agents/)).toBeTruthy();
+    expect(screen.getAllByText("Instructions").length).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getByRole("button", { name: "Install all" }));
+    fireEvent.click(screen.getByRole("button", { name: "Set up all" }));
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith("install_agent_integration", { agent: "all" });
-      expect(screen.getByText("Installed or repaired all detected integrations.")).toBeTruthy();
+      expect(screen.getByText("All detected agents are set up.")).toBeTruthy();
       expect(screen.getByText("Ready")).toBeTruthy();
+    });
+  });
+
+  it("shows outdated agent guidance as repairable from settings", async () => {
+    mockInvoke.mockImplementation((command: string, payload?: Record<string, unknown>) => {
+      if (command === "detect_agent_integrations") {
+        return Promise.resolve([
+          {
+            agent: "codex",
+            label: "Codex",
+            configPath: "C:/Users/demo/.codex/config.toml",
+            instructionsPath: "C:/Users/demo/.agents/skills/chatmem/SKILL.md",
+            mcpInstalled: true,
+            instructionsInstalled: true,
+            instructionsOutdated: true,
+            configExists: true,
+            status: "partial",
+            statusLabel: "Needs update",
+            commandPreview: '"C:/Program Files/ChatMem/ChatMem.exe" --mcp',
+            details: ["ChatMem instructions need an update."],
+          },
+        ]);
+      }
+
+      if (command === "install_agent_integration") {
+        expect(payload).toEqual({ agent: "codex" });
+        return Promise.resolve([]);
+      }
+
+      return Promise.resolve([]);
+    });
+
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Agent integration" }));
+    expect((await screen.findAllByText("Needs update")).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("install_agent_integration", { agent: "codex" });
     });
   });
 });

@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import type {
   LocalHistoryImportReport,
+  MemoryCandidate,
   ProjectContextPayload,
   RepoMemoryHealth,
 } from "../chatmem-memory/types";
@@ -14,6 +15,8 @@ type ProjectIndexStatusProps = {
   loading: boolean;
   scanning: boolean;
   importReport?: LocalHistoryImportReport | null;
+  pendingCandidates?: MemoryCandidate[];
+  pendingCandidatesLoading?: boolean;
   locale: Locale;
   onScan: () => void;
   onOpenRules?: () => void;
@@ -43,12 +46,18 @@ function localizeWarning({
   return warning;
 }
 
+function formatConfidence(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : "--";
+}
+
 export default function ProjectIndexStatus({
   bootstrapReady = false,
   health,
   loading,
   scanning,
   importReport,
+  pendingCandidates,
+  pendingCandidatesLoading = false,
   locale,
   onScan,
   onOpenRules,
@@ -76,6 +85,16 @@ export default function ProjectIndexStatus({
     health?.indexed_chunk_count ?? health?.search_document_count ?? 0;
   const pendingRuleCount = health?.pending_candidate_count ?? 0;
   const approvedRuleCount = health?.approved_memory_count ?? 0;
+  const pendingCandidatePreview = pendingCandidates ?? [];
+  const hasKnownPendingCandidateList = pendingCandidates !== undefined;
+  const visiblePendingCandidates = pendingCandidatePreview.slice(0, 3);
+  const pendingSuggestionTotal = Math.max(pendingRuleCount, pendingCandidatePreview.length);
+  const showPendingSuggestionPreview = visiblePendingCandidates.length > 0;
+  const showPendingCandidateLoadMismatch =
+    hasKnownPendingCandidateList &&
+    pendingRuleCount > 0 &&
+    pendingCandidatePreview.length === 0 &&
+    !pendingCandidatesLoading;
   const visibleWarnings = warnings.filter((warning) => !isPendingCandidateWarning(warning));
   const localizedWarnings = visibleWarnings.map((warning) =>
     localizeWarning({
@@ -113,9 +132,9 @@ export default function ProjectIndexStatus({
         scanning: "Scanning...",
         conversations: "Conversations",
         chunks: "Chunks",
-        pending: "Needs review",
+        pending: "Suggestions",
         approved: "Startup rules",
-        rulesAction: "Manage Rules",
+        rulesAction: "View Memory",
         note: "Note",
         warnings: "Warnings",
         importSummaryLabel: "Latest full local-history import",
@@ -143,10 +162,22 @@ export default function ProjectIndexStatus({
         recallPlaceholder: "Ask local history...",
         recallButton: "Recall",
         recalling: "Searching...",
-        recallHeading: "History evidence",
-        recallEmpty: "No matching local-history evidence found.",
+        recallHeading: "History sources",
+        recallEmpty: "No matching local-history sources found.",
         recallError: "Could not search local history.",
-        evidencePrefix: "Evidence",
+        evidencePrefix: "Source",
+        suggestionsHeading: "Memory suggestions",
+        suggestionsSummary: (visible: number, total: number) =>
+          visible >= total
+            ? `${total} suggestion${total === 1 ? "" : "s"} visible here.`
+            : `Showing ${visible} of ${total} suggestions.`,
+        suggestionsLoading: "Loading rule suggestions...",
+        suggestionsMissing: (count: number) =>
+          `ChatMem found ${count} pending suggestions, but the list did not load.`,
+        reviewSuggestions: "View suggestions",
+        confidence: "Confidence",
+        evidenceCount: (count: number) =>
+          `${count} source${count === 1 ? "" : "s"}`,
       }
     : {
         title: "\u672c\u5730\u5386\u53f2",
@@ -160,9 +191,9 @@ export default function ProjectIndexStatus({
         scanning: "\u626b\u63cf\u4e2d...",
         conversations: "\u4f1a\u8bdd\u6570",
         chunks: "\u5206\u5757\u6570",
-        pending: "\u5f85\u786e\u8ba4",
+        pending: "\u5efa\u8bae",
         approved: "\u542f\u52a8\u89c4\u5219",
-        rulesAction: "\u7ba1\u7406\u89c4\u5219",
+        rulesAction: "\u67e5\u770b\u8bb0\u5fc6",
         note: "\u63d0\u793a",
         warnings: "\u8b66\u544a",
         importSummaryLabel: "\u6700\u8fd1\u5168\u91cf\u672c\u5730\u5386\u53f2\u5bfc\u5165",
@@ -190,10 +221,21 @@ export default function ProjectIndexStatus({
         recallPlaceholder: "\u95ee\u672c\u5730\u5386\u53f2...",
         recallButton: "\u56de\u5fc6",
         recalling: "\u68c0\u7d22\u4e2d...",
-        recallHeading: "\u5386\u53f2\u8bc1\u636e",
-        recallEmpty: "\u6ca1\u6709\u627e\u5230\u5339\u914d\u7684\u672c\u5730\u5386\u53f2\u8bc1\u636e\u3002",
+        recallHeading: "历史来源",
+        recallEmpty: "没有找到匹配的本地历史来源。",
         recallError: "\u65e0\u6cd5\u68c0\u7d22\u672c\u5730\u5386\u53f2\u3002",
-        evidencePrefix: "\u8bc1\u636e",
+        evidencePrefix: "来源",
+        suggestionsHeading: "\u8bb0\u5fc6\u5efa\u8bae",
+        suggestionsSummary: (visible: number, total: number) =>
+          visible >= total
+            ? `\u8fd9\u91cc\u76f4\u63a5\u663e\u793a ${total} \u6761\u5efa\u8bae\u3002`
+            : `\u6b63\u5728\u663e\u793a ${visible} / ${total} \u6761\u5efa\u8bae\u3002`,
+        suggestionsLoading: "\u6b63\u5728\u52a0\u8f7d\u89c4\u5219\u5efa\u8bae...",
+        suggestionsMissing: (count: number) =>
+          `ChatMem 找到 ${count} 条记忆建议，但列表没有加载出来。`,
+        reviewSuggestions: "\u67e5\u770b\u5efa\u8bae",
+        confidence: "\u7f6e\u4fe1\u5ea6",
+        evidenceCount: (count: number) => `${count} 条来源`,
       };
   const noteBody = showScannedButUnmatchedNote
     ? copy.scanMismatch(latestScan?.scanned_conversation_count ?? 0)
@@ -381,6 +423,53 @@ export default function ProjectIndexStatus({
           </div>
         ))}
       </div>
+
+      {pendingCandidatesLoading && pendingRuleCount > 0 ? (
+        <div className="project-index-suggestions project-index-suggestions-loading" role="status">
+          <span className="meta-label">{copy.suggestionsHeading}</span>
+          <p>{copy.suggestionsLoading}</p>
+        </div>
+      ) : null}
+
+      {showPendingSuggestionPreview ? (
+        <div className="project-index-suggestions">
+          <div className="project-index-suggestions-header">
+            <div>
+              <span className="meta-label">{copy.suggestionsHeading}</span>
+              <p>{copy.suggestionsSummary(visiblePendingCandidates.length, pendingSuggestionTotal)}</p>
+            </div>
+            {onOpenRules ? (
+              <button type="button" className="btn btn-secondary" onClick={onOpenRules}>
+                {copy.reviewSuggestions}
+              </button>
+            ) : null}
+          </div>
+          <div className="project-index-suggestion-list">
+            {visiblePendingCandidates.map((candidate, index) => (
+              <article
+                key={candidate.candidate_id || `${candidate.summary}-${index}`}
+                className="project-index-suggestion-card"
+              >
+                <strong>{candidate.summary}</strong>
+                <p>{candidate.why_it_matters || candidate.value}</p>
+                <div className="project-index-suggestion-meta">
+                  <span>{candidate.proposed_by || "--"}</span>
+                  <span>
+                    {copy.confidence}: {formatConfidence(candidate.confidence)}
+                  </span>
+                  <span>{copy.evidenceCount(candidate.evidence_refs?.length ?? 0)}</span>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {showPendingCandidateLoadMismatch ? (
+        <div className="project-index-note is-warning" role="status">
+          <p>{copy.suggestionsMissing(pendingRuleCount)}</p>
+        </div>
+      ) : null}
 
       {onRecallHistory ? (
         <div className="project-history-recall">

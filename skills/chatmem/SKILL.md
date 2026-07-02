@@ -30,37 +30,35 @@ Do not use it for general web search, unrelated memory, or one-off notes that wi
 1. Identify the repo root from the current workspace, user prompt, or ChatMem continuation prompt.
 2. If the user did not explicitly ask for recall or continuation, ask once in the user's language before loading project memory: `要我先用 ChatMem 低成本回忆一下这个项目吗？我会只加载启动规则、最近交接和少量相关历史，不展开完整对话。`
 3. If the user asks a recall/continuation question, pastes a ChatMem continuation prompt, or answers yes to the recall question, proceed without asking again.
-4. If this is a fresh install, a recall question misses obvious prior discussion, or diagnostics show no indexed history, call `import_all_local_history` once before concluding history is absent.
-5. Call `get_project_context` for substantial repo work when available. Use `intent="startup"` for compact startup rules, `intent="recall"` when the user asks whether something was discussed before, and `intent="continue_work"` when resuming.
+4. For recall questions, call `recall_project_work` first with `limit=3`. This is the default high-level recall tool: it returns status, compact answer, de-duplicated evidence, diagnostics, and next actions, and it does not run foreground import or scan.
+5. Use `get_project_context` when startup rules, handoff metadata, pending candidates, and compact history are all needed together. Use `intent="startup"` for compact startup rules, `intent="recall"` when the user asks whether something was discussed before, and `intent="continue_work"` when resuming.
 6. Start with `limit=3` unless the user asks for a broad review. Read approved rules, recent handoff metadata, diagnostics, and the top relevant history summaries first; do not load or paste raw transcripts.
 7. Treat approved startup rules as durable project guidance. Treat history evidence as local evidence that may be stale or unapproved. Never treat absence from approved rules as evidence that a past discussion did not happen.
-8. If `get_project_context` or `get_repo_memory_health` reports unmatched project roots that clearly belong to the same repo, use `merge_repo_alias`, then run `scan_repo_conversations` and retry recall.
-9. If `get_project_context` is unavailable, fall back to `get_repo_memory` and then call `search_repo_history` for specific gaps: prior decisions, commands, key files, errors, earlier attempts, or recall questions. When a hit includes `conversation_id`, use `read_history_conversation` only after the user asks you to read/expand that found conversation.
+8. If `recall_project_work`, `get_project_context`, or `get_repo_memory_health` reports unmatched project roots that clearly belong to the same repo, use `merge_repo_alias`, then run `scan_repo_conversations` as maintenance and retry recall.
+9. If `recall_project_work` is unavailable, fall back to `get_project_context` and then call `search_repo_history` for specific gaps: prior decisions, commands, key files, errors, earlier attempts, or recall questions. When a hit includes `conversation_id`, use `read_history_conversation` only after the user asks you to read/expand that found conversation.
 10. Use the smallest useful context. Prefer approved startup rules, generated wiki pages, checkpoints, handoffs, targeted history evidence, and pending candidate summaries over replaying raw conversation logs.
 11. Use `list_repo_wiki_pages` or `rebuild_repo_wiki` when the user asks for a readable project wiki, commands, gotchas, or recent-work pages. Treat those pages as generated projections, not editable source material.
 12. Use `list_entity_graph` when a task depends on related systems, symbols, protocols, agents, or release concepts.
-13. Use `list_memory_conflicts` before approving a surprising candidate, especially when it negates an existing command or convention.
+13. Use `list_memory_conflicts` before writing or updating a surprising startup rule, especially when it negates an existing command or convention.
 14. When a stable rule should be injected at future startup, call `create_memory_candidate` with concise text and evidence.
-15. When a pending candidate should update an existing approved startup rule, use `propose_memory_merge` to submit an agent-authored rewrite proposal for human review. Do not approve or silently overwrite approved rules yourself.
+15. When a pending candidate should update an existing approved startup rule, use `propose_memory_merge` or the relevant MCP write path to prepare an agent-authored rewrite. Do not silently overwrite approved rules; ask the user first when the evidence or conflict is uncertain.
 16. Before another agent continues the task, call `build_handoff_packet` instead of asking the user to copy the full conversation.
 
 ## Low-Token Project Recall
 
 Use this ladder whenever the user agrees to project recall, asks "do you remember...", or needs to continue prior work:
 
-1. First call `get_project_context` with `limit=3`. Pick the intent from the user's goal:
-   - `intent="startup"` for general project orientation.
-   - `intent="recall"` for "did we discuss X?".
-   - `intent="continue_work"` for resuming implementation.
-2. If the compact context contains plausible `relevant_history`, summarize only the source agent, conversation title/date, one-line summary, and evidence label. Say that this is indexed local history, not an approved startup rule. Ask whether the user wants you to read the most relevant conversation with `read_history_conversation` before increasing the limit or requesting broader history.
-3. If compact context has startup rules but no history hit, say "启动规则没有命中，我再查本地历史证据" and call `search_repo_history` with the exact topic and `limit=3`.
-4. If targeted search still misses but diagnostics show indexed conversations/chunks, broaden carefully: try parent/child repo roots, scan repo conversations, or merge obvious aliases before saying history is absent.
-5. Increase to `limit=10` or more only after the user asks for a broader review or after the first compact pass proves the topic is relevant.
-6. Never say "we did not discuss this" only because approved startup rules are empty. Say whether approved rules, indexed history, wiki projections, or diagnostics were checked.
+1. First call `recall_project_work` with the exact topic and `limit=3`.
+2. If status is `found`, summarize the returned answer, source agent/conversation, and evidence label. Say that this is indexed local history, not an approved startup rule. Ask whether the user wants you to read the most relevant conversation with `read_history_conversation` before increasing the limit or requesting broader history.
+3. If status is `partial`, try one narrower query with exact file names, feature names, or conversation titles. If the miss appears caused by repo-root drift, use `merge_repo_alias` or retry with the likely related repo root.
+4. If status is `miss` and diagnostics show no indexed documents/chunks, say the indexed coverage is missing and run `import_all_local_history` or `scan_repo_conversations` only as a background maintenance step before concluding history is absent.
+5. Fall back to `get_project_context(intent="recall", limit=3)` only when you also need approved startup rules, recent handoff, or pending candidate context.
+6. Increase to `limit=10` or more only after the user asks for a broader review or after the first compact pass proves the topic is relevant.
+7. Never say "we did not discuss this" only because approved startup rules are empty. Say whether approved rules, indexed history, wiki projections, diagnostics, and repo-root coverage were checked.
 
 ## Conversation Evidence Follow-Up
 
-If `get_project_context.relevant_history` or `search_repo_history.matches` returns any plausible match:
+If `recall_project_work.evidence`, `get_project_context.relevant_history`, or `search_repo_history.matches` returns any plausible match:
 
 - Do not ask the user to redescribe the topic as the next step.
 - Do not say the current session has no context just because the match is not an approved startup rule. Say: "启动规则没有命中，但本地历史里找到了相关对话证据。"
@@ -130,11 +128,11 @@ For recall questions, never answer from `get_repo_memory` alone. If approved sta
 
 ## Extraction And Conflict Rule
 
-ChatMem may auto-create pending startup-rule candidates only from explicit durable-memory markers such as "Remember:", "Rule:", "Gotcha:", "记住：", or "规则：". Bare imperative lines such as "Always ..." or "Do not ..." are not enough because they often come from agent task instructions. Auto-extracted candidates are not approved automatically and are not required for local-history search. Conflicts are review signals attached to candidates when new wording appears to negate an active approved rule.
+ChatMem may auto-create pending startup-rule candidates only from explicit durable-memory markers such as "Remember:", "Rule:", "Gotcha:", "记住：", or "规则：". Bare imperative lines such as "Always ..." or "Do not ..." are not enough because they often come from agent task instructions. Auto-extracted candidates are suggestions only and are not required for local-history search. The desktop app is for inspecting or deleting them; promotion into startup rules belongs to the active agent through MCP or skill-driven workflow after checking evidence and conflicts.
 
 ## Merge Proposal Rule
 
-ChatMem does not need an internal LLM API to rewrite startup rules. The active agent can draft a better merge proposal through `propose_memory_merge` after reading the candidate, approved rule, conflicts, and evidence. The desktop review inbox remains the human approval surface. If the rewrite is uncertain, ask the user instead of submitting a confident proposal.
+ChatMem does not need an internal LLM API to rewrite startup rules. The active agent can draft or apply a better rule update through MCP or skill workflow after reading the candidate, approved rule, conflicts, and evidence. The desktop inbox remains a view/delete surface, not an approval queue. If the rewrite is uncertain, ask the user before writing or submitting a confident proposal.
 
 ## Handoff Rules
 

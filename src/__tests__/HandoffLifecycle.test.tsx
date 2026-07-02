@@ -126,8 +126,8 @@ describe("Handoff lifecycle", () => {
     expect(mockInvoke.mock.calls.some(([command]) => command === "list_handoffs")).toBe(true);
 
     await openLocalHistoryView();
-    fireEvent.click(screen.getByRole("button", { name: "Manage Rules" }));
-    expect(await screen.findByRole("complementary", { name: "Startup Rules" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "View Memory" }));
+    expect(await screen.findByRole("complementary", { name: "Memory & Rules" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("tab", { name: "Continue 1" }));
     expect(screen.getByText("Continue the debug session")).toBeTruthy();

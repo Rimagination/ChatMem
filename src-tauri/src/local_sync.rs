@@ -260,7 +260,9 @@ pub fn bidirectional_sync(local_items: &[SyncItem], folder: &Path) -> Result<Syn
             // Only local → upload to sync folder
             (Some((local_ts, local_body)), None) => {
                 let safe_name = id_to_filename(id);
-                let file_path = conversations_dir.join(agent).join(format!("{safe_name}.json"));
+                let file_path = conversations_dir
+                    .join(agent)
+                    .join(format!("{safe_name}.json"));
                 fs::write(&file_path, local_body)?;
                 uploaded += 1;
                 println!("↑ Uploaded {agent}/{id} (local_ts={local_ts})");
@@ -285,8 +287,9 @@ pub fn bidirectional_sync(local_items: &[SyncItem], folder: &Path) -> Result<Syn
                 if local_epoch > remote_epoch {
                     // Local is newer → upload
                     let safe_name = id_to_filename(id);
-                    let file_path =
-                        conversations_dir.join(agent).join(format!("{safe_name}.json"));
+                    let file_path = conversations_dir
+                        .join(agent)
+                        .join(format!("{safe_name}.json"));
                     fs::write(&file_path, local_body)?;
                     uploaded += 1;
                     conflicts += 1;

@@ -118,8 +118,8 @@ describe("Checkpoints workspace", () => {
     expect(mockInvoke.mock.calls.some(([command]) => command === "list_checkpoints")).toBe(true);
 
     await openLocalHistoryView();
-    fireEvent.click(screen.getByRole("button", { name: "Manage Rules" }));
-    const drawer = await screen.findByRole("complementary", { name: "Startup Rules" });
+    fireEvent.click(screen.getByRole("button", { name: "View Memory" }));
+    const drawer = await screen.findByRole("complementary", { name: "Memory & Rules" });
     expect(drawer).toBeTruthy();
 
     fireEvent.click(screen.getByRole("tab", { name: "Continue 1" }));

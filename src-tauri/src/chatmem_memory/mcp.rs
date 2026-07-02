@@ -14,8 +14,9 @@ use super::{
         EntityGraphPayload, GetProjectContextInput, GetRepoMemoryInput, HistoryConversationPayload,
         ListMemoryCandidatesInput, ListMemoryCandidatesPayload, ListWikiPagesPayload,
         LocalHistoryImportReport, MemoryConflictResponse, ProjectContextPayload,
-        ReadHistoryConversationInput, RepoAliasResponse, RepoMemoryHealthResponse,
-        RepoMemoryPayload, RepoScanReport, SearchHistoryPayload, SearchRepoHistoryInput,
+        ProjectRecallPayload, ReadHistoryConversationInput, RecallProjectWorkInput,
+        RepoAliasResponse, RepoMemoryHealthResponse, RepoMemoryPayload, RepoScanReport,
+        SearchHistoryPayload, SearchRepoHistoryInput,
     },
     runs::{self, ArtifactRecord, RunRecord},
     search,
@@ -131,6 +132,10 @@ impl ChatMemMcpService {
                 Self::scan_repo_conversations,
             ))
             .with_route((Self::merge_repo_alias_tool_attr(), Self::merge_repo_alias))
+            .with_route((
+                Self::recall_project_work_tool_attr(),
+                Self::recall_project_work,
+            ))
             .with_route((
                 Self::search_repo_history_tool_attr(),
                 Self::search_repo_history,
@@ -271,6 +276,20 @@ impl ChatMemMcpService {
     ) -> Result<Json<RepoAliasResponse>, McpError> {
         self.store
             .merge_repo_alias(&input.repo_root, &input.alias_root)
+            .map(Json)
+            .map_err(|error| internal_error(error.to_string()))
+    }
+
+    #[tool(
+        name = "recall_project_work",
+        description = "Default high-level recall entrypoint for agents: answer a repository memory question with status, compact answer, de-duplicated evidence, diagnostics, and next actions. It does not run foreground import or scan; use import_all_local_history or scan_repo_conversations only as a background maintenance follow-up when diagnostics show missing coverage."
+    )]
+    async fn recall_project_work(
+        &self,
+        Parameters(input): Parameters<RecallProjectWorkInput>,
+    ) -> Result<Json<ProjectRecallPayload>, McpError> {
+        self.store
+            .recall_project_work(&input.repo_root, &input.query, input.limit)
             .map(Json)
             .map_err(|error| internal_error(error.to_string()))
     }
@@ -613,6 +632,7 @@ mod tests {
             ChatMemMcpService::import_all_local_history_tool_attr().name,
             ChatMemMcpService::scan_repo_conversations_tool_attr().name,
             ChatMemMcpService::merge_repo_alias_tool_attr().name,
+            ChatMemMcpService::recall_project_work_tool_attr().name,
             ChatMemMcpService::search_repo_history_tool_attr().name,
             ChatMemMcpService::read_history_conversation_tool_attr().name,
             ChatMemMcpService::create_memory_candidate_tool_attr().name,
@@ -648,6 +668,9 @@ mod tests {
         let project_context_description = ChatMemMcpService::get_project_context_tool_attr()
             .description
             .expect("get_project_context should have a description");
+        let recall_description = ChatMemMcpService::recall_project_work_tool_attr()
+            .description
+            .expect("recall_project_work should have a description");
         let search_description = ChatMemMcpService::search_repo_history_tool_attr()
             .description
             .expect("search_repo_history should have a description");
@@ -657,6 +680,8 @@ mod tests {
 
         assert!(project_context_description.contains("source agent/conversation"));
         assert!(project_context_description.contains("redescribe"));
+        assert!(recall_description.contains("high-level"));
+        assert!(recall_description.contains("does not run foreground import or scan"));
         assert!(search_description.contains("read_history_conversation"));
         assert!(search_description.contains("unapproved history hits"));
         assert!(read_description.contains("compact message window"));

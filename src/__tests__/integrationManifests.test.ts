@@ -47,6 +47,8 @@ describe("chatmem integration manifests", () => {
 
   it("defines a ChatMem skill around MCP-first memory, checkpoint, and handoff flows", () => {
     expect(skillDoc).toContain("get_repo_memory");
+    expect(skillDoc).toContain("recall_project_work");
+    expect(skillDoc).toContain("default high-level recall");
     expect(skillDoc).toContain("search_repo_history");
     expect(skillDoc).toContain("create_memory_candidate");
     expect(skillDoc).toContain("build_handoff_packet");
@@ -68,6 +70,7 @@ describe("chatmem integration manifests", () => {
   it("declares the chatmem MCP dependency in skill metadata", () => {
     expect(skillOpenAiYaml).toContain('display_name: "ChatMem"');
     expect(skillOpenAiYaml).toContain('default_prompt: "Use $chatmem');
+    expect(skillOpenAiYaml).toContain("recall_project_work");
     expect(skillOpenAiYaml).toContain('type: "mcp"');
     expect(skillOpenAiYaml).toContain('value: "chatmem"');
   });

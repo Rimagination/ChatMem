@@ -202,18 +202,18 @@ describe("Library workspace", () => {
       expect(screen.getByRole("heading", { name: "Library workspace" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Copy location" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Copy resume command" })).toBeTruthy();
-      expect(screen.queryByRole("button", { name: "Manage Rules" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "View Memory" })).toBeNull();
       expect(screen.getByRole("button", { name: "Migrate" })).toBeTruthy();
       expect(screen.queryByRole("button", { name: "History" })).toBeNull();
     });
 
-    expect(screen.queryByRole("complementary", { name: "Startup Rules" })).toBeNull();
+    expect(screen.queryByRole("complementary", { name: "Memory & Rules" })).toBeNull();
     expect(screen.queryByText("Test command memory")).toBeNull();
 
     await openLocalHistoryView();
-    fireEvent.click(screen.getByRole("button", { name: "Manage Rules" }));
+    fireEvent.click(screen.getByRole("button", { name: "View Memory" }));
 
-    expect(await screen.findByRole("complementary", { name: "Startup Rules" })).toBeTruthy();
+    expect(await screen.findByRole("complementary", { name: "Memory & Rules" })).toBeTruthy();
     expect(screen.getByText("Test command memory")).toBeTruthy();
     expect(screen.getByText("Use before packaging")).toBeTruthy();
   });

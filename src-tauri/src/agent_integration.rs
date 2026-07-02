@@ -38,6 +38,7 @@ pub struct AgentIntegrationStatus {
     instructions_path: String,
     mcp_installed: bool,
     instructions_installed: bool,
+    instructions_outdated: bool,
     config_exists: bool,
     status: String,
     status_label: String,
@@ -58,7 +59,14 @@ pub struct AgentIntegrationOperationResult {
 
 impl IntegrationAgent {
     fn all() -> [Self; 6] {
-        [Self::Claude, Self::Codex, Self::Gemini, Self::OpenCode, Self::Hermes, Self::ZCode]
+        [
+            Self::Claude,
+            Self::Codex,
+            Self::Gemini,
+            Self::OpenCode,
+            Self::Hermes,
+            Self::ZCode,
+        ]
     }
 
     fn from_key(key: &str) -> Option<Self> {
@@ -143,8 +151,17 @@ impl IntegrationAgent {
                 .join("SKILL.md"),
             Self::Hermes => {
                 let base = dirs::data_local_dir().unwrap_or_else(|| paths.home_dir.clone());
-                let appdata = base.join("hermes").join("skills").join("chatmem").join("SKILL.md");
-                let home = paths.home_dir.join(".hermes").join("skills").join("chatmem").join("SKILL.md");
+                let appdata = base
+                    .join("hermes")
+                    .join("skills")
+                    .join("chatmem")
+                    .join("SKILL.md");
+                let home = paths
+                    .home_dir
+                    .join(".hermes")
+                    .join("skills")
+                    .join("chatmem")
+                    .join("SKILL.md");
                 if appdata.exists() || !home.exists() {
                     appdata
                 } else {
@@ -206,6 +223,16 @@ fn codex_legacy_skill_path(paths: &IntegrationPaths) -> PathBuf {
         .join("SKILL.md")
 }
 
+fn codex_openai_agent_path(paths: &IntegrationPaths) -> PathBuf {
+    paths
+        .home_dir
+        .join(".agents")
+        .join("skills")
+        .join("chatmem")
+        .join("agents")
+        .join("openai.yaml")
+}
+
 fn backup_path(path: &Path) -> PathBuf {
     let timestamp = Utc::now().format("%Y%m%d-%H%M%S");
     let file_name = path
@@ -249,6 +276,62 @@ fn write_text_if_changed(path: &Path, content: &str) -> Result<Option<PathBuf>, 
     fs::write(path, content)
         .map_err(|error| format!("Cannot write {}: {error}", path.display()))?;
     Ok(None)
+}
+
+fn remove_redundant_codex_legacy_skill(paths: &IntegrationPaths) -> Result<bool, String> {
+    let legacy_skill_path = codex_legacy_skill_path(paths);
+    let Some(skill_dir) = legacy_skill_path.parent() else {
+        return Ok(false);
+    };
+    if !skill_dir.exists() {
+        return Ok(false);
+    }
+
+    let mut stack = vec![skill_dir.to_path_buf()];
+    let mut found_chatmem_skill = false;
+    while let Some(dir) = stack.pop() {
+        for entry in
+            fs::read_dir(&dir).map_err(|error| format!("Cannot read {}: {error}", dir.display()))?
+        {
+            let entry = entry.map_err(|error| format!("Cannot read {}: {error}", dir.display()))?;
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("Cannot inspect {}: {error}", path.display()))?;
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+
+            let relative = path
+                .strip_prefix(skill_dir)
+                .map_err(|error| format!("Cannot inspect {}: {error}", path.display()))?;
+            if relative == Path::new("SKILL.md") {
+                let actual = fs::read_to_string(&path)
+                    .map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
+                if !actual
+                    .lines()
+                    .any(|line| line.trim().eq_ignore_ascii_case("name: chatmem"))
+                {
+                    return Ok(false);
+                }
+                found_chatmem_skill = true;
+                continue;
+            }
+
+            if relative != Path::new("agents").join("openai.yaml") {
+                return Ok(false);
+            }
+        }
+    }
+
+    if !found_chatmem_skill {
+        return Ok(false);
+    }
+
+    fs::remove_dir_all(skill_dir)
+        .map_err(|error| format!("Cannot remove {}: {error}", skill_dir.display()))?;
+    Ok(true)
 }
 
 fn remove_json_comments(input: &str) -> String {
@@ -497,10 +580,7 @@ fn hermes_config_has_chatmem(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn install_hermes_config(
-    path: &Path,
-    paths: &IntegrationPaths,
-) -> Result<Option<PathBuf>, String> {
+fn install_hermes_config(path: &Path, paths: &IntegrationPaths) -> Result<Option<PathBuf>, String> {
     if !path.exists() {
         return Err(format!(
             "Hermes config not found at {}. Please install Hermes Agent first.",
@@ -517,7 +597,12 @@ fn install_hermes_config(
 
     let chatmem_block = chatmem_hermes_yaml(paths);
     let updated = if let Some(pos) = existing.find("plugins:") {
-        format!("{}{}{}\n", &existing[..pos], chatmem_block, &existing[pos..])
+        format!(
+            "{}{}{}\n",
+            &existing[..pos],
+            chatmem_block,
+            &existing[pos..]
+        )
     } else {
         format!("{}{}", existing, chatmem_block)
     };
@@ -646,7 +731,7 @@ fn uninstall_codex_config(path: &Path) -> Result<Option<PathBuf>, String> {
 
 fn managed_instruction_block() -> String {
     format!(
-        "{MANAGED_BLOCK_START}\n## ChatMem\nUse ChatMem before answering repository recall, continuation, migration, handoff, or memory questions. If the `chatmem` skill is available, load it first; then call the `chatmem` MCP tools. If the user has not explicitly asked for recall, ask once whether to load a compact project recollection first. Prefer `get_project_context` with `limit=3` for startup, recall, and continuation; use `search_repo_history` as a targeted second step with `limit<=3`. When history hits appear, name the source agent/conversation, say they are indexed local-history evidence rather than approved startup rules, and ask whether to call `read_history_conversation` before expanding. Do not ask the user to redescribe the topic while plausible history hits exist. Use `import_all_local_history` after a fresh install or suspicious recall miss. 中文用户问“记得吗、之前聊过、回忆、继续、迁移、交接、项目历史、本地历史、启动规则、记忆”时，先查 ChatMem，再用中文回答。\n{MANAGED_BLOCK_END}\n"
+        "{MANAGED_BLOCK_START}\n## ChatMem\nUse ChatMem before answering repository recall, continuation, migration, handoff, or memory questions. If the `chatmem` skill is available, load it first; then call the `chatmem` MCP tools. If the user has not explicitly asked for recall, ask once whether to load a compact project recollection first. Prefer `recall_project_work` with `limit=3` as the default high-level recall entrypoint; it returns status, compact answer, de-duplicated evidence, diagnostics, and next actions without running foreground import or scan. Use `get_project_context` when startup rules, recent handoff, or pending candidates are also needed. Use `search_repo_history` only as a targeted second-stage tool. When history hits appear, name the source agent/conversation, say they are indexed local-history evidence rather than approved startup rules, and ask whether to call `read_history_conversation` before expanding. Do not ask the user to redescribe the topic while plausible history hits exist. Use `import_all_local_history` or `scan_repo_conversations` as maintenance follow-up after a fresh install, suspicious miss, or missing coverage diagnostics. 中文用户问“记得吗、之前聊过、回忆、继续、迁移、交接、项目历史、本地历史、启动规则、记忆”时，先查 ChatMem，再用中文回答。\n{MANAGED_BLOCK_END}\n"
     )
 }
 
@@ -709,11 +794,6 @@ fn install_skill_tree(
     }
 
     if agent == IntegrationAgent::Codex {
-        let legacy_skill_path = codex_legacy_skill_path(paths);
-        if let Some(backup) = write_text_if_changed(&legacy_skill_path, CHATMEM_SKILL)? {
-            backups.push(backup);
-        }
-
         let agent_yaml_path = skill_path
             .parent()
             .ok_or_else(|| "Invalid Codex skill path".to_string())?
@@ -723,15 +803,7 @@ fn install_skill_tree(
             backups.push(backup);
         }
 
-        let legacy_agent_yaml_path = legacy_skill_path
-            .parent()
-            .ok_or_else(|| "Invalid legacy Codex skill path".to_string())?
-            .join("agents")
-            .join("openai.yaml");
-        if let Some(backup) = write_text_if_changed(&legacy_agent_yaml_path, CHATMEM_OPENAI_AGENT)?
-        {
-            backups.push(backup);
-        }
+        let _ = remove_redundant_codex_legacy_skill(paths)?;
     }
 
     Ok(backups)
@@ -812,12 +884,79 @@ fn instructions_installed(agent: IntegrationAgent, paths: &IntegrationPaths) -> 
                     .map(|content| content.contains(MANAGED_BLOCK_START))
                     .unwrap_or(false)
         }
-        IntegrationAgent::Hermes => {
-            path.exists()
+        IntegrationAgent::Hermes => path.exists(),
+        IntegrationAgent::ZCode => path.exists(),
+    }
+}
+
+fn normalize_line_endings(content: &str) -> String {
+    content.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+fn text_file_matches(path: &Path, expected: &str) -> bool {
+    fs::read_to_string(path)
+        .map(|actual| normalize_line_endings(&actual) == normalize_line_endings(expected))
+        .unwrap_or(false)
+}
+
+fn managed_block_span(existing: &str) -> Option<(usize, usize)> {
+    let start = existing.find(MANAGED_BLOCK_START)?;
+    let relative_end = existing[start..].find(MANAGED_BLOCK_END)?;
+    let end = start + relative_end + MANAGED_BLOCK_END.len();
+    Some((start, end))
+}
+
+fn managed_instructions_outdated(path: &Path) -> bool {
+    let Ok(existing) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Some((start, end)) = managed_block_span(&existing) else {
+        return false;
+    };
+    normalize_line_endings(existing[start..end].trim_end())
+        != normalize_line_endings(managed_instruction_block().trim_end())
+}
+
+fn skill_tree_outdated(agent: IntegrationAgent, paths: &IntegrationPaths) -> bool {
+    let skill_path = agent.instructions_path(paths);
+    if !skill_path.exists() {
+        return false;
+    }
+    if !text_file_matches(&skill_path, CHATMEM_SKILL) {
+        return true;
+    }
+
+    if agent == IntegrationAgent::Codex {
+        if !text_file_matches(&codex_openai_agent_path(paths), CHATMEM_OPENAI_AGENT) {
+            return true;
         }
-        IntegrationAgent::ZCode => {
-            path.exists()
+        if codex_legacy_skill_path(paths)
+            .parent()
+            .is_some_and(|skill_dir| skill_dir.exists())
+        {
+            return true;
         }
+    }
+
+    false
+}
+
+fn instructions_outdated(agent: IntegrationAgent, paths: &IntegrationPaths) -> bool {
+    match agent {
+        IntegrationAgent::Claude => {
+            skill_tree_outdated(agent, paths)
+                || managed_instructions_outdated(&claude_rules_path(paths))
+        }
+        IntegrationAgent::Codex => {
+            skill_tree_outdated(agent, paths)
+                || managed_instructions_outdated(&codex_rules_path(paths))
+        }
+        IntegrationAgent::Gemini => managed_instructions_outdated(&agent.instructions_path(paths)),
+        IntegrationAgent::OpenCode => {
+            skill_tree_outdated(agent, paths)
+                || managed_instructions_outdated(&opencode_rules_path(paths))
+        }
+        IntegrationAgent::Hermes | IntegrationAgent::ZCode => skill_tree_outdated(agent, paths),
     }
 }
 
@@ -845,76 +984,77 @@ fn status_for_agent(agent: IntegrationAgent, paths: &IntegrationPaths) -> AgentI
     let instructions_path = agent.instructions_path(paths);
     let mcp_installed = mcp_installed(agent, paths);
     let instructions_installed = instructions_installed(agent, paths);
-    let status = match (mcp_installed, instructions_installed) {
-        (true, true) => "ready",
-        (true, false) | (false, true) => "partial",
-        (false, false) => "not_installed",
+    let instructions_outdated_status =
+        instructions_installed && instructions_outdated(agent, paths);
+    let status = match (
+        mcp_installed,
+        instructions_installed,
+        instructions_outdated_status,
+    ) {
+        (true, true, false) => "ready",
+        (false, false, _) => "not_installed",
+        _ => "partial",
     };
     let status_label = match status {
         "ready" => "已就绪",
-        "partial" => "需修复",
+        "partial" => "需要更新",
         _ => "未安装",
     };
     let mut details = Vec::new();
     if !config_path.exists() {
-        details.push("未找到配置文件，安装时会自动创建。".to_string());
+        details.push("未找到设置文件，设置时会自动创建。".to_string());
     }
     if mcp_installed {
-        details.push("MCP 已写入 agent 配置。".to_string());
+        details.push("Agent 连接已写入设置。".to_string());
+    }
+    if instructions_outdated_status {
+        details.push("ChatMem 说明文件需要更新；点击更新以同步最新版本。".to_string());
     }
     if instructions_installed {
         match agent {
             IntegrationAgent::Claude => {
-                details.push("ChatMem skill 和 Claude 全局 CLAUDE.md 规则已安装。".to_string());
+                details.push("Claude 已连接 ChatMem。".to_string());
             }
             IntegrationAgent::Codex => {
-                details.push(
-                    "ChatMem skill 和 Codex 全局 AGENTS.md 规则已安装；同时保留旧版 Codex skill 路径兼容。"
-                        .to_string(),
-                );
+                details.push("Codex 已连接 ChatMem；旧的重复入口会自动整理。".to_string());
             }
             IntegrationAgent::Gemini => {
-                details.push("ChatMem GEMINI.md 规则已安装。".to_string());
+                details.push("Gemini 已连接 ChatMem。".to_string());
             }
             IntegrationAgent::OpenCode => {
-                details.push("ChatMem skill 和 OpenCode 全局 AGENTS.md 规则已安装。".to_string());
+                details.push("OpenCode 已连接 ChatMem。".to_string());
             }
             IntegrationAgent::Hermes => {
-                details.push("Hermes config.yaml 中已配置 chatmem MCP 服务器。".to_string());
+                details.push("Hermes 已连接 ChatMem。".to_string());
             }
             IntegrationAgent::ZCode => {
-                details.push("ZCode config.json 中已配置 chatmem MCP 服务器。".to_string());
+                details.push("ZCode 已连接 ChatMem。".to_string());
             }
         }
     } else {
         match agent {
             IntegrationAgent::Claude => details.push(
-                "Claude 需要同时安装 ChatMem skill 和全局 CLAUDE.md 规则；缺任一项都可能不会自动触发。"
-                    .to_string(),
+                "Claude 还需要完成 ChatMem 设置，才能在继续项目时自动使用记忆。".to_string(),
             ),
             IntegrationAgent::Codex => details.push(
-                "Codex 需要同时安装 ChatMem skill 和全局 AGENTS.md 规则；缺任一项都可能不会自动触发。"
-                    .to_string(),
+                "Codex 还需要完成 ChatMem 设置，才能在继续项目时自动使用记忆。".to_string(),
             ),
             IntegrationAgent::Gemini => details.push(
-                "Gemini 主要依赖 GEMINI.md 规则引导调用 MCP；未安装时不会主动回忆。".to_string(),
+                "Gemini 还需要完成 ChatMem 设置，才能在继续项目时自动使用记忆。".to_string(),
             ),
             IntegrationAgent::OpenCode => details.push(
-                "OpenCode 需要同时安装 ChatMem skill 和全局 AGENTS.md 规则；缺任一项都可能不会自动触发。"
-                    .to_string(),
+                "OpenCode 还需要完成 ChatMem 设置，才能在继续项目时自动使用记忆。".to_string(),
             ),
             IntegrationAgent::Hermes => details.push(
-                "Hermes 需要在 config.yaml 中配置 chatmem MCP 服务器和 skill。"
-                    .to_string(),
+                "Hermes 还需要完成 ChatMem 设置，才能在继续项目时自动使用记忆。".to_string(),
             ),
             IntegrationAgent::ZCode => details.push(
-                "ZCode 需要在 config.json 中配置 chatmem MCP 服务器和 skill。"
-                    .to_string(),
+                "ZCode 还需要完成 ChatMem 设置，才能在继续项目时自动使用记忆。".to_string(),
             ),
         }
     }
     if !details.iter().any(|item| item.contains("重启")) {
-        details.push("安装或修复后，请重启对应 agent。".to_string());
+        details.push("设置或更新后，请重启对应 Agent。".to_string());
     }
 
     AgentIntegrationStatus {
@@ -924,6 +1064,7 @@ fn status_for_agent(agent: IntegrationAgent, paths: &IntegrationPaths) -> AgentI
         instructions_path: path_to_string(&instructions_path),
         mcp_installed,
         instructions_installed,
+        instructions_outdated: instructions_outdated_status,
         config_exists: config_path.exists(),
         status: status.to_string(),
         status_label: status_label.to_string(),
@@ -970,12 +1111,8 @@ fn install_one(
             backups.extend(install_managed_instructions(&opencode_rules_path(paths))?);
             backups
         }
-        IntegrationAgent::Hermes => {
-            install_skill_tree(agent, paths)?
-        }
-        IntegrationAgent::ZCode => {
-            install_skill_tree(agent, paths)?
-        }
+        IntegrationAgent::Hermes => install_skill_tree(agent, paths)?,
+        IntegrationAgent::ZCode => install_skill_tree(agent, paths)?,
     };
     backups.extend(instruction_backups);
 
@@ -984,7 +1121,7 @@ fn install_one(
         agent: agent.key().to_string(),
         label: agent.label().to_string(),
         changed: true,
-        message: format!("{} 集成已安装或修复。", agent.label()),
+        message: format!("{} 已完成 ChatMem 设置。", agent.label()),
         backup_paths: backups.iter().map(|path| path_to_string(path)).collect(),
         status,
     })
@@ -1038,12 +1175,8 @@ fn uninstall_one(
             }
             removed
         }
-        IntegrationAgent::Hermes => {
-            uninstall_skill_tree(agent, paths)?
-        }
-        IntegrationAgent::ZCode => {
-            uninstall_skill_tree(agent, paths)?
-        }
+        IntegrationAgent::Hermes => uninstall_skill_tree(agent, paths)?,
+        IntegrationAgent::ZCode => uninstall_skill_tree(agent, paths)?,
     };
 
     let status = status_for_agent(agent, paths);
@@ -1113,9 +1246,17 @@ mod tests {
     }
 
     #[test]
-    fn installs_codex_mcp_without_erasing_existing_config() {
+    fn installs_codex_mcp_without_erasing_existing_config_and_dedupes_skill_roots() {
         let paths = test_paths("codex");
         let config = IntegrationAgent::Codex.config_path(&paths);
+        let legacy_skill_path = codex_legacy_skill_path(&paths);
+        write_text_if_changed(&legacy_skill_path, CHATMEM_SKILL).unwrap();
+        let legacy_agent_yaml_path = legacy_skill_path
+            .parent()
+            .unwrap()
+            .join("agents")
+            .join("openai.yaml");
+        write_text_if_changed(&legacy_agent_yaml_path, CHATMEM_OPENAI_AGENT).unwrap();
         write_text_if_changed(
             &config,
             "model = \"gpt-5.5\"\n\n[projects.'D:\\\\VSP']\ntrust_level = \"trusted\"\n",
@@ -1132,11 +1273,70 @@ mod tests {
         assert!(updated.contains(r"C:\Program Files\ChatMem\ChatMem.exe"));
         assert!(updated.contains("\"--mcp\""));
         assert!(IntegrationAgent::Codex.instructions_path(&paths).exists());
-        assert!(codex_legacy_skill_path(&paths).exists());
+        assert!(!codex_legacy_skill_path(&paths).exists());
         assert!(fs::read_to_string(codex_rules_path(&paths))
             .unwrap()
             .contains("中文用户问"));
         assert!(instructions_installed(IntegrationAgent::Codex, &paths));
+    }
+
+    #[test]
+    fn codex_install_removes_older_generated_legacy_skill_copy() {
+        let paths = test_paths("codex-legacy-skill");
+        let legacy_skill_path = codex_legacy_skill_path(&paths);
+        write_text_if_changed(
+            &legacy_skill_path,
+            "---\nname: chatmem\ndescription: older generated ChatMem skill\n---\n\n# ChatMem\n",
+        )
+        .unwrap();
+
+        install_one(IntegrationAgent::Codex, &paths).unwrap();
+
+        assert!(IntegrationAgent::Codex.instructions_path(&paths).exists());
+        assert!(!codex_legacy_skill_path(&paths).exists());
+    }
+
+    #[test]
+    fn codex_status_marks_stale_skill_as_needing_repair() {
+        let paths = test_paths("codex-stale-skill");
+        install_one(IntegrationAgent::Codex, &paths).unwrap();
+        write_text_if_changed(
+            &IntegrationAgent::Codex.instructions_path(&paths),
+            "---\nname: chatmem\ndescription: stale generated ChatMem skill\n---\n\n# ChatMem\n",
+        )
+        .unwrap();
+
+        let status = status_for_agent(IntegrationAgent::Codex, &paths);
+        let value = serde_json::to_value(&status).unwrap();
+
+        assert_eq!(value["mcpInstalled"], json!(true));
+        assert_eq!(value["instructionsInstalled"], json!(true));
+        assert_eq!(value["instructionsOutdated"], json!(true));
+        assert_eq!(value["status"], json!("partial"));
+        assert!(value["details"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|detail| detail.as_str().unwrap_or_default().contains("需要更新")));
+    }
+
+    #[test]
+    fn codex_status_marks_legacy_duplicate_skill_root_as_needing_repair() {
+        let paths = test_paths("codex-duplicate-skill-root");
+        install_one(IntegrationAgent::Codex, &paths).unwrap();
+        write_text_if_changed(&codex_legacy_skill_path(&paths), CHATMEM_SKILL).unwrap();
+
+        let status = status_for_agent(IntegrationAgent::Codex, &paths);
+        let value = serde_json::to_value(&status).unwrap();
+        assert_eq!(value["instructionsOutdated"], json!(true));
+        assert_eq!(value["status"], json!("partial"));
+
+        install_one(IntegrationAgent::Codex, &paths).unwrap();
+        let repaired =
+            serde_json::to_value(status_for_agent(IntegrationAgent::Codex, &paths)).unwrap();
+        assert_eq!(repaired["instructionsOutdated"], json!(false));
+        assert_eq!(repaired["status"], json!("ready"));
+        assert!(!codex_legacy_skill_path(&paths).exists());
     }
 
     #[test]
@@ -1146,6 +1346,9 @@ mod tests {
         install_one(IntegrationAgent::Claude, &paths).unwrap();
         let claude = read_json_object(&IntegrationAgent::Claude.config_path(&paths)).unwrap();
         assert_eq!(claude["mcpServers"]["chatmem"]["args"], json!(["--mcp"]));
+        assert!(fs::read_to_string(claude_rules_path(&paths))
+            .unwrap()
+            .contains("recall_project_work"));
         assert!(fs::read_to_string(claude_rules_path(&paths))
             .unwrap()
             .contains("read_history_conversation"));
@@ -1199,6 +1402,8 @@ mod tests {
         let twice = upsert_managed_block(&once, &block);
 
         assert_eq!(once, twice);
+        assert!(block.contains("recall_project_work"));
+        assert!(block.contains("default high-level recall"));
         assert!(block.contains("read_history_conversation"));
         assert!(block.contains("Do not ask the user to redescribe"));
         assert!(remove_managed_block(&twice).contains("# User rules"));

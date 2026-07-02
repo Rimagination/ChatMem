@@ -53,7 +53,7 @@ function renderApp() {
   );
 }
 
-function getMemoryButton(label = "Manage Rules") {
+function getMemoryButton(label = "View Memory") {
   return screen.getByRole("button", { name: label });
 }
 
@@ -379,13 +379,15 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: "About us" })).toBeNull();
 
     fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    expect(await screen.findByRole("heading", { name: "General" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "About ChatMem" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "About" }));
 
     expect(await screen.findByRole("heading", { name: "About ChatMem" })).toBeTruthy();
-    expect(screen.getByText("What changed in 1.1.4")).toBeTruthy();
-    expect(screen.getByText("Continuation briefs")).toBeTruthy();
-    expect(screen.getByText("Trash actions stay visible")).toBeTruthy();
-    expect(screen.getByText(/ZCode task history/)).toBeTruthy();
-    expect(screen.getByText(/Markdown conversation reading/)).toBeTruthy();
+    expect(screen.getByText(`Current version v${packageInfo.version}`)).toBeTruthy();
+    expect(screen.getByText("Cleaner settings")).toBeTruthy();
+    expect(screen.getByText("Smoother agent handoff")).toBeTruthy();
+    expect(screen.queryByText("What changed in 1.1.4")).toBeNull();
   });
 
   it("opens an in-app card before moving one sidebar conversation to trash", async () => {
@@ -629,6 +631,7 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: "About us" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "About" }));
 
     expect(await screen.findByRole("heading", { name: "About ChatMem" })).toBeTruthy();
     expect(screen.getByText("Rimagination/ChatMem")).toBeTruthy();
@@ -1337,6 +1340,12 @@ describe("App", () => {
     });
     expect(organizeButton.classList.contains("sidebar-action-button")).toBe(true);
     expect(within(organizeButton).getByText("Filter, sort, and organize conversations")).toBeTruthy();
+    expect(organizeButton.querySelector("svg rect")?.getAttribute("d")).toBeNull();
+    expect(Array.from(organizeButton.querySelectorAll("svg path")).map((path) => path.getAttribute("d"))).toEqual([
+      "M2.6 5.35h4.75",
+      "M2.6 8h4.75",
+      "M2.6 10.65h4.75",
+    ]);
 
     fireEvent.click(collapseButton);
 
@@ -1344,7 +1353,12 @@ describe("App", () => {
     expect(within(restoreButton).getByText("Restore previous expansion")).toBeTruthy();
     expect(
       Array.from(restoreButton.querySelectorAll("svg path")).map((path) => path.getAttribute("d")),
-    ).toEqual(["M10.5 4H12v1.5", "M5.5 12H4v-1.5"]);
+    ).toEqual([
+      "M9.4 3.4h3.2v3.2",
+      "M12.4 3.6 9.2 6.8",
+      "M6.6 12.6H3.4V9.4",
+      "M3.6 12.4l3.2-3.2",
+    ]);
   });
 
   it("starts native window dragging from the top bar without hijacking controls", async () => {
@@ -1398,19 +1412,19 @@ describe("App", () => {
       expect(screen.getByRole("heading", { name: "Debug session" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Copy location" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Copy resume command" })).toBeTruthy();
-      expect(screen.queryByRole("button", { name: "Manage Rules" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "View Memory" })).toBeNull();
       expect(screen.getByRole("button", { name: "Migrate" })).toBeTruthy();
       expect(screen.queryByRole("heading", { name: "Suggested Next Step" })).toBeNull();
       expect(screen.queryByRole("heading", { name: "Recent Transfers" })).toBeNull();
     });
 
-    expect(screen.queryByRole("complementary", { name: "Startup Rules" })).toBeNull();
+    expect(screen.queryByRole("complementary", { name: "Memory & Rules" })).toBeNull();
     expect(screen.queryByText("Use ChatMem for cross-agent continuation")).toBeNull();
 
     await openLocalHistoryView();
     fireEvent.click(getMemoryButton());
 
-    expect(await screen.findByRole("complementary", { name: "Startup Rules" })).toBeTruthy();
+    expect(await screen.findByRole("complementary", { name: "Memory & Rules" })).toBeTruthy();
     expect(screen.getByText("Use ChatMem for cross-agent continuation")).toBeTruthy();
   });
 
@@ -1985,11 +1999,11 @@ describe("App", () => {
       expect(getMemoryButton()).toBeTruthy();
     });
 
-    expect(getMemoryButton().getAttribute("aria-label")).toBe("Manage Rules");
+    expect(getMemoryButton().getAttribute("aria-label")).toBe("View Memory");
 
     await waitFor(() => {
       const memoryButton = getMemoryButton();
-      expect(memoryButton.getAttribute("aria-label")).toBe("Manage Rules");
+      expect(memoryButton.getAttribute("aria-label")).toBe("View Memory");
       expect(memoryButton.classList.contains("is-ready")).toBe(false);
       expect(within(memoryButton).queryByText("Ready")).toBeNull();
       expect(
@@ -2372,10 +2386,10 @@ describe("App", () => {
 
     await waitFor(() => {
       const memoryButton = getMemoryButton();
-      expect(memoryButton.getAttribute("aria-label")).toBe("Manage Rules");
+      expect(memoryButton.getAttribute("aria-label")).toBe("View Memory");
       expect(memoryButton.classList.contains("is-ready")).toBe(false);
       expect(within(memoryButton).queryByText("2")).toBeNull();
-      expect(screen.getByText("Needs review")).toBeTruthy();
+      expect(screen.getByText("Suggestions")).toBeTruthy();
       expect(memoryButton.querySelector(".memory-drawer-trigger-ready.is-visible")).toBeNull();
       expect(
         screen.getByText("Local history is ready for this project. You can now ask what was discussed before."),
@@ -2533,7 +2547,7 @@ describe("App", () => {
 
     await waitFor(() => {
       const memoryButton = getMemoryButton();
-      expect(memoryButton.getAttribute("aria-label")).toBe("Manage Rules");
+      expect(memoryButton.getAttribute("aria-label")).toBe("View Memory");
       expect(memoryButton.classList.contains("is-ready")).toBe(false);
       expect(within(memoryButton).queryByText("Ready")).toBeNull();
     });
@@ -2546,7 +2560,7 @@ describe("App", () => {
     await waitFor(() => {
       const memoryButton = getMemoryButton();
       expect(screen.getByRole("heading", { level: 2, name: "D:/VSP/demo" })).toBeTruthy();
-      expect(memoryButton.getAttribute("aria-label")).toBe("Manage Rules");
+      expect(memoryButton.getAttribute("aria-label")).toBe("View Memory");
       expect(memoryButton.classList.contains("is-ready")).toBe(false);
       expect(memoryButton.querySelector(".memory-drawer-trigger-ready.is-visible")).toBeNull();
     });
@@ -2781,6 +2795,7 @@ describe("App", () => {
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Updates" }));
     fireEvent.click(await screen.findByRole("button", { name: "Check for updates" }));
 
     await waitFor(() => {

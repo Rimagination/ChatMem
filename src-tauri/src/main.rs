@@ -42,11 +42,11 @@ use agentswap_codex::CodexAdapter;
 use agentswap_core::adapter::AgentAdapter;
 use agentswap_core::types::{AgentKind, Conversation, ConversationSummary, Message};
 use agentswap_gemini::GeminiAdapter;
+use agentswap_hermes::adapter::HermesAdapter;
 use agentswap_opencode::OpenCodeAdapter;
 use agentswap_zcode::{
     ZCodeAdapter, ZCodeClaudeAdapter, ZCodeCodexAdapter, ZCodeGeminiAdapter, ZCodeOpenCodeAdapter,
 };
-use agentswap_hermes::adapter::HermesAdapter;
 
 const DEFAULT_TRASH_RETENTION_DAYS: i64 = 14;
 const AGENT_KEYS: &[&str] = &["claude", "codex", "gemini", "opencode", "zcode", "hermes"];
@@ -991,7 +991,7 @@ fn read_app_settings_from_disk() -> Result<Option<AppSettingsPayload>, String> {
 
 fn webdav_credential_entry(username: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new("com.chatmem.app.webdav", username)
-        .map_err(|error| format!("Cannot open OS credential store: {error}"))
+        .map_err(|error| format!("Cannot open password storage: {error}"))
 }
 
 fn probe_webdav_credential(settings: Option<&AppSettingsPayload>) -> CredentialCheck {
@@ -1039,16 +1039,15 @@ fn build_upgrade_readiness_report(
     match settings.as_ref() {
         Some(_) => push_check(
             "settings",
-            "Native settings file",
+            "App settings",
             "ok",
-            "Settings file is available and can be parsed.".to_string(),
+            "Settings are available.".to_string(),
         ),
         None => push_check(
             "settings",
-            "Native settings file",
+            "App settings",
             "warning",
-            "No native settings file was found. ChatMem may still use browser fallback settings until you save settings once."
-                .to_string(),
+            "Settings have not been saved yet. Open Settings and save once.".to_string(),
         ),
     }
 
@@ -1070,8 +1069,7 @@ fn build_upgrade_readiness_report(
                         settings.sync.remote_path.trim().trim_matches('/')
                     )
                 } else {
-                    "WebDAV is enabled, but host, username, or remote folder is incomplete."
-                        .to_string()
+                    "WebDAV is on, but host, username, or remote folder is incomplete.".to_string()
                 },
             );
         } else {
@@ -1087,8 +1085,7 @@ fn build_upgrade_readiness_report(
             "webdav_profile",
             "WebDAV profile",
             "warning",
-            "Cannot verify WebDAV profile until settings are saved to the native settings file."
-                .to_string(),
+            "Save settings once before checking the WebDAV connection.".to_string(),
         );
     }
 
@@ -1097,41 +1094,40 @@ fn build_upgrade_readiness_report(
             "webdav_password",
             "WebDAV password",
             "ok",
-            "No WebDAV password is required for the current sync mode.".to_string(),
+            "No WebDAV password is needed for the current sync mode.".to_string(),
         ),
         CredentialCheck::Present => push_check(
             "webdav_password",
             "WebDAV password",
             "ok",
-            "Password exists in the OS credential store.".to_string(),
+            "Password is saved.".to_string(),
         ),
         CredentialCheck::Missing => push_check(
             "webdav_password",
             "WebDAV password",
             "warning",
-            "Password is not in the OS credential store; enter it once after upgrade and verify the server."
-                .to_string(),
+            "Password is missing. Enter it once after updating and check the connection.".to_string(),
         ),
         CredentialCheck::Error(error) => push_check(
             "webdav_password",
             "WebDAV password",
             "warning",
-            format!("Could not read the OS credential store: {error}"),
+            format!("Could not read the saved password: {error}"),
         ),
     }
 
     match memory_store_result {
         Ok(()) => push_check(
             "memory_store",
-            "Memory database",
+            "Local memory",
             "ok",
-            "Memory database can be opened.".to_string(),
+            "Local memory can be opened.".to_string(),
         ),
         Err(error) => push_check(
             "memory_store",
-            "Memory database",
+            "Local memory",
             "error",
-            format!("Memory database cannot be opened: {error}"),
+            format!("Local memory cannot be opened: {error}"),
         ),
     }
 
@@ -1151,11 +1147,11 @@ fn build_upgrade_readiness_report(
         "ok"
     };
     let summary = if error_count > 0 {
-        format!("Upgrade check found {error_count} blocking item(s).")
+        format!("Data check found {error_count} blocking item(s).")
     } else if warning_count > 0 {
-        format!("Upgrade check found {warning_count} item(s) that need attention.")
+        format!("Data check found {warning_count} item(s) that need attention.")
     } else {
-        "Upgrade check passed.".to_string()
+        "Data check passed.".to_string()
     };
     let warnings = checks
         .iter()
@@ -1562,9 +1558,7 @@ async fn load_webdav_password(username: String) -> Result<Option<String>, String
     match entry.get_password() {
         Ok(password) => Ok(Some(password)),
         Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(format!(
-            "Cannot read WebDAV password from OS credential store: {error}"
-        )),
+        Err(error) => Err(format!("Cannot read saved WebDAV password: {error}")),
     }
 }
 
@@ -1578,7 +1572,7 @@ async fn save_webdav_password(username: String, password: String) -> Result<(), 
     let entry = webdav_credential_entry(username)?;
     entry
         .set_password(&password)
-        .map_err(|error| format!("Cannot save WebDAV password to OS credential store: {error}"))
+        .map_err(|error| format!("Cannot save WebDAV password: {error}"))
 }
 
 #[command]
@@ -1660,7 +1654,8 @@ async fn sync_webdav_now(
         ensure_webdav_collection(&client, &agent_url, &username, &password).await?;
 
         for upload in uploads.iter().filter(|upload| upload.agent == *agent) {
-            let file_url = build_webdav_child_url(&agent_url, &[upload.file_name.clone()], false)?;
+            let file_url =
+                build_webdav_child_url(&agent_url, std::slice::from_ref(&upload.file_name), false)?;
             put_webdav_json(
                 &client,
                 &file_url,
@@ -1866,7 +1861,9 @@ async fn read_conversation(
                 .map(|s| s.sync.sync_folder.clone())
                 .unwrap_or_default();
             if sync_folder.is_empty() {
-                return Err(format!("Conversation {id} not found in local storage or sync folder"));
+                return Err(format!(
+                    "Conversation {id} not found in local storage or sync folder"
+                ));
             }
             let safe_name = local_sync::id_to_filename(&id);
             let file_path = std::path::PathBuf::from(&sync_folder)
@@ -1874,7 +1871,9 @@ async fn read_conversation(
                 .join(&agent)
                 .join(format!("{safe_name}.json"));
             if !file_path.exists() {
-                return Err(format!("Conversation {id} not found in local storage or sync folder"));
+                return Err(format!(
+                    "Conversation {id} not found in local storage or sync folder"
+                ));
             }
             let body = std::fs::read(&file_path)
                 .map_err(|e| format!("Failed to read synced conversation: {e}"))?;
@@ -1957,12 +1956,15 @@ async fn migrate_conversation(
 
 #[command]
 async fn delete_conversation(agent: String, id: String) -> Result<(), String> {
-    trash_conversation(agent, id, None, None, None, None, None, None, None, None, None, None)
-        .await
-        .map(|_| ())
+    trash_conversation(
+        agent, id, None, None, None, None, None, None, None, None, None, None,
+    )
+    .await
+    .map(|_| ())
 }
 
 #[command]
+#[allow(clippy::too_many_arguments)]
 async fn trash_conversation(
     agent: String,
     id: String,
@@ -2118,7 +2120,9 @@ async fn trash_conversation(
                     .join(format!("{safe_name}.json"));
                 if sync_file.exists() {
                     if let Err(e) = fs::remove_file(&sync_file) {
-                        record.warnings.push(format!("Failed to delete sync backup: {e}"));
+                        record
+                            .warnings
+                            .push(format!("Failed to delete sync backup: {e}"));
                     } else {
                         record.remote_backup_deleted = true;
                     }
@@ -2166,7 +2170,9 @@ async fn delete_memory_conversation(
         if !sync_folder.is_empty() {
             let safe_name = local_sync::id_to_filename(&id);
             let sync_file = std::path::PathBuf::from(&sync_folder)
-                .join("conversations").join(&agent).join(format!("{safe_name}.json"));
+                .join("conversations")
+                .join(&agent)
+                .join(format!("{safe_name}.json"));
             if sync_file.exists() {
                 let _ = fs::remove_file(&sync_file);
             }
@@ -2174,7 +2180,8 @@ async fn delete_memory_conversation(
     }
     // 2. Delete from memory store
     if let Ok(store) = MemoryStore::open_app() {
-        store.delete_store_conversation(&agent, &id)
+        store
+            .delete_store_conversation(&agent, &id)
             .map_err(|e| format!("Failed to delete from memory store: {e}"))?;
     }
     Ok(())
@@ -2563,8 +2570,7 @@ fn sync_local_now(folder_path: String) -> Result<local_sync::SyncResult, String>
         for summary in conversations {
             match adapter.read_conversation(&summary.id) {
                 Ok(conversation) => {
-                    let body = serde_json::to_vec(&conversation)
-                        .map_err(|e| e.to_string())?;
+                    let body = serde_json::to_vec(&conversation).map_err(|e| e.to_string())?;
                     items.push(local_sync::SyncItem {
                         agent: agent_key.to_string(),
                         id: summary.id.clone(),
@@ -2584,7 +2590,8 @@ fn sync_local_now(folder_path: String) -> Result<local_sync::SyncResult, String>
     if result.downloaded > 0 {
         if let Ok(store) = open_memory_store() {
             let remote = local_sync::read_remote_conversations(&path);
-            let mut local_ids: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+            let mut local_ids: std::collections::HashSet<(String, String)> =
+                std::collections::HashSet::new();
             for item in &items {
                 local_ids.insert((item.agent.clone(), item.id.clone()));
             }
@@ -2595,9 +2602,7 @@ fn sync_local_now(folder_path: String) -> Result<local_sync::SyncResult, String>
                 }
                 match serde_json::from_slice::<Conversation>(body) {
                     Ok(conversation) => {
-                        if let Err(e) = sync_conversation_into_store(
-                            &store, agent, &conversation,
-                        ) {
+                        if let Err(e) = sync_conversation_into_store(&store, agent, &conversation) {
                             eprintln!("Warning: failed to import synced {agent}/{id}: {e}");
                         }
                     }
@@ -2679,7 +2684,10 @@ fn main() {
 
     // Build system tray menu
     let tray_menu = tauri::SystemTrayMenu::new()
-        .add_item(tauri::CustomMenuItem::new("open".to_string(), "打开主界面").accelerator("Ctrl+Shift+M"))
+        .add_item(
+            tauri::CustomMenuItem::new("open".to_string(), "打开主界面")
+                .accelerator("Ctrl+Shift+M"),
+        )
         .add_native_item(tauri::SystemTrayMenuItem::Separator)
         .add_item(tauri::CustomMenuItem::new("sync".to_string(), "同步"))
         .add_native_item(tauri::SystemTrayMenuItem::Separator)
@@ -2689,39 +2697,35 @@ fn main() {
 
     let app = tauri::Builder::default()
         .system_tray(system_tray)
-        .on_system_tray_event(|app, event| {
-            match event {
-                tauri::SystemTrayEvent::MenuItemClick { id, .. } => {
-                    match id.as_str() {
-                        "open" => {
-                            if let Some(window) = app.get_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                                let _ = window.unminimize();
-                            }
-                        }
-                        "sync" => {
-                            if let Some(window) = app.get_window("main") {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                                let _ = window.emit("tray-sync", ());
-                            }
-                        }
-                        "quit" => {
-                            app.exit(0);
-                        }
-                        _ => {}
-                    }
-                }
-                tauri::SystemTrayEvent::LeftClick { .. } => {
+        .on_system_tray_event(|app, event| match event {
+            tauri::SystemTrayEvent::MenuItemClick { id, .. } => match id.as_str() {
+                "open" => {
                     if let Some(window) = app.get_window("main") {
                         let _ = window.show();
                         let _ = window.set_focus();
                         let _ = window.unminimize();
                     }
                 }
+                "sync" => {
+                    if let Some(window) = app.get_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                        let _ = window.emit("tray-sync", ());
+                    }
+                }
+                "quit" => {
+                    app.exit(0);
+                }
                 _ => {}
+            },
+            tauri::SystemTrayEvent::LeftClick { .. } => {
+                if let Some(window) = app.get_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                    let _ = window.unminimize();
+                }
             }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             agent_integration::detect_agent_integrations,

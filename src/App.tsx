@@ -16,7 +16,7 @@ import SettingsPanel, {
 } from "./components/SettingsPanel";
 import HandoffComposerModal from "./components/HandoffComposerModal";
 import LibraryPanel from "./components/LibraryPanel";
-import MemoryInboxPanel, { type MemoryCandidateApprovalDraft } from "./components/MemoryInboxPanel";
+import MemoryInboxPanel from "./components/MemoryInboxPanel";
 import ProjectIndexStatus from "./components/ProjectIndexStatus";
 import RepoMemoryPanel from "./components/RepoMemoryPanel";
 import { useI18n } from "./i18n/I18nProvider";
@@ -62,7 +62,6 @@ import {
   mergeRepoAlias,
   rebuildRepoWiki,
   scanRepoConversations,
-  reverifyMemory,
   retireMemory,
   reviewMemoryCandidate,
 } from "./chatmem-memory/api";
@@ -1005,7 +1004,7 @@ function getShellCopy(locale: Locale): ShellCopy {
       chatSection: "Chats",
       favorites: "Favorites",
       settings: "Settings",
-      aboutChatMem: "About us",
+      aboutChatMem: "About ChatMem",
       continueTitle: "Continue Work",
       continueSubtitle: "Pick up the latest progress, commands, and next steps.",
       reviewTitle: "Needs Review",
@@ -1182,7 +1181,7 @@ function getShellCopy(locale: Locale): ShellCopy {
     chatSection: "对话",
     favorites: "收藏夹",
     settings: "设置",
-    aboutChatMem: "关于我们",
+    aboutChatMem: "关于 ChatMem",
     continueTitle: "继续工作",
     continueSubtitle: "把最近的进度、恢复命令和下一步放在一起。",
     reviewTitle: "待确认",
@@ -1476,10 +1475,10 @@ function WindowButtonIcon({
   if (type === "collapseAll") {
     return (
       <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M6.5 3.5 3.5 6.5" />
-        <path d="M3.5 3.5v3h3" />
-        <path d="M9.5 12.5l3-3" />
-        <path d="M12.5 12.5v-3h-3" />
+        <path d="M6.7 3.3 3.3 6.7" strokeWidth="1.7" strokeLinecap="square" />
+        <path d="M3.3 3.5v3.2h3.2" strokeWidth="1.7" strokeLinecap="square" strokeLinejoin="miter" />
+        <path d="M9.3 12.7l3.4-3.4" strokeWidth="1.7" strokeLinecap="square" />
+        <path d="M12.7 12.5V9.3H9.5" strokeWidth="1.7" strokeLinecap="square" strokeLinejoin="miter" />
       </svg>
     );
   }
@@ -1487,8 +1486,10 @@ function WindowButtonIcon({
   if (type === "restoreExpansion") {
     return (
       <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M10.5 4H12v1.5" />
-        <path d="M5.5 12H4v-1.5" />
+        <path d="M9.4 3.4h3.2v3.2" strokeWidth="1.7" strokeLinecap="square" strokeLinejoin="miter" />
+        <path d="M12.4 3.6 9.2 6.8" strokeWidth="1.7" strokeLinecap="square" />
+        <path d="M6.6 12.6H3.4V9.4" strokeWidth="1.7" strokeLinecap="square" strokeLinejoin="miter" />
+        <path d="M3.6 12.4l3.2-3.2" strokeWidth="1.7" strokeLinecap="square" />
       </svg>
     );
   }
@@ -1496,13 +1497,10 @@ function WindowButtonIcon({
   if (type === "organize") {
     return (
       <svg viewBox="0 0 16 16" aria-hidden="true">
-        {/* Back rectangle */}
-        <rect x="1.5" y="4.5" width="8" height="6" rx="1.2" fill="none" stroke="currentColor" strokeWidth="1.2" />
-        {/* Front rectangle */}
-        <rect x="5.5" y="5.5" width="8" height="6" rx="1.2" fill="var(--bg-surface, #f6f8f3)" stroke="currentColor" strokeWidth="1.2" />
-        {/* Connection dots */}
-        <circle cx="5" cy="7.5" r="0.8" fill="currentColor" />
-        <circle cx="10" cy="7.5" r="0.8" fill="currentColor" />
+        <rect x="4.15" y="2.75" width="9.25" height="10.5" rx="1.8" strokeWidth="1.65" />
+        <path d="M2.6 5.35h4.75" strokeWidth="1.65" />
+        <path d="M2.6 8h4.75" strokeWidth="1.65" />
+        <path d="M2.6 10.65h4.75" strokeWidth="1.65" />
       </svg>
     );
   }
@@ -2888,78 +2886,6 @@ function App() {
     };
   }, [appSettings.autoBackupEnabled, appSettings.autoBackupIntervalMinutes, appSettings.sync.syncFolder]);
 
-  const handleApproveCandidate = async (
-    candidate: MemoryCandidate,
-    reviewDraft?: MemoryCandidateApprovalDraft,
-  ) => {
-    if (!activeRepoRoot) {
-      return;
-    }
-
-    const editedTitle = reviewDraft?.title ?? candidate.summary;
-    const editedValue = reviewDraft?.value ?? candidate.value;
-    const editedUsageHint = reviewDraft?.usageHint ?? candidate.why_it_matters;
-    const hasEditedDraft = Boolean(
-      reviewDraft &&
-        (editedTitle !== candidate.summary ||
-          editedValue !== candidate.value ||
-          editedUsageHint !== candidate.why_it_matters),
-    );
-
-    setMemoryLoading(true);
-    try {
-      await reviewMemoryCandidate({
-        candidateId: candidate.candidate_id,
-        action: hasEditedDraft ? "approve_with_edit" : "approve",
-        editedTitle,
-        ...(hasEditedDraft ? { editedValue } : {}),
-        editedUsageHint,
-      });
-      const [nextCandidates, nextMemories, nextWikiPages] = await Promise.all([
-        listMemoryCandidates(activeRepoRoot, "pending_review"),
-        listRepoMemories(activeRepoRoot),
-        rebuildRepoWiki(activeRepoRoot),
-      ]);
-      setMemoryCandidates(nextCandidates);
-      setRepoMemories(nextMemories);
-      setWikiPages(nextWikiPages);
-    } catch (error) {
-      console.error("Failed to approve memory candidate:", error);
-    } finally {
-      setMemoryLoading(false);
-    }
-  };
-
-  const handleApproveMergeCandidate = async (candidate: MemoryCandidate) => {
-    if (!activeRepoRoot || !candidate.merge_suggestion?.proposed_value) {
-      return;
-    }
-
-    setMemoryLoading(true);
-    try {
-      await reviewMemoryCandidate({
-        candidateId: candidate.candidate_id,
-        action: "approve_merge",
-        mergeMemoryId: candidate.merge_suggestion.memory_id,
-        editedTitle: candidate.merge_suggestion.proposed_title ?? candidate.merge_suggestion.memory_title,
-        editedValue: candidate.merge_suggestion.proposed_value,
-        editedUsageHint: candidate.merge_suggestion.proposed_usage_hint ?? candidate.why_it_matters,
-      });
-      const [nextCandidates, nextMemories, nextWikiPages] = await Promise.all([
-        listMemoryCandidates(activeRepoRoot, "pending_review"),
-        listRepoMemories(activeRepoRoot),
-        rebuildRepoWiki(activeRepoRoot),
-      ]);
-      setMemoryCandidates(nextCandidates);
-      setRepoMemories(nextMemories);
-      setWikiPages(nextWikiPages);
-    } catch (error) {
-      console.error("Failed to approve memory merge:", error);
-    } finally {
-      setMemoryLoading(false);
-    }
-  };
-
   const handleRejectCandidate = async (candidateId: string) => {
     if (!activeRepoRoot) {
       return;
@@ -2974,25 +2900,6 @@ function App() {
       setMemoryCandidates(await listMemoryCandidates(activeRepoRoot, "pending_review"));
     } catch (error) {
       console.error("Failed to reject memory candidate:", error);
-    } finally {
-      setMemoryLoading(false);
-    }
-  };
-
-  const handleSnoozeCandidate = async (candidateId: string) => {
-    if (!activeRepoRoot) {
-      return;
-    }
-
-    setMemoryLoading(true);
-    try {
-      await reviewMemoryCandidate({
-        candidateId,
-        action: "snooze",
-      });
-      setMemoryCandidates(await listMemoryCandidates(activeRepoRoot, "pending_review"));
-    } catch (error) {
-      console.error("Failed to snooze memory candidate:", error);
     } finally {
       setMemoryLoading(false);
     }
@@ -3084,32 +2991,6 @@ function App() {
       setHandoffComposer(null);
     } catch (error) {
       console.error("Failed to create handoff packet:", error);
-    } finally {
-      setMemoryLoading(false);
-    }
-  };
-
-  const handleReverifyMemory = async (memoryId: string) => {
-    if (!activeRepoRoot) {
-      return;
-    }
-
-    setMemoryLoading(true);
-    try {
-      await reverifyMemory({
-        memoryId,
-        verifiedBy: selectedAgent,
-      });
-      const [nextMemories, nextWikiPages, nextHealth] = await Promise.all([
-        listRepoMemories(activeRepoRoot),
-        rebuildRepoWiki(activeRepoRoot),
-        getRepoMemoryHealth(activeRepoRoot),
-      ]);
-      setRepoMemories(nextMemories);
-      setWikiPages(nextWikiPages);
-      setRepoMemoryHealth(nextHealth);
-    } catch (error) {
-      console.error("Failed to re-verify memory:", error);
     } finally {
       setMemoryLoading(false);
     }
@@ -3712,14 +3593,14 @@ function App() {
         title: locale === "en" ? "Why wasn't this remembered?" : "为什么没有被记住？",
         description:
           locale === "en"
-            ? "Some memory proposals need review before they become durable."
-            : "有些记忆建议需要先经过你的确认，才会真正留下。",
-        buttonLabel: locale === "en" ? "Open Review Queue" : "打开待确认",
+            ? "Memory suggestions are visible here. Supported agents can save useful ones as project rules."
+            : "记忆建议可以在这里查看或删除。有用的建议可由支持的 Agent 保存为项目规则。",
+        buttonLabel: locale === "en" ? "Open Memory" : "查看记忆",
         answer:
           locale === "en"
-            ? "ChatMem keeps reviewable suggestions separate from durable project rules. The Needs Review page is where those decisions belong."
-            : "ChatMem 会把“建议记住”与“已经成为规则”的内容分开。需要你判断的东西，都集中在“待确认”里。",
-        onSelect: () => setActivePage("review"),
+            ? "ChatMem keeps suggestions separate from saved project rules. You can review or delete suggestions in the desktop app, and supported agents can save useful ones as rules."
+            : "ChatMem 会把“建议记住”和“已保存为规则”的内容分开。你可以在桌面端查看或删除建议，有用的建议可由支持的 Agent 保存为规则。",
+        onSelect: () => setMemoryDrawerOpen(true),
       },
       {
         id: "chatmem",
@@ -3731,15 +3612,15 @@ function App() {
         buttonLabel: locale === "en" ? "See How It Works" : "查看工作方式",
         answer:
           locale === "en"
-            ? "For agents, ChatMem is usually an MCP surface. The desktop app is the human recovery and review layer, not the main operating interface for agents."
-            : "对 agent 来说，ChatMem 通常是一个 MCP 能力。桌面端更像是给人看的恢复与审批台，而不是 agent 的主操作界面。",
+            ? "For agents, ChatMem is usually an MCP surface. The desktop app is the human recovery, inspection, and cleanup layer, not the main operating interface for agents."
+            : "对 agent 来说，ChatMem 通常是一个 MCP 能力。桌面端更像是给人看的恢复、查看和清理界面，而不是 agent 的主操作界面。",
         onSelect: () => setAdvancedHelpOpen(true),
       },
       {
         id: "start",
         title: locale === "en" ? "Where should I start?" : "我应该先从哪里开始？",
         description:
-          locale === "en" ? "Start with Continue Work unless you're reviewing." : "除非你在审批内容，否则先从“继续工作”开始。",
+          locale === "en" ? "Start with Continue Work unless you're cleaning up memory." : "除非你在清理记忆，否则先从“继续工作”开始。",
         buttonLabel: locale === "en" ? "Go to Continue Work" : "去继续工作",
         answer:
           locale === "en"
@@ -4298,24 +4179,10 @@ function App() {
                     <div className="task-actions">
                       <button
                         type="button"
-                        className="btn btn-primary"
-                        onClick={() => void handleApproveCandidate(candidate)}
-                      >
-                        {shell.confirmKeep}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        onClick={() => void handleSnoozeCandidate(candidate.candidate_id)}
-                      >
-                        {shell.reviewLater}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
+                        className="btn btn-danger"
                         onClick={() => void handleRejectCandidate(candidate.candidate_id)}
                       >
-                        {shell.rejectKeep}
+                        {locale === "en" ? "Delete suggestion" : "\u5220\u9664\u5efa\u8bae"}
                       </button>
                     </div>
                   </article>
@@ -4350,10 +4217,10 @@ function App() {
                     <div className="task-actions">
                       <button
                         type="button"
-                        className="btn btn-secondary"
-                        onClick={() => void handleReverifyMemory(memory.memory_id)}
+                        className="btn btn-danger"
+                        onClick={() => void handleRetireMemory(memory.memory_id)}
                       >
-                        {shell.reverifyRule}
+                        {locale === "en" ? "Delete rule" : "\u5220\u9664\u89c4\u5219"}
                       </button>
                     </div>
                   </article>
@@ -4887,11 +4754,11 @@ function App() {
       return null;
     }
 
-    const memoryTitle = locale === "en" ? "Startup Rules" : "\u542f\u52a8\u89c4\u5219\u7ba1\u7406";
+    const memoryTitle = locale === "en" ? "Memory & Rules" : "\u8bb0\u5fc6\u4e0e\u89c4\u5219";
     const drawerSubtitle =
       locale === "en"
-        ? "Review only durable rules that should be carried into new tasks. Local history search is already available from the top of the workspace."
-        : "\u8fd9\u91cc\u53ea\u5904\u7406\u65b0\u4efb\u52a1\u9700\u8981\u5e26\u4e0a\u7684\u7a33\u5b9a\u89c4\u5219\u3002\u672c\u5730\u5386\u53f2\u68c0\u7d22\u5df2\u7ecf\u5728\u5de5\u4f5c\u533a\u9876\u90e8\u53ef\u7528\u3002";
+        ? "Review or delete memory suggestions and startup rules here. Supported agents can save useful suggestions as rules."
+        : "你可以在这里查看或删除记忆建议和启动规则。有用的建议可由支持的 Agent 保存为规则。";
     const wikiSubtitle =
       locale === "en"
         ? "Readable pages rebuilt from approved startup rules and local-history episodes."
@@ -4902,8 +4769,8 @@ function App() {
         : "\u8fd8\u6ca1\u6709\u751f\u6210 Wiki \u6295\u5f71\u3002";
     const continuationSubtitle =
       locale === "en"
-        ? "Checkpoints and handoff packets are temporary continuation state, not durable startup rules."
-        : "\u68c0\u67e5\u70b9\u548c\u4ea4\u63a5\u5305\u662f\u7ee7\u7eed\u5de5\u4f5c\u7528\u7684\u4e34\u65f6\u72b6\u6001\uff0c\u4e0d\u662f\u957f\u671f\u542f\u52a8\u89c4\u5219\u3002";
+        ? "Continuation notes help another agent resume the project and stay separate from startup rules."
+        : "继续记录用于帮助其他 Agent 接上项目，并与启动规则分开保存。";
     const emptyContinuation =
       locale === "en"
         ? "No checkpoints or handoff packets for this project yet."
@@ -4912,7 +4779,7 @@ function App() {
     const tabs: Array<{ id: MemoryDrawerTab; label: string; count: number }> = [
       {
         id: "inbox",
-        label: locale === "en" ? "Review" : "\u5019\u9009\u89c4\u5219",
+        label: locale === "en" ? "Suggestions" : "\u5efa\u8bae",
         count: memoryCandidates.length,
       },
       {
@@ -5076,7 +4943,6 @@ function App() {
             memories={repoMemories}
             loading={memoryLoading}
             locale={locale}
-            onReverify={(memoryId) => void handleReverifyMemory(memoryId)}
             onRetire={(memoryId) => void handleRetireMemory(memoryId)}
             onRetireMany={(memoryIds) => void handleRetireManyMemories(memoryIds)}
             autoFocusFirstMemory={shouldAutoFocusFirstApprovedMemory || undefined}
@@ -5102,9 +4968,7 @@ function App() {
           candidates={memoryCandidates}
           loading={memoryLoading}
           locale={locale}
-          onApprove={(candidate, reviewDraft) => void handleApproveCandidate(candidate, reviewDraft)}
-          onApproveMerge={(candidate) => void handleApproveMergeCandidate(candidate)}
-          onReject={(candidateId) => void handleRejectCandidate(candidateId)}
+          onDelete={(candidateId) => void handleRejectCandidate(candidateId)}
         />
       );
     };
@@ -5225,6 +5089,35 @@ function App() {
       },
     ];
 
+    void releaseItems;
+
+    const currentReleaseItems = [
+      {
+        icon: "settings" as const,
+        title: locale === "en" ? "Cleaner settings" : "\u66f4\u6e05\u723d\u7684\u8bbe\u7f6e",
+        body:
+          locale === "en"
+            ? "Settings are grouped by task, with shorter controls and fewer long cards."
+            : "\u8bbe\u7f6e\u6309\u4efb\u52a1\u5206\u533a\uff0c\u63a7\u4ef6\u66f4\u77ed\uff0c\u957f\u5361\u7247\u66f4\u5c11\u3002",
+      },
+      {
+        icon: "migrate" as const,
+        title: locale === "en" ? "Smoother agent handoff" : "\u66f4\u987a\u7684 Agent \u63a5\u5165",
+        body:
+          locale === "en"
+            ? "Local project context is easier for another agent to pick up when work continues."
+            : "\u5176\u4ed6 Agent \u7ee7\u7eed\u5de5\u4f5c\u65f6\uff0c\u66f4\u5bb9\u6613\u7528\u4e0a\u672c\u5730\u9879\u76ee\u4e0a\u4e0b\u6587\u3002",
+      },
+      {
+        icon: "shield" as const,
+        title: locale === "en" ? "Cleaner source view" : "来源展示更清爽",
+        body:
+          locale === "en"
+            ? "Sources and check results stay available without crowding the interface."
+            : "来源和检查结果仍可查看，但不再挤占主要界面。",
+      },
+    ];
+
     const principleItems = [
       {
         icon: "source" as const,
@@ -5252,6 +5145,8 @@ function App() {
       },
     ];
 
+    void principleItems;
+
     const aboutTitleId = embedded ? "settings-about-chatmem-title" : "about-chatmem-title";
 
     return (
@@ -5263,11 +5158,6 @@ function App() {
           <header className="settings-section-heading about-settings-heading">
             <div>
               <h4 id={aboutTitleId}>{locale === "en" ? "About ChatMem" : "关于 ChatMem"}</h4>
-              <p className="settings-helper">
-                {locale === "en"
-                  ? "Version, release notes, project links, and design acknowledgements live here with the rest of the app settings."
-                  : "版本、更新说明、项目链接和设计致谢现在和其他应用设置放在一起。"}
-              </p>
             </div>
           </header>
         ) : (
@@ -5291,45 +5181,26 @@ function App() {
           <div className="about-hero-copy">
             <p>
               {locale === "en"
-                ? "ChatMem is a local-first memory and migration layer for people who work with AI coding agents every day."
-                : "ChatMem 是给长期使用 AI 编程 Agent 的人准备的本地优先记忆与迁移层。"}
-            </p>
-            <p>
-              {locale === "en"
-                ? "It keeps the original conversation evidence traceable, extracts stable project knowledge, and helps a new agent continue from the right file without reading an entire giant transcript."
-                : "它保留可追溯的原始对话证据，沉淀稳定的项目知识，并帮助新 Agent 从正确文件继续，而不是重新吞下一整段超长记录。"}
+                ? "ChatMem keeps local project memory organized so another AI coding agent can continue the work with less re-reading."
+                : "ChatMem 会在本机整理项目记忆，帮助不同 AI 编程 Agent 更快接上之前的工作。"}
             </p>
           </div>
-          <aside className="about-release-panel" aria-label={locale === "en" ? "Current release" : "当前版本"}>
-            <span>{locale === "en" ? "Current release" : "当前版本"}</span>
-            <strong>v{packageInfo.version}</strong>
-            <p>
-              {locale === "en"
-                ? "A UI and history-quality release focused on ZCode, readable transcripts, and quieter tool-call evidence."
-                : "这一版重点优化 ZCode、可读对话全文，以及更克制的工具调用证据展示。"}
-            </p>
-          </aside>
         </section>
 
-        <section className="about-detail-grid" aria-label={locale === "en" ? "Product details" : "产品说明"}>
-          <article className="about-detail-card">
-            <WindowButtonIcon type="memory" />
-            <span>{locale === "en" ? "Memory layer" : "记忆层"}</span>
-            <strong>{locale === "en" ? "Local-first" : "本地优先"}</strong>
-          </article>
-          <article className="about-detail-card">
-            <WindowButtonIcon type="migrate" />
-            <span>{locale === "en" ? "Agent scope" : "Agent 范围"}</span>
-            <strong>Claude / Codex / Gemini / OpenCode / ZCode / Hermes</strong>
-          </article>
-          <article className="about-detail-card">
-            <WindowButtonIcon type="shield" />
-            <span>{locale === "en" ? "Evidence" : "证据方式"}</span>
-            <strong>{locale === "en" ? "Traceable files" : "可追溯文件"}</strong>
-          </article>
-          <article className="about-detail-card">
-            <WindowButtonIcon type="source" />
-            <span>GitHub</span>
+        <section className="about-feature-section" aria-labelledby="about-release-title">
+          <div className="about-section-heading about-version-heading">
+            <div>
+              <h2 id="about-release-title">
+                {locale === "en"
+                  ? `Current version v${packageInfo.version}`
+                  : `当前版本 v${packageInfo.version}`}
+              </h2>
+              <p className="settings-helper">
+                {locale === "en"
+                  ? "Cleaner settings, smoother agent handoff, and clearer source display."
+                  : "优化设置体验、Agent 接入和来源展示。"}
+              </p>
+            </div>
             <a
               className="about-github-link"
               href="https://github.com/Rimagination/ChatMem"
@@ -5338,22 +5209,9 @@ function App() {
             >
               Rimagination/ChatMem
             </a>
-          </article>
-        </section>
-
-        <section className="about-feature-section" aria-labelledby="about-release-title">
-          <div className="about-section-heading">
-            <h2 id="about-release-title">
-              {locale === "en" ? "What changed in 1.1.4" : "1.1.4 更新内容"}
-            </h2>
-            <p className="settings-helper">
-              {locale === "en"
-                ? "This release adds evaluated continuation briefs, favorites, layout fixes, and clearer progressive conversation loading."
-                : "\u8fd9\u4e00\u7248\u589e\u52a0\u5df2\u8bc4\u6d4b\u7684\u7ee7\u7eed\u5361\u7247\u3001\u6536\u85cf\u5939\u3001\u5e03\u5c40\u4fee\u590d\u548c\u66f4\u6e05\u6670\u7684\u6e10\u8fdb\u5f0f\u5bf9\u8bdd\u52a0\u8f7d\u3002"}
-            </p>
           </div>
           <div className="about-feature-list">
-            {releaseItems.map((item) => (
+            {currentReleaseItems.map((item) => (
               <article key={item.title} className="about-feature-item">
                 <span className="about-feature-icon" aria-hidden="true">
                   <WindowButtonIcon type={item.icon} />
@@ -5367,32 +5225,20 @@ function App() {
           </div>
         </section>
 
-        <section className="about-principle-grid" aria-label={locale === "en" ? "Product principles" : "产品原则"}>
-          {principleItems.map((item) => (
-            <article key={item.title} className="about-principle-card">
-              <span className="about-feature-icon" aria-hidden="true">
-                <WindowButtonIcon type={item.icon} />
-              </span>
-              <h2>{item.title}</h2>
-              <p>{item.body}</p>
-            </article>
-          ))}
-        </section>
-
-        <section className="settings-section settings-about" aria-labelledby="about-acknowledgements-title">
+        <section className="settings-section settings-about" aria-labelledby="about-references-title">
           <div className="about-section-heading">
-            <h2 id="about-acknowledgements-title">
-              {locale === "en" ? "Design references and acknowledgements" : "设计参考与致谢"}
+            <h2 id="about-references-title">
+              {locale === "en" ? "References" : "参考项目"}
             </h2>
             <p className="settings-helper">
               {locale === "en"
-                ? "ChatMem learns from several memory, agent-state, and code-wiki directions, but it is not a clone of any single project. These references are acknowledgements, not dependencies or endorsements."
-                : "ChatMem 参考了多个记忆、Agent 状态管理和代码知识库方向，但它不是某一个项目的复刻。下面是设计灵感与致谢，不表示依赖、复刻或由相关项目背书。"}
+                ? "These projects inspired ChatMem's memory and agent workflow design."
+                : "这些项目启发了 ChatMem 的记忆与 Agent 工作流设计。"}
             </p>
           </div>
           <ul
             className="acknowledgement-list"
-            aria-label={locale === "en" ? "Acknowledged projects" : "致谢项目"}
+            aria-label={locale === "en" ? "Reference projects" : "参考项目"}
           >
             {ACKNOWLEDGED_SYSTEMS.map((system) => (
               <li key={system} className="acknowledgement-item">
@@ -5830,6 +5676,8 @@ function App() {
       <ProjectIndexStatus
         health={repoMemoryHealth}
         importReport={lastLocalHistoryImportReport}
+        pendingCandidates={memoryCandidates}
+        pendingCandidatesLoading={memoryLoading}
         loading={repoHealthLoading}
         scanning={repoScanRunning}
         bootstrapReady={bootstrapReadyConversationId === selectedConversation.id}

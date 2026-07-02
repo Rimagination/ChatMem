@@ -1,3 +1,5 @@
+use std::cmp::Reverse;
+
 use anyhow::Result;
 
 use super::{
@@ -16,17 +18,14 @@ pub fn build_repo_memory_payload(
         .filter(|memory| memory.status == "active" && memory.freshness_status == "fresh")
         .collect::<Vec<_>>();
 
-    let mut gotchas = approved
+    let gotchas = approved
         .iter()
         .filter(|memory| memory.kind == "gotcha")
-        .take(2)
+        .take(1)
         .cloned()
         .collect::<Vec<_>>();
 
     let approved_memories = prioritize_memories(approved, task_hint);
-    if gotchas.len() > 1 {
-        gotchas.truncate(1);
-    }
 
     Ok(RepoMemoryPayload {
         repo_summary: format!("Approved startup rules for {repo_root}"),
@@ -73,7 +72,7 @@ fn prioritize_memories(
         })
         .collect::<Vec<_>>();
 
-    scored.sort_by(|left, right| right.0.cmp(&left.0));
+    scored.sort_by_key(|item| Reverse(item.0));
     scored
         .into_iter()
         .take(3)

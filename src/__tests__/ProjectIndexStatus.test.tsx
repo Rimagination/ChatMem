@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import ProjectIndexStatus from "../components/ProjectIndexStatus";
-import type { LocalHistoryImportReport, RepoMemoryHealth } from "../chatmem-memory/types";
+import type { LocalHistoryImportReport, MemoryCandidate, RepoMemoryHealth } from "../chatmem-memory/types";
 
 const healthFixture: RepoMemoryHealth = {
   repo_root: "D:/VSP/agentswap-gui",
@@ -61,6 +61,26 @@ const importReportFixture: LocalHistoryImportReport = {
   imported_at: "2026-04-25T12:00:00Z",
 };
 
+const pendingCandidateFixture: MemoryCandidate = {
+  candidate_id: "cand-wiley-login",
+  kind: "startup_rule",
+  summary: "Wiley institution login starts from the article access control",
+  value:
+    "Open the Wiley article page first, use the visible access control to reach Institutional Login, and keep the same browser profile for the authorized HTML fetch.",
+  why_it_matters:
+    "This avoids sending the institution name to Wiley site search and losing the real SSO flow.",
+  confidence: 0.95,
+  proposed_by: "Codex",
+  status: "pending_review",
+  created_at: "2026-06-19T09:52:22Z",
+  evidence_refs: [
+    {
+      excerpt:
+        "Verified 10.1111/gcb.70943 through Wiley Institutional Login -> Tsinghua SSO with the same persistent browser profile.",
+    },
+  ],
+};
+
 describe("ProjectIndexStatus", () => {
   it("shows local history metrics and triggers a rescan", () => {
     const onScan = vi.fn();
@@ -80,7 +100,7 @@ describe("ProjectIndexStatus", () => {
     expect(screen.getByText("Local history")).toBeTruthy();
     expect(screen.getByText("9")).toBeTruthy();
     expect(screen.getByText("31")).toBeTruthy();
-    expect(screen.getByText("Needs review")).toBeTruthy();
+    expect(screen.getByText("Suggestions")).toBeTruthy();
     expect(screen.getByText("Startup rules")).toBeTruthy();
     expect(screen.getAllByText("3").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/ancestor repo/i)).toBeTruthy();
@@ -93,13 +113,58 @@ describe("ProjectIndexStatus", () => {
     fireEvent.click(screen.getByRole("button", { name: "Rescan local history" }));
     expect(onScan).toHaveBeenCalledTimes(1);
 
-    const rulesButton = screen.getByRole("button", { name: "Manage Rules" });
+    const rulesButton = screen.getByRole("button", { name: "View Memory" });
     fireEvent.click(rulesButton);
     expect(onOpenRules).toHaveBeenCalledTimes(1);
     expect(rulesButton.textContent).not.toContain("3");
     expect(screen.getByText("12")).toBeTruthy();
     expect(document.querySelectorAll(".project-index-metric")).toHaveLength(4);
     expect(document.querySelector(".project-index-grid")).toBeNull();
+  });
+
+  it("surfaces pending suggestions in local history instead of hiding them behind counts", () => {
+    const onOpenRules = vi.fn();
+
+    render(
+      <ProjectIndexStatus
+        health={{
+          ...healthFixture,
+          pending_candidate_count: 3,
+        }}
+        pendingCandidates={[pendingCandidateFixture]}
+        loading={false}
+        scanning={false}
+        locale="en"
+        onScan={vi.fn()}
+        onOpenRules={onOpenRules}
+      />,
+    );
+
+    expect(screen.getByText("Memory suggestions")).toBeTruthy();
+    expect(screen.getByText("Wiley institution login starts from the article access control")).toBeTruthy();
+    expect(screen.getByText(/This avoids sending the institution name/)).toBeTruthy();
+    expect(screen.getByText("1 source")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "View suggestions" }));
+    expect(onOpenRules).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls out a pending-count mismatch when suggestions were not loaded", () => {
+    render(
+      <ProjectIndexStatus
+        health={{
+          ...healthFixture,
+          pending_candidate_count: 3,
+        }}
+        pendingCandidates={[]}
+        loading={false}
+        scanning={false}
+        locale="en"
+        onScan={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/ChatMem found 3 pending suggestions/)).toBeTruthy();
   });
 
   it("summarizes the latest full local-history import without adding metric cards", () => {
@@ -148,7 +213,7 @@ describe("ProjectIndexStatus", () => {
       />,
     );
 
-    expect(screen.getByText("Needs review")).toBeTruthy();
+    expect(screen.getByText("Suggestions")).toBeTruthy();
     expect(screen.getByText("Startup rules")).toBeTruthy();
     expect(screen.queryByText("Note")).toBeNull();
     expect(screen.queryByText("10 candidate startup rules are waiting for review.")).toBeNull();
@@ -194,7 +259,7 @@ describe("ProjectIndexStatus", () => {
       />,
     );
 
-    expect(screen.getByText("\u5f85\u786e\u8ba4")).toBeTruthy();
+    expect(screen.getByText("\u5efa\u8bae")).toBeTruthy();
     expect(screen.getByText("\u542f\u52a8\u89c4\u5219")).toBeTruthy();
     expect(screen.queryByText("\u63d0\u793a")).toBeNull();
     expect(screen.queryByText("\u6709 10 \u6761\u542f\u52a8\u89c4\u5219\u5019\u9009\u7b49\u5f85\u786e\u8ba4\u3002")).toBeNull();
@@ -242,11 +307,11 @@ describe("ProjectIndexStatus", () => {
     );
 
     expect(screen.getByText("\u5df2\u7d22\u5f15\u5bf9\u8bdd\u53ef\u76f4\u63a5\u7528\u4e8e\u56de\u5fc6\u3002")).toBeTruthy();
-    expect(screen.getByText("\u5f85\u786e\u8ba4")).toBeTruthy();
+    expect(screen.getByText("\u5efa\u8bae")).toBeTruthy();
     expect(screen.getByText("\u542f\u52a8\u89c4\u5219")).toBeTruthy();
     expect(screen.queryByText("\u6709 38 \u6761\u542f\u52a8\u89c4\u5219\u5019\u9009\u7b49\u5f85\u786e\u8ba4\u3002")).toBeNull();
     expect(screen.queryByText("\u63d0\u793a")).toBeNull();
-    const rulesButton = screen.getByRole("button", { name: "\u7ba1\u7406\u89c4\u5219" });
+    const rulesButton = screen.getByRole("button", { name: "\u67e5\u770b\u8bb0\u5fc6" });
     expect(rulesButton.textContent).not.toContain("38");
     expect(
       screen.queryByText((content) =>

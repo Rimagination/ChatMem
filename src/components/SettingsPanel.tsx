@@ -4,6 +4,7 @@ import { open as openDialog } from "@tauri-apps/api/dialog";
 import {
   APP_FONT_OPTIONS,
   type AppFontFamily,
+  type DownloadMode,
   type SyncProvider,
   type SyncSettings,
 } from "../settings/storage";
@@ -81,6 +82,7 @@ export type AgentIntegrationStatus = {
   instructionsPath: string;
   mcpInstalled: boolean;
   instructionsInstalled: boolean;
+  instructionsOutdated: boolean;
   configExists: boolean;
   status: "ready" | "partial" | "not_installed" | string;
   statusLabel: string;
@@ -142,6 +144,8 @@ type SettingsPanelProps = {
   onInstallUpdate: () => void;
   aboutContent?: ReactNode;
 };
+
+type SettingsSectionId = "general" | "sync" | "integrations" | "updates" | "about";
 
 type WebDavVerificationState =
   | { kind: "idle" }
@@ -236,6 +240,7 @@ export default function SettingsPanel({
   onInstallUpdate,
   aboutContent,
 }: SettingsPanelProps) {
+  const [activeSettingsSection, setActiveSettingsSection] = useState<SettingsSectionId>("general");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [webDavVerification, setWebDavVerification] = useState<WebDavVerificationState>({
@@ -255,6 +260,7 @@ export default function SettingsPanel({
   const [localSyncState, setLocalSyncState] = useState<LocalSyncState>({
     kind: "idle",
   });
+  const [agentIntegrationsLoaded, setAgentIntegrationsLoaded] = useState(false);
   const isEnglish = locale === "en";
   const isWebDav = syncSettings.provider === "webdav";
   const isOneDrive = syncSettings.provider === "onedrive";
@@ -378,8 +384,8 @@ export default function SettingsPanel({
       const message =
         agent === "all"
           ? isEnglish
-            ? "Installed or repaired all detected integrations."
-            : "已安装或修复全部 Agent 集成。"
+            ? "All detected agents are set up."
+            : "已完成全部可用 Agent 设置。"
           : results[0]?.message ?? (isEnglish ? "Integration updated." : "集成已更新。");
       setIntegrationState({ kind: "success", message });
     } catch (error) {
@@ -407,13 +413,13 @@ export default function SettingsPanel({
   };
 
   const upgradeCopy = {
-    title: isEnglish ? "Upgrade self-check" : "\u5347\u7ea7\u81ea\u68c0",
+    title: isEnglish ? "Local data check" : "本地数据检查",
     helper: isEnglish
-      ? "Checks whether settings, WebDAV credentials, and the memory database survived an upgrade."
-      : "\u68c0\u67e5\u8bbe\u7f6e\u3001WebDAV \u51ed\u636e\u548c\u8bb0\u5fc6\u6570\u636e\u5e93\u5728\u5347\u7ea7\u540e\u662f\u5426\u4ecd\u7136\u53ef\u7528\u3002",
-    run: isEnglish ? "Run upgrade check" : "\u8fd0\u884c\u5347\u7ea7\u81ea\u68c0",
+      ? "Confirm local data is available after updates."
+      : "确认更新后本地数据可用。",
+    run: isEnglish ? "Check data" : "检查数据",
     checking: isEnglish ? "Checking..." : "\u6b63\u5728\u68c0\u67e5...",
-    failed: isEnglish ? "Upgrade check failed" : "\u5347\u7ea7\u81ea\u68c0\u5931\u8d25",
+    failed: isEnglish ? "Data check failed" : "数据检查失败",
   };
 
   const generalCopy = {
@@ -428,34 +434,83 @@ export default function SettingsPanel({
   };
 
   const updateCopy = {
-    title: isEnglish ? "Updates and diagnostics" : "\u66f4\u65b0\u4e0e\u8bca\u65ad",
+    title: isEnglish ? "Updates" : "更新",
     helper: isEnglish
-      ? "Keep the desktop app current and verify that local data still works after upgrades."
-      : "\u68c0\u67e5\u684c\u9762\u7aef\u66f4\u65b0\uff0c\u5e76\u786e\u8ba4\u5347\u7ea7\u540e\u672c\u5730\u6570\u636e\u4ecd\u53ef\u7528\u3002",
+      ? "Keep ChatMem up to date."
+      : "保持 ChatMem 为最新版本。",
   };
 
   const integrationCopy = {
     title: isEnglish ? "Agent integration" : "Agent 集成",
     helper: isEnglish
-      ? "Install MCP plus each agent's native guidance entry, so recall questions are routed to ChatMem before the agent asks you to redescribe history."
-      : "安装 MCP 和各 Agent 原生的引导入口，让“记得吗 / 继续 / 迁移”这类问题先查 ChatMem，而不是让你重述历史。",
-    installAll: isEnglish ? "Install all" : "一键安装到全部",
-    rescan: isEnglish ? "Rescan" : "重新检测",
-    loading: isEnglish ? "Checking integrations..." : "正在检查集成状态...",
+      ? "Connect supported agents so they can use ChatMem when continuing a project."
+      : "连接支持的 Agent，让它们继续项目时能使用 ChatMem。",
+    installAll: isEnglish ? "Set up all" : "全部设置",
+    rescan: isEnglish ? "Check again" : "重新检查",
+    loading: isEnglish ? "Checking agents..." : "正在检查 Agent...",
     install: isEnglish ? "Install" : "安装",
-    repair: isEnglish ? "Repair" : "修复",
+    repair: isEnglish ? "Update" : "更新",
     uninstall: isEnglish ? "Uninstall" : "卸载",
     mcp: "MCP",
-    instructions: isEnglish ? "Guidance" : "引导",
-    config: isEnglish ? "Config" : "配置",
-    guidance: isEnglish ? "Guidance entry" : "引导入口",
+    instructions: isEnglish ? "Instructions" : "说明",
+    outdated: isEnglish ? "Needs update" : "需要更新",
+    config: isEnglish ? "Settings file" : "设置文件",
+    guidance: isEnglish ? "Instructions file" : "说明文件",
     notDetected: isEnglish
-      ? "No integrations returned by the native layer."
-      : "本机层还没有返回可用集成。",
+      ? "No supported agents found."
+      : "未发现可用的 Agent。",
   };
 
+  const navCopy = {
+    general: {
+      label: generalCopy.title,
+      helper: isEnglish ? "Language, typeface, and capture defaults." : "语言、字体和捕获默认项。",
+    },
+    sync: {
+      label: syncCopy.title,
+      helper: isEnglish ? "WebDAV, OneDrive, and download behavior." : "WebDAV、OneDrive 和下载方式。",
+    },
+    integrations: {
+      label: integrationCopy.title,
+      helper: isEnglish ? "Supported agents and setup status." : "支持的 Agent 和连接状态。",
+    },
+    updates: {
+      label: updateCopy.title,
+      helper: isEnglish ? "Version checks and local data status." : "检查更新和本地数据状态。",
+    },
+    about: {
+      label: isEnglish ? "About" : "关于",
+      helper: isEnglish ? "Version and project information." : "版本和项目信息。",
+    },
+  };
+
+  const settingsSections = [
+    { id: "general" as const, ...navCopy.general },
+    { id: "sync" as const, ...navCopy.sync },
+    { id: "integrations" as const, ...navCopy.integrations },
+    { id: "updates" as const, ...navCopy.updates },
+    ...(aboutContent ? [{ id: "about" as const, ...navCopy.about }] : []),
+  ];
+
+  const syncProviderOptions: Array<{ value: SyncProvider; label: string }> = [
+    { value: "off", label: isEnglish ? "Off" : "\u5173\u95ed" },
+    { value: "webdav", label: "WebDAV" },
+    { value: "onedrive", label: "OneDrive" },
+  ];
+
+  const downloadModeOptions: Array<{ value: DownloadMode; label: string }> = [
+    { value: "on-sync", label: syncCopy.onSyncDownloadLabel },
+    { value: "as-needed", label: syncCopy.asNeededDownloadLabel },
+  ];
+
   useEffect(() => {
-    if (!open) {
+    if (open) {
+      setActiveSettingsSection("general");
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || activeSettingsSection !== "integrations" || agentIntegrationsLoaded) {
       return;
     }
 
@@ -467,6 +522,7 @@ export default function SettingsPanel({
           return;
         }
         setAgentIntegrations(integrations);
+        setAgentIntegrationsLoaded(true);
         setIntegrationState({ kind: "idle" });
       })
       .catch((error) => {
@@ -474,16 +530,17 @@ export default function SettingsPanel({
           return;
         }
         const message = error instanceof Error ? error.message : String(error);
+        setAgentIntegrationsLoaded(true);
         setIntegrationState({ kind: "error", message });
       });
 
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [activeSettingsSection, agentIntegrationsLoaded, onDetectAgentIntegrations, open]);
 
   useEffect(() => {
-    if (!open || !isWebDav || !syncSettings.username.trim()) {
+    if (!open || activeSettingsSection !== "sync" || !isWebDav || !syncSettings.username.trim()) {
       return;
     }
 
@@ -498,10 +555,10 @@ export default function SettingsPanel({
     return () => {
       cancelled = true;
     };
-  }, [isWebDav, onLoadWebDavPassword, open, syncSettings.username]);
+  }, [activeSettingsSection, isWebDav, onLoadWebDavPassword, open, syncSettings.username]);
 
   useEffect(() => {
-    if (!open || !isOneDrive) {
+    if (!open || activeSettingsSection !== "sync" || !isOneDrive) {
       return;
     }
 
@@ -523,7 +580,7 @@ export default function SettingsPanel({
     return () => {
       cancelled = true;
     };
-  }, [isOneDrive, onLocalSyncStatus, open]);
+  }, [activeSettingsSection, isOneDrive, onLocalSyncStatus, open]);
 
   if (!open) {
     return null;
@@ -541,6 +598,30 @@ export default function SettingsPanel({
             {closeLabel}
           </button>
         </div>
+
+        <div className="settings-layout">
+          <nav className="settings-sidebar-nav" aria-label={isEnglish ? "Settings sections" : "设置分区"}>
+            {settingsSections.map((section) => {
+              const isActive = section.id === activeSettingsSection;
+              return (
+                <button
+                  key={section.id}
+                  type="button"
+                  className={`settings-nav-item ${isActive ? "active" : ""}`}
+                  aria-label={section.label}
+                  aria-current={isActive ? "page" : undefined}
+                  aria-controls={`settings-section-${section.id}`}
+                  onClick={() => setActiveSettingsSection(section.id)}
+                >
+                  <span className="settings-nav-label">{section.label}</span>
+                  <span className="settings-nav-helper" aria-hidden="true">{section.helper}</span>
+                </button>
+              );
+            })}
+          </nav>
+
+          <div className="settings-detail" id={`settings-section-${activeSettingsSection}`}>
+            {activeSettingsSection === "general" ? (
 
         <div className="settings-compact-grid" aria-label={isEnglish ? "Compact settings" : "常用设置"}>
           <section className="settings-section general-settings-section" aria-labelledby="settings-general-title">
@@ -591,7 +672,9 @@ export default function SettingsPanel({
             <p className="settings-helper settings-field-hint">{generalCopy.fontHint}</p>
           </section>
         </div>
+            ) : null}
 
+            {activeSettingsSection === "integrations" ? (
         <section
           className="settings-section agent-integration-section"
           aria-labelledby="settings-agent-integration-title"
@@ -645,13 +728,18 @@ export default function SettingsPanel({
                   (integrationState.agent === "all" || integrationState.agent === integration.agent);
                 const hasAnyInstall =
                   integration.mcpInstalled || integration.instructionsInstalled;
-                const statusLabel = isEnglish
-                  ? integration.status === "ready"
-                    ? "Ready"
+                const statusLabel =
+                  integration.status === "ready"
+                    ? isEnglish
+                      ? "Ready"
+                      : "已就绪"
                     : integration.status === "partial"
-                      ? "Needs repair"
-                      : "Not installed"
-                  : integration.statusLabel;
+                      ? isEnglish
+                        ? "Needs update"
+                        : "需要更新"
+                      : isEnglish
+                        ? "Not set up"
+                        : "未设置";
 
                 return (
                   <article
@@ -670,6 +758,9 @@ export default function SettingsPanel({
                       <span className={integration.instructionsInstalled ? "is-on" : ""}>
                         {integrationCopy.instructions}
                       </span>
+                      {integration.instructionsOutdated ? (
+                        <span className="is-warning">{integrationCopy.outdated}</span>
+                      ) : null}
                     </div>
 
                     <div className="agent-integration-paths">
@@ -702,7 +793,7 @@ export default function SettingsPanel({
                           ? isEnglish
                             ? "Working..."
                             : "处理中..."
-                          : integration.status === "ready"
+                          : hasAnyInstall
                             ? integrationCopy.repair
                             : integrationCopy.install}
                       </button>
@@ -727,30 +818,38 @@ export default function SettingsPanel({
             <p className="settings-notice">{integrationCopy.notDetected}</p>
           ) : null}
         </section>
+            ) : null}
 
+            {activeSettingsSection === "sync" ? (
         <section className="settings-section file-sync-section" aria-labelledby="settings-sync-title">
           <div>
             <h4 id="settings-sync-title">{syncCopy.title}</h4>
           </div>
 
           <div className="sync-method-row">
-            <label className="sync-method-label" htmlFor="conversation-data-sync-method">
+            <span className="sync-method-label" id="conversation-data-sync-method-label">
               <span>{syncCopy.methodLabel}</span>
-            </label>
-            <select
-              id="conversation-data-sync-method"
-              className="settings-select"
-              value={syncSettings.provider}
-              onChange={(event) =>
-                handleSyncSettingsChange({
-                  provider: event.target.value as SyncProvider,
-                })
-              }
+            </span>
+            <div
+              className="settings-segmented-control"
+              role="radiogroup"
+              aria-labelledby="conversation-data-sync-method-label"
             >
-              <option value="off">{isEnglish ? "Off" : "关闭"}</option>
-              <option value="webdav">WebDAV</option>
-              <option value="onedrive">OneDrive</option>
-            </select>
+              {syncProviderOptions.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={`settings-segmented-option ${
+                    syncSettings.provider === option.value ? "is-selected" : ""
+                  }`}
+                  role="radio"
+                  aria-checked={syncSettings.provider === option.value}
+                  onClick={() => handleSyncSettingsChange({ provider: option.value })}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           {isWebDav ? (
@@ -989,30 +1088,39 @@ export default function SettingsPanel({
           ) : null}
 
           <div className="download-row">
-            <span>{syncCopy.downloadFilesLabel}</span>
-            <select
-              className="settings-select download-select"
-              aria-label={syncCopy.downloadFilesLabel}
-              value={syncSettings.downloadMode}
-              onChange={(event) =>
-                handleSyncSettingsChange({
-                  downloadMode: event.target.value === "as-needed" ? "as-needed" : "on-sync",
-                })
-              }
+            <span id="download-files-mode-label">{syncCopy.downloadFilesLabel}</span>
+            <div
+              className="settings-segmented-control"
+              role="radiogroup"
+              aria-labelledby="download-files-mode-label"
             >
-              <option value="on-sync">{syncCopy.onSyncDownloadLabel}</option>
-              <option value="as-needed">{syncCopy.asNeededDownloadLabel}</option>
-            </select>
+              {downloadModeOptions.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={`settings-segmented-option ${
+                    syncSettings.downloadMode === option.value ? "is-selected" : ""
+                  }`}
+                  role="radio"
+                  aria-checked={syncSettings.downloadMode === option.value}
+                  onClick={() => handleSyncSettingsChange({ downloadMode: option.value })}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
           </div>
         </section>
+            ) : null}
 
+            {activeSettingsSection === "updates" ? (
         <section className="settings-section update-settings-section" aria-labelledby="settings-update-title">
           <div>
             <h4 id="settings-update-title">{updateCopy.title}</h4>
             <p className="settings-helper">{updateCopy.helper}</p>
           </div>
 
-          <label className="settings-toggle-row">
+          <label className="settings-toggle-row update-auto-check-row">
             <div className="settings-toggle-copy">
               <span className="settings-label">{autoCheckLabel}</span>
             </div>
@@ -1023,7 +1131,7 @@ export default function SettingsPanel({
             />
           </label>
 
-          <div className="settings-inline-actions">
+          <div className="settings-inline-actions update-check-actions">
             <button type="button" className="btn btn-primary" onClick={onCheckUpdates}>
               {checkUpdatesLabel}
             </button>
@@ -1056,7 +1164,7 @@ export default function SettingsPanel({
           )}
 
           <div className="settings-nested-section upgrade-check-section" aria-labelledby="settings-upgrade-title">
-            <div className="settings-section-heading">
+            <div className="settings-section-heading upgrade-check-heading">
               <div>
                 <h4 id="settings-upgrade-title">{upgradeCopy.title}</h4>
                 <p className="settings-helper">{upgradeCopy.helper}</p>
@@ -1092,9 +1200,14 @@ export default function SettingsPanel({
             ) : null}
           </div>
         </section>
+            ) : null}
 
-        {aboutContent}
+            {activeSettingsSection === "about" ? (
+              <div className="settings-about-section">{aboutContent}</div>
+            ) : null}
 
+          </div>
+        </div>
       </section>
   );
 }

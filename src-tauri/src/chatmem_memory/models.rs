@@ -163,6 +163,16 @@ pub struct SearchHistoryPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProjectRecallPayload {
+    pub status: String,
+    pub answer: String,
+    pub confidence: f64,
+    pub evidence: Vec<SearchHistoryMatch>,
+    pub diagnostics: RepoMemoryHealthResponse,
+    pub next_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HistoryConversationMessage {
     pub message_id: String,
     pub role: String,
@@ -326,6 +336,13 @@ pub struct GetRepoMemoryInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SearchRepoHistoryInput {
+    pub repo_root: String,
+    pub query: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RecallProjectWorkInput {
     pub repo_root: String,
     pub query: String,
     pub limit: Option<usize>,

@@ -18,7 +18,7 @@ use super::{
         EntityLinkResponse, EntityNodeResponse, EpisodeResponse, EvidenceRef,
         HandoffPacketResponse, HistoryConversationMessage, HistoryConversationPayload,
         MemoryCandidateResponse, MemoryConflictResponse, MemoryMergeSuggestion,
-        ObservedProjectRootCount, ProjectContextPayload, RepoAliasResponse,
+        ObservedProjectRootCount, ProjectContextPayload, ProjectRecallPayload, RepoAliasResponse,
         RepoMemoryHealthResponse, RepoScanReport, RepoScanSummary, SearchHistoryMatch,
         WikiPageResponse,
     },
@@ -29,6 +29,10 @@ use super::{
 pub struct MemoryStore {
     db_path: PathBuf,
 }
+
+pub type StoreConversationRow = (String, String, Option<String>, String, String, usize);
+pub type StoreMessageRow = (String, String, String);
+pub type StoreConversationPayload = (String, Option<String>, String, String, Vec<StoreMessageRow>);
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
@@ -1460,7 +1464,7 @@ impl MemoryStore {
     pub fn list_store_conversations(
         &self,
         source_agent: &str,
-    ) -> Result<Vec<(String, String, Option<String>, String, String, usize)>> {
+    ) -> Result<Vec<StoreConversationRow>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT c.source_conversation_id, r.repo_root, c.summary, c.started_at, c.updated_at,
@@ -1492,15 +1496,7 @@ impl MemoryStore {
         &self,
         source_agent: &str,
         source_conversation_id: &str,
-    ) -> Result<
-        Option<(
-            String,
-            Option<String>,
-            String,
-            String,
-            Vec<(String, String, String)>,
-        )>,
-    > {
+    ) -> Result<Option<StoreConversationPayload>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare(
             "SELECT r.repo_root, c.summary, c.started_at, c.updated_at, c.conversation_id
@@ -1783,6 +1779,52 @@ impl MemoryStore {
             relevant_history,
             pending_candidates,
             repo_diagnostics,
+        })
+    }
+
+    pub fn recall_project_work(
+        &self,
+        repo_root: &str,
+        query: &str,
+        limit: Option<usize>,
+    ) -> Result<ProjectRecallPayload> {
+        let query = query.trim();
+        let result_limit = limit.unwrap_or(5).clamp(1, 10);
+        let mut diagnostics = self.repo_memory_health(repo_root)?;
+        push_unique_string(
+            &mut diagnostics.warnings,
+            "No foreground import or scan was run; using already indexed local memory.",
+        );
+
+        if query.is_empty() {
+            return Ok(ProjectRecallPayload {
+                status: "miss".to_string(),
+                answer: "No recall query was provided, so ChatMem did not search local history."
+                    .to_string(),
+                confidence: 0.0,
+                evidence: vec![],
+                diagnostics,
+                next_actions: vec![
+                    "Ask a concrete recall question with project names, files, or topic keywords."
+                        .to_string(),
+                ],
+            });
+        }
+
+        let evidence =
+            dedupe_project_recall_evidence(self.search_history(repo_root, query, result_limit)?);
+        let status = project_recall_status(&evidence, &diagnostics);
+        let answer = project_recall_answer(query, &evidence, &diagnostics);
+        let confidence = project_recall_confidence(&evidence, &diagnostics);
+        let next_actions = project_recall_next_actions(&status, &evidence, &diagnostics);
+
+        Ok(ProjectRecallPayload {
+            status,
+            answer,
+            confidence,
+            evidence,
+            diagnostics,
+            next_actions,
         })
     }
 
@@ -3593,15 +3635,15 @@ fn collect_vector_search_candidates_with_config(
     Ok(())
 }
 
-fn search_candidate_entry<'a>(
-    candidates: &'a mut HashMap<String, SearchCandidate>,
+fn search_candidate_entry(
+    candidates: &mut HashMap<String, SearchCandidate>,
     doc_id: String,
     doc_type: String,
     doc_ref_id: String,
     title: String,
     body: String,
     updated_at: String,
-) -> &'a mut SearchCandidate {
+) -> &mut SearchCandidate {
     let key = doc_id.clone();
     candidates.entry(key).or_insert_with(|| SearchCandidate {
         doc_type,
@@ -4241,10 +4283,7 @@ fn auto_memory_candidate_drafts(content: &str) -> Vec<AutoMemoryCandidateDraft> 
 }
 
 fn auto_memory_candidate_from_line(line: &str) -> Option<AutoMemoryCandidateDraft> {
-    let trimmed = line
-        .trim()
-        .trim_start_matches(|ch| ch == '-' || ch == '*' || ch == ' ')
-        .trim();
+    let trimmed = line.trim().trim_start_matches(['-', '*', ' ']).trim();
     if trimmed.len() < 12 {
         return None;
     }
@@ -4970,7 +5009,7 @@ fn extract_wiki_module_paths(text: &str) -> Vec<String> {
                         | '：'
                 )
             })
-            .trim_end_matches(|ch: char| matches!(ch, '.' | '!' | '?' | '。' | '！' | '？'))
+            .trim_end_matches(['.', '!', '?', '。', '！', '？'])
             .replace('\\', "/");
 
         if is_wiki_module_path(&token) {
@@ -5290,6 +5329,137 @@ fn normalize_text(text: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn project_recall_status(
+    evidence: &[SearchHistoryMatch],
+    diagnostics: &RepoMemoryHealthResponse,
+) -> String {
+    if !evidence.is_empty() {
+        "found".to_string()
+    } else if diagnostics.search_document_count > 0 || diagnostics.indexed_chunk_count > 0 {
+        "partial".to_string()
+    } else {
+        "miss".to_string()
+    }
+}
+
+fn dedupe_project_recall_evidence(matches: Vec<SearchHistoryMatch>) -> Vec<SearchHistoryMatch> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+
+    for item in matches {
+        let key = item
+            .conversation_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| format!("conversation:{value}"))
+            .unwrap_or_else(|| format!("{}:{}", item.r#type, item.title));
+        if seen.insert(key) {
+            deduped.push(item);
+        }
+    }
+
+    deduped
+}
+
+fn project_recall_confidence(
+    evidence: &[SearchHistoryMatch],
+    diagnostics: &RepoMemoryHealthResponse,
+) -> f64 {
+    if let Some(top) = evidence.first() {
+        return top.score.clamp(0.0, 1.0);
+    }
+
+    if diagnostics.search_document_count > 0 || diagnostics.indexed_chunk_count > 0 {
+        0.25
+    } else {
+        0.0
+    }
+}
+
+fn project_recall_answer(
+    query: &str,
+    evidence: &[SearchHistoryMatch],
+    diagnostics: &RepoMemoryHealthResponse,
+) -> String {
+    let Some(top) = evidence.first() else {
+        if diagnostics.search_document_count == 0 && diagnostics.indexed_chunk_count == 0 {
+            return format!(
+                "No indexed ChatMem history is available for this repo, so the recall query `{query}` could not be answered."
+            );
+        }
+
+        return format!(
+            "No strong local-history match was found for `{query}` in the already indexed project memory. Indexed documents exist, so this may be a wording, repo-root, or alias mismatch."
+        );
+    };
+
+    let source = top
+        .source_agent
+        .as_deref()
+        .unwrap_or("unknown source agent");
+    let conversation = top
+        .conversation_title
+        .as_deref()
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or(top.title.as_str());
+    let summary = compact_recall_text(&top.summary, 360);
+
+    format!(
+        "Found indexed local-history evidence for `{query}`. Top match: {conversation} from {source}. Summary: {summary}"
+    )
+}
+
+fn project_recall_next_actions(
+    status: &str,
+    evidence: &[SearchHistoryMatch],
+    diagnostics: &RepoMemoryHealthResponse,
+) -> Vec<String> {
+    match status {
+        "found" => {
+            let mut actions = vec![
+                "Use read_history_conversation on the top conversation_id for a focused evidence window before relying on details.".to_string(),
+            ];
+            if diagnostics.approved_memory_count == 0 {
+                actions.push(
+                    "Treat the hit as indexed local-history evidence, not an approved startup rule."
+                        .to_string(),
+                );
+            }
+            if evidence
+                .iter()
+                .any(|item| item.conversation_id.as_deref().unwrap_or("").is_empty())
+            {
+                actions.push(
+                    "Some hits do not have conversation provenance; prefer hits with source_agent and conversation_id."
+                        .to_string(),
+                );
+            }
+            actions
+        }
+        "partial" => vec![
+            "Try a narrower query with exact file names, feature names, or conversation titles."
+                .to_string(),
+            "If the topic likely lived under another checkout, call recall_project_work with that repo_root or add a repo alias."
+                .to_string(),
+        ],
+        _ => vec![
+            "Run import_all_local_history or scan_repo_conversations in the background before concluding the work was never discussed."
+                .to_string(),
+        ],
+    }
+}
+
+fn compact_recall_text(text: &str, max_chars: usize) -> String {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= max_chars {
+        return normalized;
+    }
+
+    let mut output = normalized.chars().take(max_chars).collect::<String>();
+    output.push_str("...");
+    output
 }
 
 fn should_search_history(intent: &str, query: &str) -> bool {
@@ -5860,6 +6030,56 @@ mod tests {
     }
 
     #[test]
+    fn project_recall_returns_agent_friendly_answer_without_foreground_scan() {
+        let store = new_store();
+        let repo_root = "d:/scansci/easyslides";
+        let now = Utc::now();
+        let conversation = Conversation {
+            id: "conv-ppt-distill-recall".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir: repo_root.to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("PPT template distillation workflow".to_string()),
+            messages: vec![Message {
+                id: Uuid::new_v4(),
+                timestamp: now,
+                role: Role::Assistant,
+                content: "Implemented scripts/pptx_template_distill.py for PPTX template distillation and verified academic_red_nav6_distilled."
+                    .to_string(),
+                tool_calls: vec![],
+                metadata: HashMap::new(),
+            }],
+            file_changes: vec![],
+        };
+        store
+            .upsert_conversation_snapshot("codex", &conversation, None)
+            .unwrap();
+
+        let recall = store
+            .recall_project_work(
+                repo_root,
+                "PPT 模板蒸馏 pptx_template_distill academic_red_nav6_distilled",
+                Some(3),
+            )
+            .unwrap();
+
+        assert_eq!(recall.status, "found");
+        assert!(recall.answer.contains("PPT template distillation"));
+        assert_eq!(recall.evidence.len(), 1);
+        assert_eq!(recall.evidence[0].source_agent.as_deref(), Some("codex"));
+        assert!(recall
+            .next_actions
+            .iter()
+            .any(|action| action.contains("read_history_conversation")));
+        assert!(recall
+            .diagnostics
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("No foreground import or scan")));
+    }
+
+    #[test]
     fn project_context_includes_related_pending_candidates_as_unapproved() {
         let store = new_store();
         let repo_root = "d:/vsp/agentswap-gui";
@@ -6211,7 +6431,7 @@ mod tests {
         assert!(module_map
             .body
             .contains("src/__tests__/MemoryWorkspace.test.tsx"));
-        assert!(module_map.source_memory_ids.len() >= 1);
+        assert!(!module_map.source_memory_ids.is_empty());
         assert_eq!(module_map.source_episode_ids, vec!["episode:codex:wiki-ui"]);
     }
 
@@ -6269,7 +6489,7 @@ mod tests {
         assert!(risk_ledger.body.contains("WebDAV"));
         assert!(risk_ledger.body.contains("failed") || risk_ledger.body.contains("fail"));
         assert!(risk_ledger.body.contains("episode:codex:risk-webdav"));
-        assert!(risk_ledger.source_memory_ids.len() >= 1);
+        assert!(!risk_ledger.source_memory_ids.is_empty());
         assert_eq!(
             risk_ledger.source_episode_ids,
             vec!["episode:codex:risk-webdav"]
@@ -7004,7 +7224,9 @@ mod tests {
             )
             .unwrap();
         let rows = stmt
-            .query_map([repo_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .query_map([repo_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
             .unwrap()
             .collect::<std::result::Result<Vec<_>, _>>()
             .unwrap();
