@@ -7,8 +7,10 @@ mod agent_integration;
 mod local_sync;
 
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
     time::Duration,
 };
 
@@ -224,6 +226,20 @@ struct AppSettingsPayload {
     machine_group_overrides: std::collections::HashMap<String, String>,
     #[serde(default)]
     favorite_conversations: std::collections::HashMap<String, FavoriteConversationPayload>,
+    #[serde(default = "default_library_sort")]
+    library_sort: String,
+    #[serde(default = "default_recent_updated_enabled")]
+    recent_updated_enabled: bool,
+    #[serde(default)]
+    sidebar_width: i64,
+}
+
+fn default_recent_updated_enabled() -> bool {
+    true
+}
+
+fn default_library_sort() -> String {
+    "created-desc".to_string()
 }
 
 fn default_font_family() -> String {
@@ -1779,10 +1795,22 @@ async fn list_conversations(agent: String) -> Result<Vec<ConversationSummaryResp
         }
     }
 
+    // Adapter, memory-store, and sync-folder results arrive in different orders; sort the
+    // merged list by recency so every source's conversations read newest-first.
+    results.sort_by(|left, right| {
+        conversation_updated_at_key(&right.updated_at).cmp(&conversation_updated_at_key(&left.updated_at))
+    });
+
     Ok(filter_trashed_conversation_responses(
         results,
         &trashed_keys,
     ))
+}
+
+fn conversation_updated_at_key(updated_at: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(updated_at)
+        .map(|parsed| parsed.timestamp_millis())
+        .unwrap_or(i64::MIN)
 }
 
 #[command]
@@ -1845,54 +1873,101 @@ async fn read_conversation(
     id: String,
     message_limit: Option<usize>,
 ) -> Result<ConversationResponse, String> {
-    let adapter = get_adapter(&agent)?;
-
-    // Try adapter first (local native storage)
-    let conversation = match adapter.read_conversation(&id) {
-        Ok(mut conv) => {
-            conv.project_dir = normalize_project_dir(&conv.project_dir);
-            conv
-        }
-        Err(_) => {
-            // Adapter doesn't have it — try reading from the sync folder
-            let settings = read_app_settings_from_disk()?;
-            let sync_folder = settings
-                .as_ref()
-                .map(|s| s.sync.sync_folder.clone())
-                .unwrap_or_default();
-            if sync_folder.is_empty() {
-                return Err(format!(
-                    "Conversation {id} not found in local storage or sync folder"
-                ));
+    // Adapter reads parse multi-hundred-MB transcript files, so keep that work off the
+    // async runtime and hand the conversation back to the UI before the background
+    // snapshot sync finishes.
+    let read_agent = agent.clone();
+    let read_id = id.clone();
+    let (conversation, storage_path) = tauri::async_runtime::spawn_blocking(move || {
+        let adapter = get_adapter(&read_agent)?;
+        let conversation = match adapter.read_conversation(&read_id) {
+            Ok(mut conv) => {
+                conv.project_dir = normalize_project_dir(&conv.project_dir);
+                conv
             }
-            let safe_name = local_sync::id_to_filename(&id);
-            let file_path = std::path::PathBuf::from(&sync_folder)
-                .join("conversations")
-                .join(&agent)
-                .join(format!("{safe_name}.json"));
-            if !file_path.exists() {
-                return Err(format!(
-                    "Conversation {id} not found in local storage or sync folder"
-                ));
+            Err(_) => {
+                // Adapter doesn't have it — try reading from the sync folder
+                let settings = read_app_settings_from_disk()?;
+                let sync_folder = settings
+                    .as_ref()
+                    .map(|s| s.sync.sync_folder.clone())
+                    .unwrap_or_default();
+                if sync_folder.is_empty() {
+                    return Err(format!(
+                        "Conversation {read_id} not found in local storage or sync folder"
+                    ));
+                }
+                let safe_name = local_sync::id_to_filename(&read_id);
+                let file_path = std::path::PathBuf::from(&sync_folder)
+                    .join("conversations")
+                    .join(&read_agent)
+                    .join(format!("{safe_name}.json"));
+                if !file_path.exists() {
+                    return Err(format!(
+                        "Conversation {read_id} not found in local storage or sync folder"
+                    ));
+                }
+                let body = std::fs::read(&file_path)
+                    .map_err(|e| format!("Failed to read synced conversation: {e}"))?;
+                serde_json::from_slice::<Conversation>(&body)
+                    .map_err(|e| format!("Failed to parse synced conversation: {e}"))?
             }
-            let body = std::fs::read(&file_path)
-                .map_err(|e| format!("Failed to read synced conversation: {e}"))?;
-            serde_json::from_slice::<Conversation>(&body)
-                .map_err(|e| format!("Failed to parse synced conversation: {e}"))?
-        }
-    };
+        };
+        let storage_path = resolve_storage_path(&read_agent, &read_id);
+        Ok((conversation, storage_path))
+    })
+    .await
+    .map_err(|error| format!("Conversation read task failed: {error}"))??;
 
-    let storage_path = resolve_storage_path(&agent, &id);
     let resume_command = build_resume_command(&agent, &id);
-    if let Ok(store) = MemoryStore::open_app() {
-        let _ = sync_conversation_into_store(&store, &agent, &conversation);
-    }
+    sync_conversation_snapshot_in_background(agent, conversation.clone(), storage_path.clone());
     Ok(convert_conversation(
         conversation,
         storage_path,
         resume_command,
         message_limit,
     ))
+}
+
+/// Persist a freshly read conversation into the memory store without blocking the UI.
+/// Repeated syncs for the same conversation (the initial read plus the auto-capture
+/// tick, for example) collapse into the first in-flight one.
+fn sync_conversation_snapshot_in_background(
+    agent: String,
+    conversation: Conversation,
+    storage_path: Option<String>,
+) {
+    static IN_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let key = format!("{}:{}", agent, conversation.id);
+    let in_flight = IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
+    {
+        let Ok(mut guard) = in_flight.lock() else {
+            return;
+        };
+        if !guard.insert(key.clone()) {
+            return;
+        }
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Ok(store) = MemoryStore::open_app() {
+            let snapshot_is_current = store
+                .conversation_snapshot_is_current(
+                    &agent,
+                    &conversation.id,
+                    conversation.updated_at,
+                    conversation.messages.len(),
+                )
+                .unwrap_or(false);
+            if !snapshot_is_current {
+                let _ = store.upsert_conversation_snapshot(&agent, &conversation, storage_path);
+            }
+        }
+        if let Some(in_flight) = IN_FLIGHT.get() {
+            if let Ok(mut guard) = in_flight.lock() {
+                guard.remove(&key);
+            }
+        }
+    });
 }
 
 #[command]
@@ -3022,6 +3097,9 @@ mod tests {
                 machine_group_names: std::collections::HashMap::new(),
                 machine_group_overrides: std::collections::HashMap::new(),
                 favorite_conversations: std::collections::HashMap::new(),
+                library_sort: "created-desc".to_string(),
+                recent_updated_enabled: true,
+                sidebar_width: 0,
                 sync: super::SyncSettingsPayload {
                     provider: "webdav".to_string(),
                     webdav_scheme: "https".to_string(),

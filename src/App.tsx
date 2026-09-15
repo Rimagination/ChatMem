@@ -1,6 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
+import {
+  AlignLeft,
+  ArrowRightLeft,
+  ChevronDown,
+  ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  Copy,
+  FileText,
+  Folder,
+  HelpCircle,
+  History,
+  ListChecks,
+  ListFilter,
+  MessageSquareText,
+  Minus,
+  NotebookText,
+  PanelLeftClose,
+  Search,
+  Settings,
+  ShieldCheck,
+  Sparkles,
+  Square,
+  SquareTerminal,
+  Star,
+  Trash2,
+  X,
+} from "lucide-react";
 import { appWindow } from "@tauri-apps/api/window";
 import ConversationDetail from "./components/ConversationDetail";
 import MigrateModal from "./components/MigrateModal";
@@ -202,7 +230,8 @@ type CopyState = {
   status: "idle" | "success" | "error";
 };
 type LibraryArrangement = "projects" | "timeline" | "chats-first";
-type LibrarySort = "updated" | "created";
+type LibrarySort = "created-desc" | "created-asc";
+type EffectiveLibrarySort = "updated" | LibrarySort;
 type WorkspaceView = "conversation" | "history";
 type HandoffComposerState = {
   targetAgent: string;
@@ -321,7 +350,8 @@ type ShellCopy = {
   arrangeTimeline: string;
   arrangeChatsFirst: string;
   sortUpdated: string;
-  sortCreated: string;
+  sortCreatedDesc: string;
+  sortCreatedAsc: string;
   filterProject: string;
   filterTags: string;
   filterStatus: string;
@@ -983,8 +1013,11 @@ function buildLowTokenContinuationPrompt({
   return lines.join("\n");
 }
 
-function sortConversations(conversations: ConversationSummary[], sortMode: LibrarySort) {
-  const field = sortMode === "created" ? "created_at" : "updated_at";
+function sortConversations(conversations: ConversationSummary[], sortMode: EffectiveLibrarySort) {
+  if (sortMode === "created-asc") {
+    return [...conversations].sort((left, right) => left.created_at.localeCompare(right.created_at));
+  }
+  const field = sortMode === "created-desc" ? "created_at" : "updated_at";
   return [...conversations].sort((left, right) =>
     right[field].localeCompare(left[field]),
   );
@@ -1078,7 +1111,8 @@ function getShellCopy(locale: Locale): ShellCopy {
       arrangeTimeline: "Timeline list",
       arrangeChatsFirst: "Chats first",
       sortUpdated: "Recently updated",
-      sortCreated: "Recently created",
+      sortCreatedDesc: "Newest created first",
+      sortCreatedAsc: "Oldest created first",
       filterProject: "Project",
       filterTags: "Tags",
       filterStatus: "Status",
@@ -1254,8 +1288,9 @@ function getShellCopy(locale: Locale): ShellCopy {
     arrangeProjects: "按项目",
     arrangeTimeline: "时间顺序列表",
     arrangeChatsFirst: "聊天优先",
-    sortUpdated: "已更新",
-    sortCreated: "已创建",
+    sortUpdated: "最近更新",
+    sortCreatedDesc: "创建时间降序",
+    sortCreatedAsc: "创建时间升序",
     filterProject: "项目",
     filterTags: "标签",
     filterStatus: "状态",
@@ -1432,245 +1467,72 @@ function WindowButtonIcon({
     | "wiki"
     | "shield"
     | "spark"
-    | "chevron";
+    | "chevron"
+    | "sortUpdated";
 }) {
-  if (type === "minimize") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M3 8.5h10" />
-      </svg>
-    );
-  }
+  const props = { size: 16, strokeWidth: 1.5, "aria-hidden": true } as const;
 
-  if (type === "maximize") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <rect x="3.5" y="3.5" width="9" height="9" rx="1.2" />
-      </svg>
-    );
+  switch (type) {
+    case "minimize":
+      return <Minus {...props} />;
+    case "maximize":
+      return <Square {...props} />;
+    case "close":
+      return <X {...props} />;
+    case "sidebar":
+      return <PanelLeftClose {...props} />;
+    case "collapseAll":
+      return <ChevronsDownUp {...props} />;
+    case "restoreExpansion":
+      return <ChevronsUpDown {...props} />;
+    case "organize":
+      return <ListFilter {...props} />;
+    case "bulkSelect":
+      return <ListChecks {...props} />;
+    case "favorite":
+      return <Star {...props} />;
+    case "trash":
+      return <Trash2 {...props} />;
+    case "settings":
+      return <Settings {...props} />;
+    case "help":
+      return <HelpCircle {...props} />;
+    case "source":
+      return <AlignLeft {...props} />;
+    case "search":
+      return <Search {...props} />;
+    case "project":
+      return <Folder {...props} />;
+    case "conversation":
+      return <MessageSquareText {...props} />;
+    case "migrate":
+      return <ArrowRightLeft {...props} />;
+    case "copy":
+      return <Copy {...props} />;
+    case "terminal":
+      return <SquareTerminal {...props} />;
+    case "memory":
+      return <NotebookText {...props} />;
+    case "wiki":
+      return <FileText {...props} />;
+    case "shield":
+      return <ShieldCheck {...props} />;
+    case "spark":
+      return <Sparkles {...props} />;
+    case "sortUpdated":
+      return <History {...props} />;
+    default:
+      return <ChevronRight {...props} />;
   }
-
-  if (type === "close") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M4 4l8 8" />
-        <path d="M12 4l-8 8" />
-      </svg>
-    );
-  }
-
-  if (type === "sidebar") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        {/* Sidebar panel */}
-        <rect x="2" y="3" width="12" height="10" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
-        {/* Divider line */}
-        <line x1="6" y1="3" x2="6" y2="13" stroke="currentColor" strokeWidth="1.3" />
-        {/* Left arrow - collapse direction */}
-        <path d="M10.5 6.5L9 8l1.5 1.5" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    );
-  }
-
-  if (type === "collapseAll") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M6.7 3.3 3.3 6.7" strokeWidth="1.7" strokeLinecap="square" />
-        <path d="M3.3 3.5v3.2h3.2" strokeWidth="1.7" strokeLinecap="square" strokeLinejoin="miter" />
-        <path d="M9.3 12.7l3.4-3.4" strokeWidth="1.7" strokeLinecap="square" />
-        <path d="M12.7 12.5V9.3H9.5" strokeWidth="1.7" strokeLinecap="square" strokeLinejoin="miter" />
-      </svg>
-    );
-  }
-
-  if (type === "restoreExpansion") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M9.4 3.4h3.2v3.2" strokeWidth="1.7" strokeLinecap="square" strokeLinejoin="miter" />
-        <path d="M12.4 3.6 9.2 6.8" strokeWidth="1.7" strokeLinecap="square" />
-        <path d="M6.6 12.6H3.4V9.4" strokeWidth="1.7" strokeLinecap="square" strokeLinejoin="miter" />
-        <path d="M3.6 12.4l3.2-3.2" strokeWidth="1.7" strokeLinecap="square" />
-      </svg>
-    );
-  }
-
-  if (type === "organize") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <rect x="4.15" y="2.75" width="9.25" height="10.5" rx="1.8" strokeWidth="1.65" />
-        <path d="M2.6 5.35h4.75" strokeWidth="1.65" />
-        <path d="M2.6 8h4.75" strokeWidth="1.65" />
-        <path d="M2.6 10.65h4.75" strokeWidth="1.65" />
-      </svg>
-    );
-  }
-
-  if (type === "bulkSelect") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <rect x="3" y="3" width="4" height="4" rx="0.8" />
-        <path d="M9 5h4" />
-        <rect x="3" y="9" width="4" height="4" rx="0.8" />
-        <path d="M9 11h4" />
-      </svg>
-    );
-  }
-
-  if (type === "favorite") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="m8 2.8 1.5 3 3.3.5-2.4 2.3.6 3.3L8 10.3 5 11.9l.6-3.3-2.4-2.3 3.3-.5Z" />
-      </svg>
-    );
-  }
-
-  if (type === "trash") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M5.5 4.5h5" />
-        <path d="M6.5 4.5V3.3h3v1.2" />
-        <path d="M4.5 6h7" />
-        <path d="M5.2 6.2l.5 6.3h4.6l.5-6.3" />
-        <path d="M7.1 8v3" />
-        <path d="M8.9 8v3" />
-      </svg>
-    );
-  }
-
-  if (type === "settings") {
-    return (
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M12.2 2h-.4a2 2 0 0 0-2 2v.2a2 2 0 0 1-1 1.7l-.4.2a2 2 0 0 1-2 0l-.2-.1a2 2 0 0 0-2.7.7l-.2.4a2 2 0 0 0 .7 2.7l.2.1a2 2 0 0 1 1 1.7v.6a2 2 0 0 1-1 1.7l-.2.1a2 2 0 0 0-.7 2.7l.2.4a2 2 0 0 0 2.7.7l.2-.1a2 2 0 0 1 2 0l.4.2a2 2 0 0 1 1 1.7v.2a2 2 0 0 0 2 2h.4a2 2 0 0 0 2-2v-.2a2 2 0 0 1 1-1.7l.4-.2a2 2 0 0 1 2 0l.2.1a2 2 0 0 0 2.7-.7l.2-.4a2 2 0 0 0-.7-2.7l-.2-.1a2 2 0 0 1-1-1.7v-.6a2 2 0 0 1 1-1.7l.2-.1a2 2 0 0 0 .7-2.7l-.2-.4a2 2 0 0 0-2.7-.7l-.2.1a2 2 0 0 1-2 0l-.4-.2a2 2 0 0 1-1-1.7V4a2 2 0 0 0-2-2z" />
-        <circle cx="12" cy="12" r="3" />
-      </svg>
-    );
-  }
-
-  if (type === "help") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <circle cx="8" cy="8" r="5.3" />
-        <path d="M6.6 6.4A1.5 1.5 0 0 1 8.1 5c.9 0 1.5.5 1.5 1.3 0 .6-.3 1-.9 1.4-.6.4-.8.7-.8 1.4" />
-        <path d="M8 11.1h.01" />
-      </svg>
-    );
-  }
-
-  if (type === "source") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M3.5 4.5h9" />
-        <path d="M5 8h6" />
-        <path d="M6.5 11.5h3" />
-      </svg>
-    );
-  }
-
-  if (type === "search") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <circle cx="7" cy="7" r="3.6" />
-        <path d="M9.8 9.8 13 13" />
-      </svg>
-    );
-  }
-
-  if (type === "project") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M2.8 5.2h10.4v6.3a1.2 1.2 0 0 1-1.2 1.2H4a1.2 1.2 0 0 1-1.2-1.2Z" />
-        <path d="M2.8 5.2 4.2 3.4h3l1 1.8" />
-      </svg>
-    );
-  }
-
-  if (type === "conversation") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M3 4.2h10v6.4H8.1L5.4 13v-2.4H3Z" />
-        <path d="M5 6.5h6" />
-        <path d="M5 8.6h3.8" />
-      </svg>
-    );
-  }
-
-  if (type === "migrate") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M3 5h8" />
-        <path d="M9 3l2 2-2 2" />
-        <path d="M13 11H5" />
-        <path d="M7 9l-2 2 2 2" />
-      </svg>
-    );
-  }
-
-  if (type === "copy") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <rect x="5" y="4" width="7" height="8" rx="1.2" />
-        <path d="M3.5 9.8V3.2A1.2 1.2 0 0 1 4.7 2h5" />
-      </svg>
-    );
-  }
-
-  if (type === "terminal") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M3 4h10v8H3Z" />
-        <path d="m5 6.4 1.5 1.5L5 9.4" />
-        <path d="M8 9.5h3" />
-      </svg>
-    );
-  }
-
-  if (type === "memory") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M5 3.5h6a1.5 1.5 0 0 1 1.5 1.5v6A1.5 1.5 0 0 1 11 12.5H5A1.5 1.5 0 0 1 3.5 11V5A1.5 1.5 0 0 1 5 3.5Z" />
-        <path d="M6 6h4" />
-        <path d="M6 8h4" />
-        <path d="M6 10h2.5" />
-      </svg>
-    );
-  }
-
-  if (type === "wiki") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M4 3.5h5.2L12 6.3v6.2H4Z" />
-        <path d="M9.2 3.5v3h2.8" />
-        <path d="M5.8 8.2h4.4" />
-        <path d="M5.8 10.2h3" />
-      </svg>
-    );
-  }
-
-  if (type === "shield") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M8 2.8 12.2 4v3.4c0 2.7-1.5 4.6-4.2 5.8-2.7-1.2-4.2-3.1-4.2-5.8V4Z" />
-        <path d="m6.2 7.8 1.2 1.2 2.5-2.7" />
-      </svg>
-    );
-  }
-
-  if (type === "spark") {
-    return (
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M8 2.8 9.1 6l3.1 1.1L9.1 8.2 8 11.4 6.9 8.2 3.8 7.1 6.9 6Z" />
-        <path d="M11.6 10.2 12.1 11.5l1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5Z" />
-      </svg>
-    );
-  }
-
-  return (
-    <svg viewBox="0 0 16 16" aria-hidden="true">
-      <path d="M6 4l4 4-4 4" />
-    </svg>
-  );
 }
 
+const SIDEBAR_WIDTH_DEFAULT = 308;
+const SIDEBAR_WIDTH_MIN = 240;
+const SIDEBAR_WIDTH_MAX = 560;
+
+function clampSidebarWidth(width: number) {
+  return Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, Math.round(width)));
+}
 function App() {
   const { locale, setLocale, t } = useI18n();
   const shell = useMemo(() => getShellCopy(locale), [locale]);
@@ -1737,8 +1599,19 @@ function App() {
   const [handoffs, setHandoffs] = useState<HandoffPacket[]>([]);
   const [handoffComposer, setHandoffComposer] = useState<HandoffComposerState>(null);
   const [showOrganizeMenu, setShowOrganizeMenu] = useState(false);
+  const [organizeMenuPosition, setOrganizeMenuPosition] = useState({ top: 0, right: 0 });
   const [libraryArrangement, setLibraryArrangement] = useState<LibraryArrangement>("projects");
-  const [librarySort, setLibrarySort] = useState<LibrarySort>("updated");
+  const [librarySort, setLibrarySort] = useState<LibrarySort>(() => loadSettings().librarySort);
+  const [recentUpdatedEnabled, setRecentUpdatedEnabled] = useState<boolean>(
+    () => loadSettings().recentUpdatedEnabled,
+  );
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    const stored = loadSettings().sidebarWidth;
+    return stored >= SIDEBAR_WIDTH_MIN && stored <= SIDEBAR_WIDTH_MAX
+      ? stored
+      : SIDEBAR_WIDTH_DEFAULT;
+  });
+  const [sidebarResizing, setSidebarResizing] = useState(false);
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("conversation");
   const [projectFilters, setProjectFilters] = useState<string[]>([]);
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
@@ -1869,6 +1742,14 @@ function App() {
   }, [appNotice]);
 
   useEffect(() => {
+    if (!sidebarResizing) {
+      document.body.classList.remove("is-sidebar-resizing");
+      return;
+    }
+    document.body.classList.add("is-sidebar-resizing");
+    return () => document.body.classList.remove("is-sidebar-resizing");
+  }, [sidebarResizing]);
+  useEffect(() => {
     void loadConversations(searchQuery, selectedAgent);
   }, [searchQuery, selectedAgent]);
 
@@ -1994,6 +1875,14 @@ function App() {
       if (nativeSettings) {
         saveSettings(nativeSettings);
         setAppSettings(nativeSettings);
+        setLibrarySort(nativeSettings.librarySort);
+        setRecentUpdatedEnabled(nativeSettings.recentUpdatedEnabled);
+        setSidebarWidth(
+          nativeSettings.sidebarWidth >= SIDEBAR_WIDTH_MIN &&
+          nativeSettings.sidebarWidth <= SIDEBAR_WIDTH_MAX
+            ? nativeSettings.sidebarWidth
+            : SIDEBAR_WIDTH_DEFAULT,
+        );
         if (nativeSettings.locale !== locale) {
           setLocale(nativeSettings.locale);
         }
@@ -2423,6 +2312,58 @@ function App() {
     }
     const nextSettings = updateSettings({ favoriteConversations: nextFavorites });
     setAppSettings(nextSettings);
+  };
+
+  // Picking a base sort in the organize menu turns off the "recently updated" quick view.
+  const handleLibrarySortChange = (value: LibrarySort) => {
+    setLibrarySort(value);
+    setRecentUpdatedEnabled(false);
+    const nextSettings = updateSettings({ librarySort: value, recentUpdatedEnabled: false });
+    setAppSettings(nextSettings);
+  };
+
+  const handleRecentUpdatedToggle = (next: boolean) => {
+    setRecentUpdatedEnabled(next);
+    const nextSettings = updateSettings({ recentUpdatedEnabled: next });
+    setAppSettings(nextSettings);
+  };
+
+  // The organize menu is rendered with position: fixed so the sidebar's scroll
+  // container cannot clip it; anchor it under the button row on open.
+  const handleToggleOrganizeMenu = () => {
+    const rect = organizeMenuRef.current?.getBoundingClientRect();
+    if (rect) {
+      setOrganizeMenuPosition({
+        top: rect.bottom + 8,
+        right: Math.max(8, window.innerWidth - rect.right),
+      });
+    }
+    setShowOrganizeMenu((current) => !current);
+  };
+
+  const applySidebarWidth = (width: number) => {
+    const clamped = clampSidebarWidth(width);
+    setSidebarWidth(clamped);
+    const nextSettings = updateSettings({ sidebarWidth: clamped });
+    setAppSettings(nextSettings);
+  };
+
+  const handleSidebarResizeStart = (event: ReactMouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = sidebarWidth;
+    setSidebarResizing(true);
+    const handleMove = (moveEvent: MouseEvent) => {
+      setSidebarWidth(clampSidebarWidth(startWidth + (moveEvent.clientX - startX)));
+    };
+    const handleUp = (upEvent: MouseEvent) => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+      setSidebarResizing(false);
+      applySidebarWidth(startWidth + (upEvent.clientX - startX));
+    };
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
   };
 
   const loadTrashConversations = async () => {
@@ -3081,8 +3022,8 @@ function App() {
   };
 
   const sortedConversations = useMemo(
-    () => sortConversations(conversations, librarySort),
-    [conversations, librarySort],
+    () => sortConversations(conversations, recentUpdatedEnabled ? "updated" : librarySort),
+    [conversations, librarySort, recentUpdatedEnabled],
   );
 
   const availableProjects = useMemo(
@@ -3116,9 +3057,9 @@ function App() {
     () =>
       sortConversations(
         Object.values(appSettings.favoriteConversations).map(favoriteSnapshotToConversationSummary),
-        librarySort,
+        recentUpdatedEnabled ? "updated" : librarySort,
       ),
-    [appSettings.favoriteConversations, librarySort],
+    [appSettings.favoriteConversations, librarySort, recentUpdatedEnabled],
   );
 
   const displayedConversations = showFavorites ? favoriteConversations : filteredConversations;
@@ -3260,14 +3201,14 @@ function App() {
     });
 
     return Array.from(groups.values()).sort((left, right) => {
+      if (left.latestAt !== right.latestAt) {
+        return right.latestAt.localeCompare(left.latestAt);
+      }
       const leftOrder = ZCODE_CLI_ORDER.indexOf(left.id);
       const rightOrder = ZCODE_CLI_ORDER.indexOf(right.id);
       const normalizedLeftOrder = leftOrder < 0 ? ZCODE_CLI_ORDER.length : leftOrder;
       const normalizedRightOrder = rightOrder < 0 ? ZCODE_CLI_ORDER.length : rightOrder;
-      if (normalizedLeftOrder !== normalizedRightOrder) {
-        return normalizedLeftOrder - normalizedRightOrder;
-      }
-      return right.latestAt.localeCompare(left.latestAt);
+      return normalizedLeftOrder - normalizedRightOrder;
     });
   }, [projectGroups]);
 
@@ -3475,14 +3416,14 @@ function App() {
     });
 
     return Array.from(groups.values()).sort((left, right) => {
+      if (left.latestAt !== right.latestAt) {
+        return right.latestAt.localeCompare(left.latestAt);
+      }
       const leftOrder = ZCODE_CLI_ORDER.indexOf(left.id);
       const rightOrder = ZCODE_CLI_ORDER.indexOf(right.id);
       const normalizedLeftOrder = leftOrder < 0 ? ZCODE_CLI_ORDER.length : leftOrder;
       const normalizedRightOrder = rightOrder < 0 ? ZCODE_CLI_ORDER.length : rightOrder;
-      if (normalizedLeftOrder !== normalizedRightOrder) {
-        return normalizedLeftOrder - normalizedRightOrder;
-      }
-      return right.latestAt.localeCompare(left.latestAt);
+      return normalizedLeftOrder - normalizedRightOrder;
     });
   }, [chatConversations, selectedAgent]);
 
@@ -6064,8 +6005,13 @@ function App() {
         className={`app-body ${libraryArrangement === "chats-first" ? "chats-first" : ""} ${
           showSettings || showAbout ? "is-full-page" : ""
         } ${sidebarCollapsed ? "is-sidebar-collapsed" : ""}`}
+        style={
+          !sidebarCollapsed && !showSettings && !showAbout
+            ? { gridTemplateColumns: `${sidebarWidth}px minmax(0, 1fr)` }
+            : undefined
+        }
       >
-        <aside className="sidebar">
+        <aside className="sidebar" style={{ maxWidth: "none" }}>
           <div className="sidebar-scroll">
             <div className="sidebar-controls">
               <div className="agent-source-select">
@@ -6089,6 +6035,7 @@ function App() {
                       </option>
                     ))}
                   </select>
+                  <ChevronDown className="select-caret" size={14} strokeWidth={1.5} aria-hidden />
                 </div>
               </div>
 
@@ -6118,6 +6065,19 @@ function App() {
                 <div className="library-section-actions" ref={organizeMenuRef}>
                   <button
                     type="button"
+                    className={`icon-button sidebar-action-button ${recentUpdatedEnabled ? "is-active" : ""}`}
+                    aria-pressed={recentUpdatedEnabled}
+                    aria-label={shell.sortUpdated}
+                    title={shell.sortUpdated}
+                    onClick={() => handleRecentUpdatedToggle(!recentUpdatedEnabled)}
+                  >
+                    <WindowButtonIcon type="sortUpdated" />
+                    <span className="sidebar-action-tooltip" aria-hidden="true">
+                      {shell.sortUpdated}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
                     className={`icon-button sidebar-action-button ${
                       allProjectsCollapsed ? "is-restore" : "is-collapse"
                     }`}
@@ -6137,7 +6097,7 @@ function App() {
                     title={shell.openOrganizer}
                     aria-haspopup="menu"
                     aria-expanded={showOrganizeMenu}
-                    onClick={() => setShowOrganizeMenu((current) => !current)}
+                    onClick={handleToggleOrganizeMenu}
                   >
                     <WindowButtonIcon type="organize" />
                     <span className="sidebar-action-tooltip" aria-hidden="true">
@@ -6156,30 +6116,11 @@ function App() {
                       {bulkSelectionMode ? shell.cancelBulkSelect : shell.bulkSelect}
                     </span>
                   </button>
-                  {machineGroups.length > 1 ? (
-                    <button
-                      type="button"
-                      className={`icon-button sidebar-action-button ${mgSelectMode ? "is-active" : ""}`}
-                      aria-label={mgSelectMode ? "取消管理分组" : "管理分组"}
-                      title={mgSelectMode ? "取消管理分组" : "管理分组"}
-                      onClick={() => {
-                        setMgSelectMode((cur) => !cur);
-                        if (mgSelectMode) {
-                          setSelectedMgIds(new Set());
-                          setSelectedConvKeysForMove(new Set());
-                          setMergeTargetId(null);
-                          setMoveTargetId(null);
-                        }
-                      }}
-                    >
-                      <WindowButtonIcon type="organize" />
-                      <span className="sidebar-action-tooltip" aria-hidden="true">
-                        {mgSelectMode ? "取消管理分组" : "管理分组"}
-                      </span>
-                    </button>
-                  ) : null}
                   {showOrganizeMenu && (
-                    <div className="organize-menu">
+                    <div
+                      className="organize-menu"
+                      style={{ top: organizeMenuPosition.top, right: organizeMenuPosition.right }}
+                    >
                       <div className="organize-group">
                         <div className="organize-group-title">{shell.organizeArrangement}</div>
                         {([
@@ -6202,14 +6143,14 @@ function App() {
                       <div className="organize-group">
                         <div className="organize-group-title">{shell.organizeSort}</div>
                         {([
-                          ["updated", shell.sortUpdated],
-                          ["created", shell.sortCreated],
+                          ["created-desc", shell.sortCreatedDesc],
+                          ["created-asc", shell.sortCreatedAsc],
                         ] as Array<[LibrarySort, string]>).map(([value, label]) => (
                           <button
                             key={value}
                             type="button"
                             className={`organize-item ${librarySort === value ? "active" : ""}`}
-                            onClick={() => setLibrarySort(value)}
+                            onClick={() => handleLibrarySortChange(value)}
                           >
                             <span>{label}</span>
                             {librarySort === value ? <span className="organize-check">✓</span> : null}
@@ -6570,6 +6511,18 @@ function App() {
             <span className="utility-nav-version">v{packageInfo.version}</span>
           </nav>
         </aside>
+        {!showSettings && !showAbout ? (
+          <div
+            className={`sidebar-resizer ${sidebarResizing ? "is-resizing" : ""}`}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={locale === "en" ? "Adjust sidebar width" : "调整侧栏宽度"}
+            style={{ left: sidebarWidth }}
+            title={locale === "en" ? "Drag to resize · double-click to reset" : "拖动调节宽度 · 双击恢复默认"}
+            onMouseDown={handleSidebarResizeStart}
+            onDoubleClick={() => applySidebarWidth(SIDEBAR_WIDTH_DEFAULT)}
+          />
+        ) : null}
 
         <main
           className={`workspace ${showSettings ? "settings-workspace" : ""} ${

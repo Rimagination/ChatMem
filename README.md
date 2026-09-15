@@ -8,19 +8,17 @@ ChatMem is not another chat client. The desktop app is for browsing, searching, 
 
 ## Current Version
 
-Latest version: `v1.2.5`
+Latest version: `v1.2.6`
 
 ### Highlights
 
-- Cleaner Settings pages with a left navigation and focused right-side panels.
-- Simpler memory management: suggestions and startup rules are for viewing or deleting in the desktop app; supported agents handle saving useful suggestions as rules.
-- Better Agent Integration setup for Claude, Codex, Gemini, OpenCode, ZCode, and Hermes.
-- Fixed duplicate Codex ChatMem entries by keeping the shared skill in `.agents/skills/chatmem`.
-- Faster, clearer local-history recall through the `recall_project_work` MCP entrypoint.
-- Cleaner source display in local-history recall and memory suggestion surfaces.
-- Improved update and local-data checks before and after upgrades.
+- ZCode conversations load from ZCode's new local session store, with full history for built-in GLM sessions.
+- Conversation opens are dramatically faster: background snapshot sync, batched FTS maintenance, new database indexes, and WAL mode.
+- The library has a "Recently updated" quick toggle plus explicit newest/oldest created-time sorting in the organize menu.
+- All icons use the Lucide set, and the sidebar width is adjustable with a draggable divider.
+- Fixed clipping of the organize menu and hover tooltips inside the sidebar.
 
-Release notes: [docs/releases/v1.2.5.md](./docs/releases/v1.2.5.md)
+Release notes: [docs/releases/v1.2.6.md](./docs/releases/v1.2.6.md)
 
 ## Download
 
@@ -45,7 +43,7 @@ macOS builds are currently unsigned and not notarized. On first launch, macOS ma
 | Gemini | Source -> Project -> Conversation | Reads Gemini CLI local history. |
 | OpenCode | Source -> Project -> Conversation | Reads OpenCode SQLite conversation history. |
 | Hermes | Source -> Project -> Conversation | Reads Hermes Agent SQLite history. |
-| ZCode | Source -> CLI -> Project -> Conversation | Reads ZCode ACP history and groups it by CLI and project. |
+| ZCode | Source -> CLI -> Project -> Conversation | Reads ZCode sessions from the new local session store, the task index, and legacy ACP history, grouped by CLI and project. |
 
 ## What ChatMem Does
 

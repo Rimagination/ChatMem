@@ -68,6 +68,21 @@ export type FavoriteConversationSnapshot = {
   summary: string | null;
 };
 
+export type LibrarySortSetting = "created-desc" | "created-asc";
+
+function normalizeLibrarySort(value: unknown): LibrarySortSetting {
+  // "updated" and "created" are legacy values; the base sort is created-time only now.
+  if (value === "created-asc") {
+    return "created-asc";
+  }
+  return "created-desc";
+}
+
+function normalizeRecentUpdatedEnabled(value: unknown): boolean {
+  // The "recently updated" quick view is on unless it was explicitly turned off.
+  return value !== false;
+}
+
 export type AppSettings = {
   locale: Locale;
   fontFamily: AppFontFamily;
@@ -80,6 +95,9 @@ export type AppSettings = {
   machineGroupNames: Record<string, string>;
   machineGroupOverrides: Record<string, string>;
   favoriteConversations: Record<string, FavoriteConversationSnapshot>;
+  librarySort: LibrarySortSetting;
+  recentUpdatedEnabled: boolean;
+  sidebarWidth: number;
 };
 
 export const SETTINGS_STORAGE_KEY = "chatmem.settings";
@@ -107,6 +125,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   machineGroupNames: {},
   machineGroupOverrides: {},
   favoriteConversations: {},
+  librarySort: "created-desc",
+  recentUpdatedEnabled: true,
+  sidebarWidth: 0,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -245,6 +266,12 @@ export function normalizeAppSettings(value: unknown): AppSettings {
         )
       : {},
     favoriteConversations: normalizeFavoriteConversations(parsed.favoriteConversations),
+    librarySort: normalizeLibrarySort(parsed.librarySort),
+    recentUpdatedEnabled: normalizeRecentUpdatedEnabled(parsed.recentUpdatedEnabled),
+    sidebarWidth:
+      typeof parsed.sidebarWidth === "number" && Number.isFinite(parsed.sidebarWidth)
+        ? Math.round(parsed.sidebarWidth)
+        : 0,
   };
 }
 

@@ -11,7 +11,8 @@ anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 rusqlite = { version = "0.31", features = ["bundled"] }
-serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 walkdir = "2"
 

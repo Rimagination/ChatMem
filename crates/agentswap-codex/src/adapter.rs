@@ -332,6 +332,14 @@ impl CodexAdapter {
         .with_context(|| format!("Thread not found: {}", id))
     }
 
+    /// Whether the thread's rollout file still exists, i.e. the conversation can
+    /// actually be read. Codex prunes old rollout files while keeping thread rows.
+    pub fn conversation_is_readable(&self, id: &str) -> bool {
+        self.find_thread(id)
+            .map(|thread| PathBuf::from(&thread.rollout_path).exists())
+            .unwrap_or(false)
+    }
+
     /// Convert a unix timestamp (seconds) to a `DateTime<Utc>`.
     fn unix_to_datetime(ts: i64) -> DateTime<Utc> {
         Utc.timestamp_opt(ts, 0).single().unwrap_or_else(Utc::now)

@@ -1340,25 +1340,17 @@ describe("App", () => {
     });
     expect(organizeButton.classList.contains("sidebar-action-button")).toBe(true);
     expect(within(organizeButton).getByText("Filter, sort, and organize conversations")).toBeTruthy();
-    expect(organizeButton.querySelector("svg rect")?.getAttribute("d")).toBeNull();
-    expect(Array.from(organizeButton.querySelectorAll("svg path")).map((path) => path.getAttribute("d"))).toEqual([
-      "M2.6 5.35h4.75",
-      "M2.6 8h4.75",
-      "M2.6 10.65h4.75",
-    ]);
+    const organizeIcon = organizeButton.querySelector("svg");
+    expect(organizeIcon).not.toBeNull();
+    expect(organizeIcon?.classList.contains("lucide")).toBe(true);
 
     fireEvent.click(collapseButton);
 
     const restoreButton = screen.getByRole("button", { name: "Restore previous expansion" });
     expect(within(restoreButton).getByText("Restore previous expansion")).toBeTruthy();
-    expect(
-      Array.from(restoreButton.querySelectorAll("svg path")).map((path) => path.getAttribute("d")),
-    ).toEqual([
-      "M9.4 3.4h3.2v3.2",
-      "M12.4 3.6 9.2 6.8",
-      "M6.6 12.6H3.4V9.4",
-      "M3.6 12.4l3.2-3.2",
-    ]);
+    const restoreIcon = restoreButton.querySelector("svg");
+    expect(restoreIcon).not.toBeNull();
+    expect(restoreIcon?.classList.contains("lucide")).toBe(true);
   });
 
   it("starts native window dragging from the top bar without hijacking controls", async () => {

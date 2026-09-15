@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 pub fn default_db_path() -> Result<PathBuf> {
     let base = dirs::data_local_dir()
@@ -20,11 +22,39 @@ pub fn open_connection(path: &Path) -> Result<Connection> {
     }
 
     let conn = Connection::open(path)?;
-    migrate(&conn)?;
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(10));
+    migrate_once(&conn, path);
     Ok(conn)
 }
 
+fn migrated_paths() -> &'static Mutex<HashSet<PathBuf>> {
+    static MIGRATED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    MIGRATED.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// The app opens a fresh connection for nearly every store call, so only run the schema
+/// bootstrap once per database per process.
+fn migrate_once(conn: &Connection, path: &Path) {
+    let mut migrated = migrated_paths().lock().expect("migrated paths lock");
+    if migrated.contains(path) && path.is_file() {
+        return;
+    }
+    if let Err(error) = migrate(conn) {
+        // Never fail an open because of migration; the schema bootstrap is idempotent
+        // and the next open retries it.
+        eprintln!("Warning: ChatMem database migration failed: {error}");
+        return;
+    }
+    migrated.insert(path.to_path_buf());
+}
+
 pub fn migrate(conn: &Connection) -> Result<()> {
+    // WAL lets the UI read while background imports write, instead of both sides
+    // stalling on the rollback-journal write lock. Keep going in DELETE mode when
+    // the switch is not possible (e.g. another process holds the database).
+    let _ = conn.pragma_update(None, "journal_mode", "WAL");
+    let _ = conn.pragma_update(None, "synchronous", "NORMAL");
+
     conn.execute_batch(
         "
         PRAGMA foreign_keys = OFF;
@@ -398,10 +428,25 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         [],
     )?;
 
+    // Snapshot upserts filter and delete by conversation on every conversation open;
+    // without these indexes each open scans the whole messages/tool_calls/search tables.
+    conn.execute_batch(
+        "
+        CREATE INDEX IF NOT EXISTS idx_messages_conversation
+            ON messages(conversation_id);
+        CREATE INDEX IF NOT EXISTS idx_tool_calls_message
+            ON tool_calls(message_id);
+        CREATE INDEX IF NOT EXISTS idx_file_changes_conversation
+            ON file_changes(conversation_id);
+        CREATE INDEX IF NOT EXISTS idx_search_documents_repo_ref
+            ON search_documents(repo_id, doc_type, doc_ref_id);
+        ",
+    )?;
+
     Ok(())
 }
 
-fn dedupe_legacy_checkpoint_handoff_links(conn: &Connection) -> Result<()> {
+pub(crate) fn dedupe_legacy_checkpoint_handoff_links(conn: &Connection) -> Result<()> {
     if !table_has_column(conn, "handoff_packets", "checkpoint_id")? {
         return Ok(());
     }

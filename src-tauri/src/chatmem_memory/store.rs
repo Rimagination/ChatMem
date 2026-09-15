@@ -699,18 +699,18 @@ impl MemoryStore {
             ],
         )?;
 
-        tx.execute("DELETE FROM tool_calls WHERE message_id IN (SELECT message_id FROM messages WHERE conversation_id = ?1)", [conversation_id.clone()])?;
+        tx.execute("DELETE FROM tool_calls WHERE message_id IN (SELECT message_id FROM messages WHERE conversation_id = ?1)", [&conversation_id])?;
         tx.execute(
             "DELETE FROM messages WHERE conversation_id = ?1",
-            [conversation_id.clone()],
+            [&conversation_id],
         )?;
         tx.execute(
             "DELETE FROM file_changes WHERE conversation_id = ?1",
-            [conversation_id.clone()],
+            [&conversation_id],
         )?;
         tx.execute(
             "DELETE FROM conversation_chunks WHERE conversation_id = ?1",
-            [conversation_id.clone()],
+            [&conversation_id],
         )?;
         tx.execute(
             "DELETE FROM search_documents_fts
@@ -858,7 +858,10 @@ impl MemoryStore {
                     &chunk_now,
                 ],
             )?;
-            upsert_search_document_tx(
+            // The bulk pre-delete above already removed this conversation's old chunk
+            // FTS rows; inserting without the per-doc FTS delete keeps rebuilds O(chunks)
+            // instead of O(chunks x FTS table).
+            insert_search_document_row_tx(
                 &tx,
                 &chunk_id,
                 &repo_id,
@@ -1457,6 +1460,71 @@ impl MemoryStore {
         )?;
 
         Ok(())
+    }
+
+    /// Last known updated_at for a stored conversation snapshot, if any. Imports use this
+    /// to skip re-reading conversations whose source has not changed.
+    pub fn stored_conversation_updated_at(
+        &self,
+        source_agent: &str,
+        source_conversation_id: &str,
+    ) -> Result<Option<String>> {
+        let conversation_id = format!("{source_agent}:{source_conversation_id}");
+        let conn = self.conn()?;
+        match conn.query_row(
+            "SELECT updated_at FROM conversations WHERE conversation_id = ?1",
+            [&conversation_id],
+            |row| row.get::<_, String>(0),
+        ) {
+            Ok(updated_at) => Ok(Some(updated_at)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Whether a full snapshot rebuild can be skipped because the stored snapshot already
+    /// reflects the given source state. Verifies the chunk sidecars (FTS docs) are in sync
+    /// with the stored chunks so orphaned sidecars from earlier writes still trigger a
+    /// healing rebuild. Upsert itself stays unconditional; callers consult this first.
+    pub fn conversation_snapshot_is_current(
+        &self,
+        source_agent: &str,
+        source_conversation_id: &str,
+        updated_at: DateTime<Utc>,
+        message_count: usize,
+    ) -> Result<bool> {
+        let conversation_id = format!("{source_agent}:{source_conversation_id}");
+        let conn = self.conn()?;
+        let row = conn
+            .query_row(
+                "SELECT c.updated_at,
+                        (SELECT COUNT(*) FROM messages WHERE conversation_id = c.conversation_id),
+                        (SELECT COUNT(*) FROM conversation_chunks WHERE conversation_id = c.conversation_id),
+                        (SELECT COUNT(*) FROM search_documents
+                         WHERE repo_id = c.repo_id AND doc_type = 'chunk' AND doc_ref_id LIKE ?2)
+                 FROM conversations c
+                 WHERE c.conversation_id = ?1",
+                params![conversation_id, format!("{conversation_id}:%")],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        let Some((stored_updated_at, stored_messages, stored_chunks, stored_chunk_docs)) = row
+        else {
+            return Ok(false);
+        };
+        Ok(stored_updated_at == updated_at.to_rfc3339()
+            && stored_messages > 0
+            && stored_messages as usize >= message_count
+            && stored_chunks > 0
+            && stored_chunks == stored_chunk_docs)
     }
 
     /// List all conversations from the memory store for a given source agent.
@@ -2531,6 +2599,9 @@ impl MemoryStore {
         target_profile: Option<&str>,
     ) -> Result<HandoffPacketResponse> {
         let mut conn = self.conn()?;
+        // Repair legacy links first so checkpoints pointing at an existing handoff are
+        // recognized even when the handoff row predates this process.
+        db::dedupe_legacy_checkpoint_handoff_links(&conn)?;
         let checkpoint = conn
             .query_row(
                 "SELECT repo_id, conversation_id, source_agent, status, summary, resume_command, handoff_id
@@ -3902,6 +3973,9 @@ fn replace_evidence_refs_tx(
     Ok(())
 }
 
+/// Replace a search document and its FTS row. The per-doc FTS delete is O(FTS table),
+/// so callers that bulk-delete their old FTS rows first (conversation chunk rebuilds)
+/// should use [`insert_search_document_row_tx`] instead.
 fn upsert_search_document_tx(
     conn: &Connection,
     doc_id: &str,
@@ -3910,6 +3984,32 @@ fn upsert_search_document_tx(
     doc_ref_id: &str,
     title: &str,
     body: &str,
+) -> Result<()> {
+    upsert_search_document_row_tx(conn, doc_id, repo_id, doc_type, doc_ref_id, title, body, true)
+}
+
+/// Insert-only variant for callers that already removed the old FTS rows in bulk.
+fn insert_search_document_row_tx(
+    conn: &Connection,
+    doc_id: &str,
+    repo_id: &str,
+    doc_type: &str,
+    doc_ref_id: &str,
+    title: &str,
+    body: &str,
+) -> Result<()> {
+    upsert_search_document_row_tx(conn, doc_id, repo_id, doc_type, doc_ref_id, title, body, false)
+}
+
+fn upsert_search_document_row_tx(
+    conn: &Connection,
+    doc_id: &str,
+    repo_id: &str,
+    doc_type: &str,
+    doc_ref_id: &str,
+    title: &str,
+    body: &str,
+    delete_fts_row: bool,
 ) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
@@ -3924,10 +4024,14 @@ fn upsert_search_document_tx(
             updated_at = excluded.updated_at",
         params![doc_id, repo_id, doc_type, doc_ref_id, title, body, now],
     )?;
-    conn.execute(
-        "DELETE FROM search_documents_fts WHERE doc_id = ?1",
-        [doc_id],
-    )?;
+    if delete_fts_row {
+        // O(rows in the FTS table): FTS5 cannot index `doc_id`, so this scans. Kept only
+        // for callers that replace a handful of documents without a bulk pre-delete.
+        conn.execute(
+            "DELETE FROM search_documents_fts WHERE doc_id = ?1",
+            [doc_id],
+        )?;
+    }
     conn.execute(
         "INSERT INTO search_documents_fts (doc_id, title, body) VALUES (?1, ?2, ?3)",
         params![doc_id, title, body],
@@ -5984,6 +6088,67 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("none matched this repo root")));
+    }
+
+    #[test]
+    fn conversation_snapshot_is_current_reflects_stored_state_and_sidecars() {
+        let store = new_store();
+        let repo_root = "d:/vsp/snapshot-skip";
+        let now = Utc::now();
+        let conversation = Conversation {
+            id: "conv-snapshot-is-current".to_string(),
+            source_agent: AgentKind::Codex,
+            project_dir: repo_root.to_string(),
+            created_at: now,
+            updated_at: now,
+            summary: Some("snapshot is current".to_string()),
+            messages: vec![Message {
+                id: Uuid::new_v4(),
+                timestamp: now,
+                role: Role::Assistant,
+                content: "v1".to_string(),
+                tool_calls: vec![],
+                metadata: HashMap::new(),
+            }],
+            file_changes: vec![],
+        };
+
+        // Nothing stored yet: not current.
+        assert!(!store
+            .conversation_snapshot_is_current("codex", &conversation.id, conversation.updated_at, 1)
+            .unwrap());
+
+        store
+            .upsert_conversation_snapshot("codex", &conversation, None)
+            .unwrap();
+        assert!(store
+            .conversation_snapshot_is_current("codex", &conversation.id, conversation.updated_at, 1)
+            .unwrap());
+
+        // A changed updated_at is no longer current.
+        assert!(!store
+            .conversation_snapshot_is_current(
+                "codex",
+                &conversation.id,
+                conversation.updated_at + chrono::Duration::seconds(1),
+                1
+            )
+            .unwrap());
+
+        // Orphaned chunk sidecars (missing FTS docs) force a rebuild.
+        let repo_id = store.ensure_repo(repo_root).unwrap();
+        let conn = store.conn().unwrap();
+        conn.execute(
+            "DELETE FROM search_documents
+             WHERE repo_id = ?1 AND doc_type = 'chunk'
+               AND doc_ref_id LIKE 'codex:conv-snapshot-is-current:%'",
+            params![repo_id],
+        )
+        .unwrap();
+        drop(conn);
+        assert!(!store
+            .conversation_snapshot_is_current("codex", &conversation.id, conversation.updated_at, 1)
+            .unwrap());
     }
 
     #[test]

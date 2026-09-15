@@ -321,7 +321,17 @@ pub(crate) fn auto_capture_conversation_with_adapter(
     };
     conversation.project_dir = canonical_project_root.clone();
 
-    store.upsert_conversation_snapshot(agent, &conversation, storage_path.clone())?;
+    let snapshot_is_current = store
+        .conversation_snapshot_is_current(
+            agent,
+            &conversation.id,
+            conversation.updated_at,
+            conversation.messages.len(),
+        )
+        .unwrap_or(false);
+    if !snapshot_is_current {
+        store.upsert_conversation_snapshot(agent, &conversation, storage_path.clone())?;
+    }
     let conversation_id = format!("{agent}:{}", conversation.id);
     let captured_at = chrono::Utc::now().to_rfc3339();
     let message_count = conversation.messages.len();
@@ -401,8 +411,22 @@ pub(crate) fn import_local_history_from_adapters(
             }
         };
 
+        let mut unchanged = 0usize;
         for summary in summaries {
             scanned += 1;
+
+            // Snapshots are content-addressed by updated_at; re-reading every conversation
+            // (and re-parsing multi-hundred-MB histories) on each import is wasted work.
+            if store
+                .stored_conversation_updated_at(agent, &summary.id)
+                .ok()
+                .flatten()
+                .is_some_and(|stored| stored == summary.updated_at.to_rfc3339())
+            {
+                unchanged += 1;
+                continue;
+            }
+
             let mut conversation = match adapter.read_conversation(&summary.id) {
                 Ok(conversation) => conversation,
                 Err(error) => {
@@ -433,6 +457,12 @@ pub(crate) fn import_local_history_from_adapters(
             *imported_project_root_counts
                 .entry((agent.to_string(), canonical_project_root))
                 .or_insert(0) += 1;
+        }
+
+        if unchanged > 0 {
+            warnings.push(format!(
+                "{unchanged} {agent} conversations were already up to date and were not re-read."
+            ));
         }
     }
 
@@ -470,6 +500,20 @@ pub fn scan_repo_conversations(
     store: &MemoryStore,
     repo_root: &str,
 ) -> anyhow::Result<RepoScanReport> {
+    let mut adapters = Vec::new();
+    for agent in LOCAL_HISTORY_AGENTS {
+        if let Some(adapter) = get_adapter(agent) {
+            adapters.push((*agent, adapter));
+        }
+    }
+    scan_repo_conversations_with_adapters(store, repo_root, adapters)
+}
+
+pub(crate) fn scan_repo_conversations_with_adapters(
+    store: &MemoryStore,
+    repo_root: &str,
+    adapters: Vec<(&str, Box<dyn AgentAdapter>)>,
+) -> anyhow::Result<RepoScanReport> {
     let normalized_requested_repo =
         crate::chatmem_memory::repo_identity::normalize_repo_root(repo_root);
     let normalized_repo = crate::chatmem_memory::repo_identity::canonical_repo_root(repo_root);
@@ -482,24 +526,42 @@ pub fn scan_repo_conversations(
     let mut skipped = 0usize;
     let mut source_agent_counts: HashMap<String, usize> = HashMap::new();
     let mut unmatched_project_root_counts: HashMap<(String, String), usize> = HashMap::new();
+    let mut warnings: Vec<String> = Vec::new();
 
-    for agent in LOCAL_HISTORY_AGENTS {
-        let Some(adapter) = get_adapter(agent) else {
-            continue;
-        };
-
+    for (agent, adapter) in adapters {
         if !adapter.is_available() {
             continue;
         }
 
         let summaries = adapter.list_conversations()?;
+        let mut scan_warnings = Vec::new();
         for summary in summaries {
             scanned += 1;
+            let unchanged = store
+                .stored_conversation_updated_at(agent, &summary.id)
+                .ok()
+                .flatten()
+                .is_some_and(|stored| stored == summary.updated_at.to_rfc3339());
+
             if is_standalone_history_project(agent, &summary.project_dir) {
-                let mut conversation = adapter.read_conversation(&summary.id)?;
-                conversation.project_dir =
-                    crate::chatmem_memory::repo_identity::GLOBAL_LOCAL_HISTORY_ROOT.to_string();
-                sync_conversation_into_store(store, agent, &conversation)?;
+                if unchanged {
+                    skipped += 1;
+                    continue;
+                }
+                match adapter.read_conversation(&summary.id) {
+                    Ok(mut conversation) => {
+                        conversation.project_dir =
+                            crate::chatmem_memory::repo_identity::GLOBAL_LOCAL_HISTORY_ROOT
+                                .to_string();
+                        sync_conversation_into_store(store, agent, &conversation)?;
+                    }
+                    Err(error) => {
+                        scan_warnings.push(format!(
+                            "Failed to read {agent} conversation {}: {error}",
+                            summary.id
+                        ));
+                    }
+                }
                 skipped += 1;
                 continue;
             }
@@ -514,7 +576,22 @@ pub fn scan_repo_conversations(
                 continue;
             }
 
-            let mut conversation = adapter.read_conversation(&summary.id)?;
+            if unchanged {
+                linked += 1;
+                *source_agent_counts.entry(agent.to_string()).or_insert(0) += 1;
+                continue;
+            }
+
+            let mut conversation = match adapter.read_conversation(&summary.id) {
+                Ok(conversation) => conversation,
+                Err(error) => {
+                    scan_warnings.push(format!(
+                        "Failed to read {agent} conversation {}: {error}",
+                        summary.id
+                    ));
+                    continue;
+                }
+            };
             let observed_project_root = crate::chatmem_memory::repo_identity::normalize_repo_root(
                 &conversation.project_dir,
             );
@@ -534,6 +611,7 @@ pub fn scan_repo_conversations(
                 )?;
             }
         }
+        warnings.extend(scan_warnings);
     }
 
     let mut source_agents = source_agent_counts
@@ -548,7 +626,6 @@ pub fn scan_repo_conversations(
     source_agents.sort_by(|left, right| left.source_agent.cmp(&right.source_agent));
     let unmatched_project_roots = build_unmatched_project_roots(unmatched_project_root_counts);
 
-    let mut warnings = Vec::new();
     if linked == 0 && scanned > 0 {
         warnings.push(
             "ChatMem scanned local conversations but none matched this repo root; verify project paths or aliases."
@@ -683,8 +760,8 @@ mod tests {
     use super::{
         auto_capture_conversation_with_adapter, build_unmatched_project_roots,
         import_local_history_from_adapters, is_codex_generated_chat_project_dir,
-        is_root_project_placeholder, record_unmatched_project_root, summary_project_matches_repo,
-        summary_project_matches_repo_roots,
+        is_root_project_placeholder, record_unmatched_project_root, scan_repo_conversations_with_adapters,
+        summary_project_matches_repo, summary_project_matches_repo_roots,
     };
     use crate::chatmem_memory::store::MemoryStore;
     use agentswap_core::{
@@ -855,6 +932,135 @@ mod tests {
             "D:\\VSP\\bm.md",
             &repo_roots,
         ));
+    }
+
+    #[test]
+    fn repeated_local_history_import_skips_unchanged_conversations() {
+        let store = new_store();
+        // Freeze the timestamp: the skip check compares stored vs summary updated_at.
+        let fixed_time = Utc::now();
+        let fresh_conversation = || {
+            let mut conversation = fake_conversation(
+                "codex-unchanged",
+                AgentKind::Codex,
+                "D:\\VSP\\bm.md",
+                "讨论 EasyMD 的本地历史导入",
+            );
+            conversation.created_at = fixed_time;
+            conversation.updated_at = fixed_time;
+            conversation
+        };
+
+        let first = import_local_history_from_adapters(
+            &store,
+            vec![(
+                "codex",
+                Box::new(FakeAdapter::new(
+                    AgentKind::Codex,
+                    vec![fresh_conversation()],
+                )),
+            )],
+        )
+        .unwrap();
+        assert_eq!(first.imported_conversation_count, 1);
+
+        let second = import_local_history_from_adapters(
+            &store,
+            vec![(
+                "codex",
+                Box::new(FakeAdapter::new(
+                    AgentKind::Codex,
+                    vec![fresh_conversation()],
+                )),
+            )],
+        )
+        .unwrap();
+        assert_eq!(second.scanned_conversation_count, 1);
+        assert_eq!(second.imported_conversation_count, 0);
+        assert_eq!(second.skipped_conversation_count, 0);
+        assert!(second
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("already up to date")));
+        assert_eq!(
+            store
+                .stored_conversation_updated_at("codex", "codex-unchanged")
+                .unwrap()
+                .as_deref(),
+            Some(fixed_time.to_rfc3339().as_str())
+        );
+    }
+
+    #[test]
+    fn scan_repo_conversations_survives_single_conversation_read_failures() {
+        struct BrokenReadAdapter {
+            inner: FakeAdapter,
+        }
+
+        impl AgentAdapter for BrokenReadAdapter {
+            fn is_available(&self) -> bool {
+                true
+            }
+
+            fn list_conversations(&self) -> anyhow::Result<Vec<ConversationSummary>> {
+                self.inner.list_conversations()
+            }
+
+            fn read_conversation(&self, id: &str) -> anyhow::Result<Conversation> {
+                if id == "codex-broken" {
+                    anyhow::bail!("rollout file not found for {id}");
+                }
+                self.inner.read_conversation(id)
+            }
+
+            fn write_conversation(&self, conv: &Conversation) -> anyhow::Result<String> {
+                self.inner.write_conversation(conv)
+            }
+
+            fn delete_conversation(&self, id: &str) -> anyhow::Result<()> {
+                self.inner.delete_conversation(id)
+            }
+
+            fn render_prompt(&self, conv: &Conversation) -> anyhow::Result<String> {
+                self.inner.render_prompt(conv)
+            }
+
+            fn agent_kind(&self) -> AgentKind {
+                self.inner.agent_kind()
+            }
+
+            fn display_name(&self) -> &str {
+                self.inner.display_name()
+            }
+
+            fn data_dir(&self) -> PathBuf {
+                self.inner.data_dir()
+            }
+        }
+
+        let store = new_store();
+        let healthy =
+            fake_conversation("codex-healthy", AgentKind::Codex, "D:\\VSP\\bm.md", "健康对话");
+        let broken =
+            fake_conversation("codex-broken", AgentKind::Codex, "D:\\VSP\\bm.md", "损坏对话");
+
+        let report = scan_repo_conversations_with_adapters(
+            &store,
+            "d:/vsp/bm.md",
+            vec![(
+                "codex",
+                Box::new(BrokenReadAdapter {
+                    inner: FakeAdapter::new(AgentKind::Codex, vec![healthy, broken]),
+                }) as Box<dyn AgentAdapter>,
+            )],
+        )
+        .unwrap();
+
+        assert_eq!(report.linked_conversation_count, 1);
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("codex-broken")));
     }
 
     #[test]
